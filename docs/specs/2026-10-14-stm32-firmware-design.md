@@ -660,7 +660,7 @@ Có hai vùng tĩnh riêng trong AXI, vì chúng có vòng đời khác nhau.
   - Buffer được giải phóng khi request xong, khi connection đóng, hoặc khi body hết thời gian chờ (quy tắc chung ở §10.1).
 
 **Các cấu hình nhỏ** (port, mqtt*, system, io, edgeReport, edgeLinkage):
-- body ≤ **10.240 byte** (10 × 1024), nằm sẵn trong `c->recv`.
+- body ≤ **10.240 byte** (10 × 1024), nằm sẵn trong `c->recv`. Buffer in ra là `CFG_SMALL_BUF` = 10.246 byte, vì `cJSON_PrintPreallocated` cần dư 5 byte; giới hạn được kiểm trên độ dài thật của văn bản.
 - **Văn bản chuẩn hóa cũng phải ≤ 10.240 byte**, kiểm trước khi ghi. Vượt quá thì trả 413 `{ "error": "These settings are too large." }` và **cấu hình đã lưu giữ nguyên**.
 - Đây là **giới hạn chấp nhận**, không phải cực đại của schema. Schema vẫn cho phép những cấu hình hợp lệ mà sau chuẩn hóa vượt 10.240 byte, ví dụ `mqttPublish` có `identifier` và `delimiter` toàn ký tự điều khiển, khi escape thành `\uXXXX` thì dài gấp 6. Những cấu hình đó bị từ chối bằng 413.
 - Hệ quả: cái gì đã được nhận thì `GET` trả về đều `POST` lại được;
@@ -699,9 +699,13 @@ Có hai vùng tĩnh riêng trong AXI, vì chúng có vòng đời khác nhau.
   - mỗi node: chỉ số thiết bị, `fc`, `start`, `width`, `mapEn`;
   - tên thiết bị và tên điểm (mỗi tên ≤ 17 B), giữ trong hai bảng riêng vì đây là hai phạm vi kiểm trùng khác nhau.
 
-  Hash FNV-1a chỉ dùng để tìm nhanh. **Hai tên được coi là trùng chỉ khi so `strcmp` cũng bằng nhau.**
+  Với tối đa 64 thiết bị và 100 điểm, các tên được so sánh tuyến tính bằng `strcmp`, không cần hash.
 - **Khi nạp lúc boot** (`cfg_load`) chạy pha 1 và 2 mà không chạy pha 3, như ESP32. Một mô hình đã lưu bởi firmware cũ vẫn chạy được.
 - **Mỗi node chỉ sống trong một phạm vi con:** đánh dấu, parse, validate, in, rồi giải phóng. Vì vậy đỉnh bộ nhớ không tăng theo số node.
+
+**Miền JSON được chấp nhận:** JSON theo RFC 8259: UTF-8 hợp lệ, escape surrogate chỉ đi theo cặp (như cJSON yêu cầu), lồng sâu tối đa 32 cấp (`JS_MAX_DEPTH`, để đệ quy nằm gọn trong stack của task `web`). Ngoài miền này thì trả 400 `The request body is not valid JSON.`. Bản ESP32 chấp nhận một số dạng cJSON vẫn đọc được (như `01` hay rác ở cuối), nhưng bản STM32 thì không. Phép so sánh tương đương giữa hai đường xử lý chỉ áp dụng trong miền này.
+
+**Thiếu bộ nhớ:** mọi lần cấp phát thất bại đều được đếm (`json_alloc_failures()`), và kết quả luôn là `CFG_NO_MEMORY` (500 `Out of memory.`), không bao giờ là một mô hình thiếu trường hay một câu báo lỗi schema gây hiểu nhầm.
 
 **Ghi:**
 - Văn bản chuẩn hóa được ghi theo đúng thứ tự của cJSON nguyên khối: các field của thiết bị theo thứ tự schema, `"nodes":[…]` ở cuối, vì `slaves()` thêm `nodes` sau `list()`.

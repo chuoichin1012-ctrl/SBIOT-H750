@@ -493,7 +493,7 @@ Run: `npm --prefix stm32/web run dev:mock`, open the printed URL, and sign in as
 
 | Page | Expected |
 |---|---|
-| `#/port/2/socket` | Set Working mode to **TCP client**. The **TLS** select appears. Set it to TLS 1.2: **Certificate check** appears, with no upload rows yet (the default is None). Set Certificate check to **Verify server certificate**: one row, **Server CA certificate**, appears. Set it to **Verify both sides**: **Client certificate** and **Client private key** rows appear too. Upload any PEM file on the CA row and confirm in the browser's network tab that the request goes to `api/cert?scope=port2&kind=ca` |
+| `#/port/2/socket` | Set Working mode to **TCP client**. The **TLS** select appears. Set it to TLS 1.2: **Certificate check** appears, with no upload rows yet (the default is None). Set Certificate check to **Verify server certificate**: one row, **Server CA certificate**, appears. Set it to **Verify both sides**: **Client certificate** and **Client private key** rows appear too. Mock mode sends no HTTP request: `upload()` in `src/lib/api.ts` calls `mockUpload()` directly. So set a breakpoint on the first line of `mockUpload` in `src/lib/mock.ts` (browser DevTools, Sources), upload any PEM file on the CA row, and confirm the `url` argument is `./api/cert?scope=port2&kind=ca` |
 | `#/port/1/serial` | No "Baud rate sync (RFC 2217)" field |
 | `#/system` | No Telnet fields. "Websocket connects to" offers Off, UART1, UART2 and "Gateway log and shell" |
 | `#/edge/acquisition` | The counter reads `… of 100 points used` |

@@ -6,7 +6,7 @@
 
 **Architecture:**
 - **Two CubeMX projects** (`cube/boot/boot.ioc`, `cube/app/app.ioc`), generated headless in WSL by `tools/cubegen.sh`. Our code enters only through USER CODE blocks.
-  - The bootloader runs CubeMX's `main()`: MPU (QSPI regions), HAL, clocks (PLL1 480 MHz), GPIO safe levels, IWDG1, QUADSPI, UART7. Then `boot_main()` resets the GD25Q32E, maps it with Quad I/O Fast Read (EBh) at 80 MHz, checks the app vector table and jumps.
+  - The bootloader runs CubeMX's `main()`: MPU (QSPI regions), HAL, clocks (PLL1 480 MHz), GPIO safe levels, IWDG1, QUADSPI, UART7. Then `boot_main()` resets the GD25Q32E, applies the ES0392 §2.7.4 QUADSPI workaround, maps it with Quad I/O Fast Read (EBh) at 80 MHz from PLL1Q, checks the app vector table and jumps.
   - The app keeps CubeMX's vector table but replaces its weak `Reset_Handler`. Ours enables the FPU and the SRAM clocks, copies the data and ITCM sections, programs the whole MPU once, enables the caches, then calls CubeMX's `main()`. `SystemClock_Config`, `MX_QUADSPI_Init` and `MPU_Config` are never called there. `app_main()` starts `wdog` and `init` under FreeRTOS.
 - **One HAL** for both images, vendored from the pinned GitHub releases rather than from the FW pack 1.12.0 (whose `system_stm32h7xx.c` miscomputes every APB clock).
 - **Gates:**
@@ -29,7 +29,7 @@ A prototype of exactly the code below was built, flashed and run on the board. I
 | B2 | The board's UART7 output is on **COM4**, not COM5 | Spike output arrived on COM4; COM5 stayed silent | Bench tools default to COM4 (`SBIOT_COM`) |
 | B3 | FW pack 1.12.0's `system_stm32h7xx.c` has `D1CorePrescTable = {0,0,0,0,0,0,0,0,1,…}`, so HAL reads APB ÷2 as ÷1 | UART7 BRR 0x823 (2083) at PCLK1 = 120 MHz, so 57 600 baud. cmsis-device-h7 v1.10.7 has `{0,0,0,0,1,2,3,4,1,…}` | Both images use the v1.10.7 system file |
 | B4 | CubeMX leaves the QSPI pins at **low speed**, and every QSPI read then times out at 80 MHz | JEDEC read 0, RX FIFO empty, HAL timeout | `GPIO_Speed=VERY_HIGH` on the six QSPI pins |
-| B5 | **ES0396 §2.4.4**: a memory-mapped read of the last byte of the FSIZE region returns 0x00, and a repeated read stalls AXI | Verify of 0x903F0000–0x903FFFFF failed at 0x903FFFFF only. A block in the middle verified | FSIZE = 22 (8 MB) for the 4 MB part. MPU region 1 stays 4 MB |
+| B5 | **ES0392 §2.7.5** (ES0396 §2.4.4): a memory-mapped read of the last byte of the FSIZE region returns 0x00, and a repeated read stalls AXI | Verify of 0x903F0000–0x903FFFFF failed at 0x903FFFFF only. A block in the middle verified | FSIZE = 22 (8 MB) for the 4 MB part. MPU region 1 stays 4 MB |
 | B6 | Sending ten all-ones clocks with an address phase of 0xFFFFFF sets TEF (address beyond FSIZE) | QUADSPI SR TEF = 1 | The continuous-read exit uses a 32-bit alternate-byte phase instead |
 | B7 | OpenOCD `stmqspi` cannot read the flash ("Failed to read memory at 0x52005020") | Raw register JEDEC reads work | Flash QSPI with CubeProgrammer and the team's loader `STM32H750VBT6_GD25Q32ESIG.stldr` (SHA-256 `5ef2de36…0699`). Erase, program and verify proven on 0x903E0000. OpenOCD is for debugging only (`QUADSPI 0`) |
 | B8 | The team's loader never touches GPIO, so it does not kick WDI | Disassembly: no GPIO writes | Safe while R20 is missing. Plan 04 brings our own loader, which kicks |
@@ -37,6 +37,8 @@ A prototype of exactly the code below was built, flashed and run on the board. I
 | B10 | CubeMX's own startup file declares `Reset_Handler` **weak** and calls `ExitRun0Mode` then `SystemInit` | `startup_stm32h750xx.s` | The app overrides it. `check_elf.py` proves `SystemInit` and `ExitRun0Mode` are gone from `app.elf` |
 | B11 | newlib-nano `printf` has no `%llu` | Output "lu" and shifted arguments | 64-bit values are printed as 32-bit milliseconds |
 | B12 | CubeMX's first generation of a fresh `.ioc` may put the toolchain files under `Projects/`. Once `ToolChainLocation` is empty, generation is idempotent | Four generations observed | `cubegen.sh` regenerates until the files sit next to `Src/`. The gate is a second run with no diff |
+| B13 | **ES0392 Rev 15 §2.7.4** "QUADSPI internal timing criticality" (Rev V: workaround available): a fixed register sequence must run after every reset and every exit from memory-mapped mode, its last disable less than 127 kernel clocks after the first CCR write | Errata sheet (Codex review of this plan); not visible in the prototype | `qf_errata_timing()` from the bootloader's `HAL_QSPI_MspInit`, interrupts off; `check_elf.py` checks the store window. Plan 04 calls it again when the bootloader leaves memory-mapped mode |
+| B14 | **ES0392 §2.7.6**: with HCLK as kernel clock the QSPI clock must keep a 50 % duty cycle. The prototype divided 240 MHz by 3 (odd), which leaves a high phase of about 4.2 ns, under the 4.3 ns the GD25Q32E needs (tCLH ≥ 45 % of 1/104 MHz) | Errata sheet, datasheet §8.6 | Kernel clock pll1_q_ck 160 MHz (DIVQ1 = 6), prescaler 1: 80 MHz with an even division |
 
 Prototype numbers on the board:
 - **Bootloader:** 18 080 B. The boot-to-app-ready time is 13 ms.
@@ -50,10 +52,11 @@ Prototype numbers on the board:
   - HSE 25 MHz crystal; PLL1 M=5 N=192 P=2 Q=4 R=2, giving SYSCLK 480 MHz;
   - VOS0, LDO supply, flash latency 4;
   - AHB ÷2 (240 MHz), APB1–4 ÷2 (120 MHz each);
-  - QSPI kernel clock = HCLK3 240 MHz.
+  - QSPI kernel clock = pll1_q_ck 160 MHz (DIVQ1 = 6; ES0392 §2.7.6 wants an even division).
 - **Clocks** (app): PLL2 M=5 N=80 P=20 gives 20 MHz for ADC3, configured by the app's `HAL_ADC_MspInit` (Plan 07). USART and SPI kernel clocks = PCLK.
 - **QSPI:**
-  - bank 2 (`FSEL`=1), FSIZE 22, prescaler 2 (80 MHz ≤ 104 MHz at DC=0);
+  - bank 2 (`FSEL`=1), FSIZE 22, prescaler 1 (160 / 2 = 80 MHz ≤ 104 MHz at DC=0, duty cycle 50 %);
+  - the ES0392 §2.7.4 sequence after reset, in `HAL_QSPI_MspInit` (kernel clock already on), interrupts off;
   - half-cycle sample shift, CS high time 2 cycles;
   - read command EBh: address on 4 lines, then alternate byte M = FFh on 4 lines, then 4 dummy clocks (8 when SR3.DC = 1);
   - QE set only when clear; DC never written;
@@ -90,12 +93,12 @@ Prototype numbers on the board:
 - **`init` stays alive.** Spec §6.3 has `init` delete itself after boot. In Plan 02 it reports the boot and then stays as the UART7 bench console (`i`, `r`, `w`, `c`). Plan 05 (syslog) replaces it, and `init` then deletes itself as specified.
 - **No heap yet.** `board_early()` (spec §6.3) does not set up a heap, because Plan 02 creates only static objects (`configSUPPORT_DYNAMIC_ALLOCATION 0`). Plan 05 adds `heap_5` with the newlib wrapper. `_sbrk` already always fails.
 - **No HardFault record yet.** The HardFault record in backup SRAM (spec §11.4) is not part of Plan 02. Until then, a fault hangs in CubeMX's handler and IWDG1 resets the board. The `.bkp_noinit` section exists for that record.
-- **Header checks come later.** Plan 02 checks only the MSP and the reset vector before jumping. The header checks of §11.1 (magic, CRC, hardware id, size, SHA-256) come with `mkimage.py` in Plan 04.
+- **Header checks come later.** Plan 02 checks only the MSP and the reset vector before jumping, so a half-written image whose vector table is intact would still be started. The header checks of §11.1 (magic, CRC, hardware id, size, SHA-256) come with `mkimage.py` in Plan 04.
 
 ## Review Focus
 
-1. **A warm reset while the flash was busy or in an odd mode** (reset during XIP, during a status-register write, after another firmware). The bootloader must still identify the flash and map it. Pinned in Task 6: 10 back-to-back software resets and 3 IWDG resets, each must reach the app.
-2. **QSPI holding something that is not our app** (the old firmware, erased flash, half an image). The bootloader must refuse to jump and stay in halted rescue, still feeding both watchdogs. Pinned in Task 3, `test_jumpcheck` (includes the words the bench QSPI held), and in Task 6, the first boot before `app.bin` is flashed.
+1. **A warm reset while the flash was busy or in an odd mode.** The bootloader must still identify the flash and map it. Pinned in Task 6, Step 3: three resets with the flash put deliberately in continuous-read mode (EBh with M = A0h) and three during a running sector erase, all through OpenOCD, each must reach the app. Steps 2 add 10 software and 3 IWDG resets during XIP.
+2. **QSPI holding something that is not our app** (the old firmware, erased flash). When the two vectors are invalid the bootloader must refuse to jump and stay in halted rescue, still feeding both watchdogs. Pinned in Task 3, `test_jumpcheck` (includes the words the bench QSPI held), and in Task 4, Step 10 (blank slot). An image that is only partly written but has valid vectors is not caught in Plan 02: that needs the header SHA-256 of Plan 04 (see Deviations).
 3. **GCC turning `Reset_Handler`'s copy loops into `memcpy`/`memset` calls**, which run from ITCM before ITCM is filled. Pinned in Task 5: `check_elf.py` plus an `-O3` mutant that must fail it, including calls through `__memset_veneer`.
 4. **A debugger halting the core while IWDG1 runs.** The board must not reset under the debugger, and flashing (connect under reset) must still work after the app runs. Pinned in Task 6, halt-for-5-s step.
 5. **A `.ioc` edit that silently breaks the board contract** (pin swapped, PLL1 changed in one file only, latch enabled at reset, FSIZE back to 21, QSPI pins slow). Pinned in Task 2, `test_check_pins.py` with one mutation per case.
@@ -145,7 +148,7 @@ edits = {SPEC: [
  ("- Toàn bộ cây clock: HSE 25 MHz, PLL1 làm SYSCLK, PLL2 và PLL3 cấp kernel clock cho USART, SPI, ADC. Mục tiêu 480 MHz với chip rev V (VOS0).",
   "- Phần cây clock mà XIP phụ thuộc: HSE 25 MHz, PLL1 làm SYSCLK (M=5, N=192, P=2: 480 MHz với chip rev V, VOS0, nguồn LDO, flash latency 4), AHB ÷2 (240 MHz), APB1–4 ÷2 (120 MHz). Bootloader nằm trong flash nội và không cập nhật qua OTA, nên phần nó cố định phải nhỏ nhất có thể: PLL2/PLL3 và các bộ chọn kernel clock của ngoại vi do app cấu hình trong các hàm MspInit mà CubeMX sinh ra (ví dụ PLL2P 20 MHz cho ADC3 trong `HAL_ADC_MspInit`). USART và SPI dùng PCLK làm kernel clock.\n- IWDG1 (LSI/32, reload 1600 ≈ 1,6 s), đóng băng khi debugger dừng lõi (`DBGMCU_APB4FZ1.DBG_IWDG1`). Lý do ở §11.4."),
  ("  - lệnh đọc Quad I/O Fast Read (`0xEB`) với số dummy cycle theo datasheet ở tần số đã chọn;\n  - prescaler sao cho clock QSPI ≤ giới hạn của GD25Q32E ở 3,3 V;\n  - trước khi cấu hình, gửi Reset Enable và Reset (`0x66`, `0x99`) để đưa flash về trạng thái đã biết, vì MCU có thể vừa reset trong lúc flash đang ở một chế độ khác;",
-  "  - lệnh đọc Quad I/O Fast Read (`0xEB`): địa chỉ 4 dòng, byte M = `0xFF` trên 4 dòng (M5-4 ≠ 10, flash không bao giờ vào continuous read mode), rồi 4 dummy clock khi bit DC (SR3 bit 0) = 0, 8 khi DC = 1 (GD25Q32E Rev 1.3 §6, §7.11). DC không bao giờ được ghi;\n  - prescaler 2: 240 / 3 = 80 MHz, dưới giới hạn 104 MHz của GD25Q32E khi DC = 0. Sample shift nửa chu kỳ, CS high 2 chu kỳ (tSHSL ≥ 20 ns). Các chân QSPI đặt tốc độ very high (với tốc độ low, mọi lệnh đọc đều timeout ở 80 MHz);\n  - **FSIZE = 22 (8 MB) cho chip 4 MB**: theo ES0396 §2.4.4, đọc memory-mapped byte cuối của vùng FSIZE luôn trả 0x00 và đọc lại làm treo bus AXI; region MPU 1 vẫn chỉ 4 MB nên phần dư không truy cập được;\n  - trước khi cấu hình: 10 clock với IO0–IO3 ở mức 1 (lệnh `0xFF` 4 dòng cộng 32 bit alternate byte, không dùng pha địa chỉ vì địa chỉ ngoài FSIZE làm QUADSPI báo TEF) để thoát continuous read mode, rồi Reset Enable và Reset (`0x66`, `0x99`) và chờ 13 ms (tRST_E 12 ms), vì MCU có thể vừa reset trong lúc flash đang ở một chế độ khác;"),
+  "  - lệnh đọc Quad I/O Fast Read (`0xEB`): địa chỉ 4 dòng, byte M = `0xFF` trên 4 dòng (M5-4 ≠ 10, flash không bao giờ vào continuous read mode), rồi 4 dummy clock khi bit DC (SR3 bit 0) = 0, 8 khi DC = 1 (GD25Q32E Rev 1.3 §6, §7.11). DC không bao giờ được ghi;\n  - kernel clock pll1_q_ck 160 MHz (DIVQ1 = 6), prescaler 1: 80 MHz với hệ số chia chẵn, duty 50 % (ES0392 Rev 15 §2.7.6: HCLK chia lẻ không giữ được duty 50 %, mà GD25Q32E cần tCLH, tCLL ≥ 45 %), dưới giới hạn 104 MHz khi DC = 0. Sample shift nửa chu kỳ, CS high 2 chu kỳ (tSHSL ≥ 20 ns). Các chân QSPI đặt tốc độ very high (với tốc độ low, mọi lệnh đọc đều timeout ở 80 MHz);\n  - **workaround ES0392 §2.7.4** (\"QUADSPI internal timing criticality\", áp dụng cho rev V): chuỗi thanh ghi của errata chạy sau mỗi lần reset (trong `HAL_QSPI_MspInit` của bootloader, khi kernel clock đã bật, ngắt tắt) và mỗi lần rời memory-mapped sang chế độ khác (Plan 04); lệnh disable cuối phải xong trong 127 kernel clock sau lần ghi CCR đầu tiên;\n  - **FSIZE = 22 (8 MB) cho chip 4 MB**: theo ES0392 §2.7.5 (ES0396 §2.4.4), đọc memory-mapped byte cuối của vùng FSIZE luôn trả 0x00 và đọc lại làm treo bus AXI; region MPU 1 vẫn chỉ 4 MB nên phần dư không truy cập được;\n  - trước khi cấu hình: 10 clock với IO0–IO3 ở mức 1 (lệnh `0xFF` 4 dòng cộng 32 bit alternate byte, không dùng pha địa chỉ vì địa chỉ ngoài FSIZE làm QUADSPI báo TEF) để thoát continuous read mode, rồi Reset Enable và Reset (`0x66`, `0x99`) và chờ 13 ms (tRST_E 12 ms), vì MCU có thể vừa reset trong lúc flash đang ở một chế độ khác;"),
  ("- Region MPU của QSPI.",
   "- Region MPU của QSPI (`MPU_Config` do CubeMX sinh từ `boot.ioc`): region 0 nền mặc định của CubeMX (4 GB, tắt sub-region 0, 1, 2, 7, nên 0x60000000–0xDFFFFFFF không truy cập được và không bị fetch suy đoán) và region 1 là cửa sổ QSPI 4 MB, chỉ đọc, cacheable, thực thi được."),
  ("- **Startup và `SystemInit` riêng cho XIP.** Startup GCC chuẩn của ST gọi `SystemInit()` *trước* `main()`, và hàm này reset RCC, tắt PLL. Vì vậy app dùng `system_app.c` riêng, không đụng tới RCC, QSPI và pinmux.",
@@ -164,6 +167,8 @@ edits = {SPEC: [
   "- Nạp qua SWD (P6) bằng STM32CubeProgrammer CLI (`tools/flash.sh`, chạy từ WSL): flash nội nạp trực tiếp; QSPI bank 2 qua external loader. OpenOCD `stmqspi` không đọc được flash trên board này (\"Failed to read memory at 0x52005020\"), nên OpenOCD chỉ dùng để debug, với `QUADSPI 0`.\n- Plan 02 dùng loader của nhóm `STM32H750VBT6_GD25Q32ESIG.stldr` (Dev_info: 0x90000000, 4 MB, page 256 B, 1024 sector 4 KB; SHA-256 `5ef2de362969bb2ad9d0c92604e58f27b018614533fe421e6ac5974c9bcb0699`), sau khi chứng minh xóa, ghi và đọc lại trên vùng dự trữ 0x903E0000. Loader này không kick WDI: chỉ an toàn khi R20 chưa lắp. Plan 04 thay bằng loader build từ mã nguồn (cùng driver QSPI với bootloader, kick WDI và IWDG1 trong các vòng chờ)."),
  ("| Cấu hình QSPI: QE, opcode, dummy cycle, prescaler | Lấy từ datasheet GD25Q32E. Kiểm XIP ở tần số đích khi bring-up |",
   "| Cấu hình QSPI: QE, opcode, dummy cycle, prescaler | Lấy từ datasheet GD25Q32E Rev 1.3 (§6.2). Đã kiểm XIP ở 80 MHz trên bench: CRC của image đọc qua XIP trùng `app.bin` |"),
+ ("| Startup XIP: `SystemInit` và các hàm HAL đụng tới RCC hoặc QSPI | `system_app.c` riêng. Kiểm disassembly, boot nguội và boot ấm (§6.2) |",
+  "| Startup XIP: `SystemInit` và các hàm HAL đụng tới RCC hoặc QSPI | `Reset_Handler` riêng thay hàm weak trong startup của CubeMX; `tools/check_elf.py` kiểm `app.elf` không còn `SystemInit`, `ExitRun0Mode`, hàm clock/QSPI/MPU của HAL, và `Reset_Handler` không gọi `memcpy`/`memset`; bench kiểm boot nguội và boot ấm (§6.2) |"),
  ("| Hậu tố của SGM706 trên BOM | Chốt cùng nhóm phần cứng |",
   "| Hậu tố của SGM706 trên BOM; R20 chưa lắp | Chốt cùng nhóm phần cứng. Tới khi R20 được lắp, IWDG1 là nguồn reset duy nhất (§11.4) |"),
  ("| OpenOCD `stmqspi` trên bank 2 | Script đặt `FSEL`=1 trước khi probe. Kiểm ngay ở bước bring-up đầu tiên |",
@@ -186,7 +191,7 @@ print('amendments: %d spec, %d roadmap' % (len(edits[SPEC]), len(edits[ROAD])))
 EOF
 ```
 
-Expected: `amendments: 14 spec, 2 roadmap`.
+Expected: `amendments: 15 spec, 2 roadmap`.
 
 - [ ] **Step 2: Check the result**
 
@@ -229,7 +234,7 @@ for p in "stm32h7xx-hal-driver-v1.11.6 v1.11.6 a1996eed9172b59887bafaaa0ea1816ea
          "cmsis-device-h7-v1.10.7 v1.10.7 8f922cdc7cc6de2344e75ddd657889f4ff761790" \
          "cmsis-core-v5.9.0_20250520 v5.9.0_20250520 b7487de1303e2eb77c402432e368691e9dcfb5f0" \
          "FreeRTOS-Kernel-V11.3.1 V11.3.1 3a22924e0a9ddbbc8b0758881c33b3422a5cc20d"; do
-  set -- $p; test "$(git -C $ST/$1 describe --tags) $(git -C $ST/$1 rev-parse HEAD)" = "$2 $3" && echo "pinned $1"
+  set -- $p; test "$(git -C $ST/$1 describe --tags) $(git -C $ST/$1 rev-parse HEAD)" = "$2 $3" && echo "pinned $1" || { echo "NOT PINNED: $1"; break; }
 done
 H=stm32/firmware/third_party/stm32cube_h7/Drivers
 mkdir -p $H/STM32H7xx_HAL_Driver $H/CMSIS/Include $H/CMSIS/Device/ST/STM32H7xx/Include $H/CMSIS/Device/ST/STM32H7xx/Source/Templates
@@ -248,7 +253,7 @@ cp $ST/FreeRTOS-Kernel-V11.3.1/portable/MemMang/heap_5.c $R/portable/MemMang/
 grep -c "{0, 0, 0, 0, 1, 2, 3, 4, 1, 2, 3, 4, 6, 7, 8, 9}" $H/CMSIS/Device/ST/STM32H7xx/Source/Templates/system_stm32h7xx.c
 ```
 
-Expected: four `pinned …` lines, then `1` (the fixed prescaler table, B3).
+Expected: four `pinned …` lines, then `1` (the fixed prescaler table, B3). On a `NOT PINNED` line, stop: the cache in `~/opt/st` is not the reviewed release.
 
 Create `stm32/firmware/third_party/stm32cube_h7/README.md`:
 
@@ -415,11 +420,13 @@ def ipp(ip, kv, order=None):
 # PLL1 and the bus tree are the frozen part (bootloader, spec §6.2). PLL2 (ADC) is configured by the
 # app's HAL_ADC_MspInit, so only app.ioc carries it.
 rcc = dict(HSE_VALUE='25000000', PLLSourceVirtual='RCC_PLLSOURCE_HSE', SYSCLKSource='RCC_SYSCLKSOURCE_PLLCLK',
-           DIVM1='5', DIVN1='192', DIVP1='2', DIVQ1='4', DIVR1='2',
+           DIVM1='5', DIVN1='192', DIVP1='2', DIVQ1='6', DIVR1='2',
            D1CPRE='RCC_SYSCLK_DIV1', HPRE='RCC_HCLK_DIV2', D1PPRE='RCC_APB3_DIV2', D2PPRE1='RCC_APB1_DIV2',
            D2PPRE2='RCC_APB2_DIV2', D3PPRE='RCC_APB4_DIV2',
            PWR_Regulator_Voltage_Scale='PWR_REGULATOR_VOLTAGE_SCALE0', SupplySource='PWR_LDO_SUPPLY',
-           QSPICLockSelection='RCC_QSPICLKSOURCE_D1HCLK',
+           # QSPI from pll1_q_ck 160 MHz, divided by 2: an even division keeps the 50 % duty cycle that
+           # ES0392 §2.7.6 asks for (240 MHz HCLK / 3 would not).
+           QSPICLockSelection='RCC_QSPICLKSOURCE_PLL',
            USART234578CLockSelection='RCC_USART234578CLKSOURCE_D2PCLK1')
 if not BOOT:
     rcc.update(DIVM2='5', DIVN2='80', DIVP2='20', DIVQ2='4', DIVR2='4', ADCCLockSelection='RCC_ADCCLKSOURCE_PLL2',
@@ -427,7 +434,7 @@ if not BOOT:
 ipp('RCC', rcc)
 # FlashSize 22 (8 MB) for a 4 MB part: ES0396 §2.4.4, a memory-mapped read of the last byte of the
 # FSIZE region returns 0 and a repeated read stalls the AXI bus. MPU region 1 still ends at 4 MB.
-ipp('QUADSPI', dict(ClockPrescaler='2', FlashSize='22', SampleShifting='QSPI_SAMPLE_SHIFTING_HALFCYCLE',
+ipp('QUADSPI', dict(ClockPrescaler='1', FlashSize='22', SampleShifting='QSPI_SAMPLE_SHIFTING_HALFCYCLE',
                     ChipSelectHighTime='QSPI_CS_HIGH_TIME_2_CYCLE', FifoThreshold='4', DualFlash='QSPI_DUALFLASH_DISABLE'))
 ipp('UART7', dict(BaudRate='115200', VirtualMode='VM_ASYNC'))
 if BOOT:
@@ -565,7 +572,7 @@ F=stm32/firmware/cube
 sed -n '/int main(void)/,/while (1)/p' $F/boot/Src/main.c | grep -E '^\s+(MX_|MPU_|HAL_Init|SystemClock)'
 sed -n '/int main(void)/,/while (1)/p' $F/app/Src/main.c | grep -E '^\s+(MX_|MPU_|HAL_Init|SystemClock)'
 grep -o 'void [A-Za-z]*_Handler' $F/app/Src/stm32h7xx_it.c | tr '\n' ' '; echo
-grep -E 'FlashSize|FlashID|Speed' $F/boot/Src/quadspi.c
+grep -E 'ClockPrescaler|FlashSize|FlashID|Speed|QSPICLKSOURCE' $F/boot/Src/quadspi.c
 sed -n '/MPU_REGION_NUMBER1/,/HAL_MPU_ConfigRegion/p' $F/boot/Src/main.c | grep -E 'BaseAddress|Size =|AccessPermission'
 grep -E 'PWR_LDO_SUPPLY|VOLTAGE_SCALE0|FLASH_LATENCY_4' $F/boot/Src/main.c
 ```
@@ -574,7 +581,7 @@ Expected:
 - **boot `main()`:** `MPU_Config(); HAL_Init(); SystemClock_Config(); MX_GPIO_Init(); MX_IWDG1_Init(); MX_QUADSPI_Init(); MX_UART7_Init();`.
 - **app `main()`:** `HAL_Init(); MX_GPIO_Init(); MX_TIM2_Init(); MX_UART7_Init();` and nothing else.
 - **App handlers:** only `NMI_Handler HardFault_Handler MemManage_Handler BusFault_Handler UsageFault_Handler DebugMon_Handler`, so no SVC, PendSV or SysTick.
-- **QSPI:** `FlashSize = 22`, `FlashID = QSPI_FLASH_ID_2`, and three `GPIO_SPEED_FREQ_VERY_HIGH` lines.
+- **QSPI:** `ClockPrescaler = 1`, `FlashSize = 22`, `FlashID = QSPI_FLASH_ID_2`, `RCC_QSPICLKSOURCE_PLL`, and three `GPIO_SPEED_FREQ_VERY_HIGH` lines.
 - **MPU region 1:** `0x90000000`, `MPU_REGION_SIZE_4MB`, `MPU_REGION_PRIV_RO_URO`.
 - **Power and flash:** one line each for `PWR_LDO_SUPPLY`, `PWR_REGULATOR_VOLTAGE_SCALE0` and `FLASH_LATENCY_4`.
 
@@ -744,7 +751,7 @@ FROZEN = re.compile(r'^(RCC\.(HSE_VALUE|DIV[MNPQR]1|SYSCLKSource|PLLSourceVirtua
                     r'APB[1234]Freq_Value|QSPIFreq_Value|FLatency)|QUADSPI\..*|UART7\..*)$')
 EXPECT_KEYS = {
     'RCC.SYSCLKFreq_VALUE': '480000000', 'RCC.HCLKFreq_Value': '240000000', 'RCC.APB1Freq_Value': '120000000',
-    'RCC.QSPIFreq_Value': '240000000', 'QUADSPI.ClockPrescaler': '2', 'QUADSPI.FlashSize': '22',
+    'RCC.QSPIFreq_Value': '160000000', 'RCC.DIVQ1': '6', 'QUADSPI.ClockPrescaler': '1', 'QUADSPI.FlashSize': '22',
     'RCC.PWR_Regulator_Voltage_Scale': 'PWR_REGULATOR_VOLTAGE_SCALE0', 'RCC.SupplySource': 'PWR_LDO_SUPPLY',
 }
 
@@ -1097,18 +1104,18 @@ git commit -m "stm32 board: tick64 (now_us extension), crc32, bootloader jump ch
 - Create: `stm32/firmware/cmake/arm-none-eabi.cmake`, `stm32/firmware/CMakePresets.json`, `stm32/firmware/CMakeLists.txt`
 - Create: `stm32/firmware/components/board/include/board.h`, `stm32/firmware/components/board/board_io.c`
 - Create: `stm32/firmware/boot/qspi_flash.h`, `stm32/firmware/boot/qspi_flash.c`, `stm32/firmware/boot/boot.h`, `stm32/firmware/boot/boot.c`
-- Modify: `stm32/firmware/cube/boot/Src/main.c` (USER CODE `Includes`, `1`, `2` only)
+- Modify: `stm32/firmware/cube/boot/Src/main.c` (USER CODE `Includes`, `1`, `2` only), `stm32/firmware/cube/boot/Src/quadspi.c` (USER CODE `Includes`, `QUADSPI_MspInit 1` only)
 - Create: `stm32/firmware/tools/flash.sh`, `stm32/firmware/test/bench/board.py`
 
 **Interfaces:**
 - Consumes: Task 2's generated `cube/boot` (the handles `hqspi`, `huart7` and `hiwdg1`, `MX_GPIO_Init`, the pin labels); Task 3's `boot_app_ok`, `APP_VECTORS`.
 - Produces:
   - **Board:** `void board_kick(void);` and `void board_latch_zero(void);`.
-  - **QSPI driver:** `int qf_init(QSPI_HandleTypeDef *h, qf_kick_fn kick);`, `uint32_t qf_read_jedec(QSPI_HandleTypeDef *h);`, `int qf_memory_mapped(QSPI_HandleTypeDef *h);`, and the codes `QF_OK 0`, `QF_EHAL -1`, `QF_EID -2`, `QF_EQE -3`, `QF_ETIMEOUT -4`.
+  - **QSPI driver:** `void qf_errata_timing(void);`, `int qf_init(QSPI_HandleTypeDef *h, qf_kick_fn kick);`, `uint32_t qf_read_jedec(QSPI_HandleTypeDef *h);`, `int qf_memory_mapped(QSPI_HandleTypeDef *h);`, and the codes `QF_OK 0`, `QF_EHAL -1`, `QF_EID -2`, `QF_EQE -3`, `QF_ETIMEOUT -4`.
   - **Bootloader:** `void boot_early(void);`, `void boot_main(void);`.
   - **Build:** `build/h750/boot.elf` and `boot.bin`, from the CMake target `boot`.
   - **Flashing:** `tools/flash.sh boot|app|both|blank [BUILD_DIR]`.
-  - **Bench:** `board.listen(seconds, sends=(), during=None) -> [(ms, line)]` and `board.hard_reset()`.
+  - **Bench:** `board.listen(seconds, sends=(), during=None) -> [(ms, line)]`, `board.hard_reset()` and `board.openocd(commands) -> str` (needs Task 6's `tools/openocd/` files).
   - **Boot log lines** later tasks parse: `SBIOT-H750 boot 0.2.0 rsr=XXXXXXXX sysclk=480000000`, `boot: qspi id c84016`, `boot: jump msp XXXXXXXX pc XXXXXXXX`, `boot: no valid app (msp …, reset …)`.
 
 - [ ] **Step 1: Toolchain file and presets**
@@ -1279,6 +1286,11 @@ enum { QF_OK = 0, QF_EHAL = -1, QF_EID = -2, QF_EQE = -3, QF_ETIMEOUT = -4 };
 
 typedef void (*qf_kick_fn)(void);
 
+// ES0392 Rev 15 §2.7.4 "QUADSPI internal timing criticality": the errata's register sequence. Run it
+// after every reset with the QUADSPI kernel clock on (the bootloader's HAL_QSPI_MspInit), and, from
+// Plan 04 on, whenever the QUADSPI leaves memory-mapped mode. It leaves the QUADSPI disabled.
+void qf_errata_timing(void);
+
 // Leaves continuous-read mode, resets the flash (66h/99h), checks the JEDEC id, sets QE if clear
 // and reads the dummy configuration. kick is called while waiting.
 int qf_init(QSPI_HandleTypeDef *h, qf_kick_fn kick);
@@ -1351,6 +1363,24 @@ static int wait_ready(QSPI_HandleTypeDef *h, uint32_t ms, qf_kick_fn kick)
         if (HAL_GetTick() - t0 > ms)
             return QF_ETIMEOUT;
     }
+}
+
+void qf_errata_timing(void)
+{
+    // The disable must follow the first CCR write within 127 kernel clocks (0.79 us at 160 MHz):
+    // interrupts are off and the three stores are consecutive (tools/check_elf.py checks the window).
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    QUADSPI->CR = 0;  // prescaler not at maximum, peripheral disabled
+    while (QUADSPI->SR & QUADSPI_SR_BUSY) {
+    }
+    QUADSPI->CR = 0xFF000001u;   // maximum prescaler, enabled
+    QUADSPI->CCR = 0x20000000u;  // free-running clock
+    QUADSPI->CCR = 0x20000000u;  // repeated, against a back-to-back disable
+    QUADSPI->CR = 0;
+    while (QUADSPI->SR & QUADSPI_SR_BUSY) {
+    }
+    __set_PRIMASK(primask);
 }
 
 uint32_t qf_read_jedec(QSPI_HandleTypeDef *h)
@@ -1535,15 +1565,21 @@ In `stm32/firmware/cube/boot/Src/main.c`, insert between the USER CODE markers, 
 - `/* USER CODE BEGIN 1 */` … `END 1` (first lines of `main`): `  boot_early();`
 - `/* USER CODE BEGIN 2 */` … `END 2` (after `MX_UART7_Init();`): `  boot_main();`
 
+In `stm32/firmware/cube/boot/Src/quadspi.c`, insert between the USER CODE markers:
+- `/* USER CODE BEGIN Includes */` … `END Includes` (create the content only inside the block): `#include "qspi_flash.h"`
+- `/* USER CODE BEGIN QUADSPI_MspInit 1 */` … `END QUADSPI_MspInit 1` (end of `HAL_QSPI_MspInit`, after the kernel clock and the pins are on): `    qf_errata_timing();  // ES0392 §2.7.4, after reset`
+
+`HAL_QSPI_Init` calls `HAL_QSPI_MspInit` first, then writes CR and DCR, so the workaround runs before the configuration, on the disabled peripheral it leaves behind.
+
 Then confirm that regeneration keeps them:
 
-Run: `stm32/firmware/tools/cubegen.sh && grep -c "boot_early();\|boot_main();\|#include \"boot.h\"" stm32/firmware/cube/boot/Src/main.c`
-Expected: `cubegen: boot ok`, `cubegen: app ok`, `3`.
+Run: `stm32/firmware/tools/cubegen.sh && grep -c "boot_early();\|boot_main();\|#include \"boot.h\"" stm32/firmware/cube/boot/Src/main.c && grep -c "qf_errata_timing();\|#include \"qspi_flash.h\"" stm32/firmware/cube/boot/Src/quadspi.c`
+Expected: `cubegen: boot ok`, `cubegen: app ok`, `3`, `2`.
 
 - [ ] **Step 6: Build the bootloader**
 
-Run: `cd stm32/firmware && cmake --preset h750 > /dev/null && cmake --build --preset boot 2>&1 | grep -E "warning|error|FLASH:"; cd -`
-Expected: no `warning` or `error` lines, and `FLASH: ~18 KB of 128 KB` (≤ 64 KB, spec §5.1).
+Run: `(cd stm32/firmware && cmake --preset h750 > /dev/null && cmake --build --preset boot > /tmp/claude-1000/boot-build.log 2>&1) && ! grep -E "warning|error" /tmp/claude-1000/boot-build.log && grep "FLASH:" /tmp/claude-1000/boot-build.log`
+Expected: `FLASH: ~18 KB of 128 KB` (≤ 64 KB, spec §5.1). Nothing is printed if the build fails or warns; then read the log.
 
 - [ ] **Step 7: Flashing script**
 
@@ -1660,6 +1696,21 @@ def hard_reset():
     subprocess.run([CLI, '-c', 'port=SWD', 'mode=HOTPLUG', '-hardRst'], cwd='/mnt/c', capture_output=True, check=True)
 
 
+OPENOCD = os.environ.get('SBIOT_OPENOCD', '/mnt/c/Users/linh_bui/opt/xpack-openocd-0.12.0-7')
+HERE = os.path.dirname(os.path.abspath(__file__))
+OCD_DIR = os.path.normpath(os.path.join(HERE, '../../tools/openocd'))
+
+
+def openocd(commands):
+    """Runs OpenOCD (Windows build) with tools/openocd/sbiot-h750.cfg and qspi_hostile.tcl, then the
+    given Tcl commands. Returns its output. The Windows paths are computed before changing to C:."""
+    win = lambda path: subprocess.run(['wslpath', '-w', path], capture_output=True, text=True, check=True).stdout.strip()
+    args = [OPENOCD + '/bin/openocd.exe', '-s', win(OPENOCD + '/openocd/scripts'),
+            '-f', win(OCD_DIR + '/sbiot-h750.cfg'), '-f', win(OCD_DIR + '/qspi_hostile.tcl'),
+            '-c', 'init; ' + commands + '; shutdown']
+    return subprocess.run(args, cwd='/mnt/c', capture_output=True, text=True).stdout
+
+
 if __name__ == '__main__':  # python3 board.py SECONDS: print what UART7 says after a reset
     import sys
     for ms, line in listen(float(sys.argv[1]) if len(sys.argv) > 1 else 5, during=hard_reset):
@@ -1703,7 +1754,8 @@ Expected:
 ```bash
 git add stm32/firmware/cmake stm32/firmware/CMakePresets.json stm32/firmware/CMakeLists.txt \
         stm32/firmware/components/board/include/board.h stm32/firmware/components/board/board_io.c \
-        stm32/firmware/boot stm32/firmware/cube/boot/Src/main.c stm32/firmware/tools/flash.sh stm32/firmware/test/bench/board.py
+        stm32/firmware/boot stm32/firmware/cube/boot/Src/main.c stm32/firmware/cube/boot/Src/quadspi.c \
+        stm32/firmware/tools/flash.sh stm32/firmware/test/bench/board.py
 git commit -m "stm32 boot: bootloader stub (PLL1, IWDG1, GD25Q32E in memory-mapped EBh at 80 MHz, jump check), CubeProgrammer flashing, bench UART"
 ```
 
@@ -1804,6 +1856,24 @@ def calls_in(elf, func):
     return set(re.findall(r'\s(?:bl|blx|b\.w)\s+[0-9a-f]+ <([^>+]+)', body.group(1))) if body else None
 
 
+def errata_window(elf):
+    """Instructions between the first QUADSPI_CCR store (offset #20) and the store that disables the
+    QUADSPI (offset 0, same base) in qf_errata_timing, or None when the pattern is missing."""
+    dis = run('arm-none-eabi-objdump', '-d', '--no-show-raw-insn', elf)
+    body = re.search(r'<qf_errata_timing>:\n(.*?)\n\n', dis, re.S)
+    if not body:
+        return None
+    ins = [l.split('\t', 1)[1].strip() for l in body.group(1).splitlines() if ':\t' in l]
+    first = next((i for i, x in enumerate(ins) if re.match(r'str\s+\w+, \[(\w+), #20\]', x)), None)
+    if first is None:
+        return None
+    base = re.match(r'str\s+\w+, \[(\w+), #20\]', ins[first]).group(1)
+    for j in range(first + 1, len(ins)):
+        if re.match(r'str\s+\w+, \[%s\]' % base, ins[j]):
+            return ins[first + 1:j]
+    return None
+
+
 def main():
     build = sys.argv[1]
     failures = []
@@ -1817,6 +1887,11 @@ def main():
     end = max(a + s for a, s in bs.values() if 0x08000000 <= a < 0x08020000)
     check(bs['.isr_vector'][0] == 0x08000000, 'boot: vector table at 0x08000000')
     check(end - 0x08000000 <= BOOT_MAX, 'boot: %d bytes of internal flash <= %d' % (end - 0x08000000, BOOT_MAX))
+    # ES0392 §2.7.4: CCR, CCR, CR within 127 kernel clocks, so nothing but stores and register moves between.
+    w = errata_window(build + '/boot.elf')
+    branch = re.compile(r'(b|bl|blx|bx|cbz|cbnz)(\.[nw])?$|b(eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)(\.[nw])?$|it[te]*$')
+    check(w is not None and len(w) <= 4 and not any(branch.match(x.split()[0]) for x in w),
+          'boot: QUADSPI errata window has no branch (%s)' % ('; '.join(w) if w is not None else 'pattern missing'))
 
     app = build + '/app.elf'
     sym = symbols(app)
@@ -2600,11 +2675,11 @@ The app does not build `cube/app/Src/system_stm32h7xx.c` (B3), `syscalls.c`/`sys
 
 - [ ] **Step 9: Build and run the gate**
 
-Run: `cd stm32/firmware && cmake --preset h750 > /dev/null && cmake --build --preset app 2>&1 | grep -E "warning|error|QSPI:|ITCM:|DTCM:"; cd - > /dev/null; python3 stm32/firmware/tools/check_elf.py stm32/firmware/build/h750`
+Run: `(cd stm32/firmware && cmake --preset h750 > /dev/null && cmake --build --preset app > /tmp/claude-1000/app-build.log 2>&1) && ! grep -E "warning|error" /tmp/claude-1000/app-build.log && grep -E "QSPI:|ITCM:|DTCM:" /tmp/claude-1000/app-build.log && python3 stm32/firmware/tools/check_elf.py stm32/firmware/build/h750`
 Expected:
 - No `warning` or `error` lines.
 - Memory use: `QSPI: ~27 KB`, `ITCM: ~7.6 KB`, `DTCM: ~13 KB`.
-- 27 `ok` lines ending in `elf: ok`. Among them: `vTaskSwitchContext in ITCM (0x00000…)`, `memcpy in ITCM`, and `Reset_Handler calls no memcpy/memset (calls: SystemCoreClockUpdate, __libc_init_array, main, mpu_app_setup)`.
+- 28 `ok` lines ending in `elf: ok`, including `boot: QUADSPI errata window has no branch (…)` with at most a `str` to CCR and a register move inside. Among them: `vTaskSwitchContext in ITCM (0x00000…)`, `memcpy in ITCM`, and `Reset_Handler calls no memcpy/memset (calls: SystemCoreClockUpdate, __libc_init_array, main, mpu_app_setup)`.
 
 - [ ] **Step 10: The gate must catch the loop-to-memset rewrite (Review Focus 3)**
 
@@ -2613,12 +2688,12 @@ At `-O3` GCC turns the zero loop into `memset`, reached through `__memset_veneer
 ```bash
 F=stm32/firmware; cp $F/CMakeLists.txt /tmp/claude-1000/cml.bak
 sed -i 's/APPEND PROPERTY COMPILE_OPTIONS -fno-tree-loop-distribute-patterns/APPEND PROPERTY COMPILE_OPTIONS -O3 -ftree-loop-distribute-patterns/' $F/CMakeLists.txt
-(cd $F && cmake --build --preset app > /dev/null 2>&1); python3 $F/tools/check_elf.py $F/build/h750 | grep -E "FAIL|elf:"
+(cd $F && cmake --build --preset app > /dev/null 2>&1) && python3 $F/tools/check_elf.py $F/build/h750 | grep -E "FAIL|elf:"
 cp /tmp/claude-1000/cml.bak $F/CMakeLists.txt && touch $F/CMakeLists.txt
-(cd $F && cmake --build --preset app > /dev/null 2>&1); python3 $F/tools/check_elf.py $F/build/h750 | tail -1
+(cd $F && cmake --build --preset app > /dev/null 2>&1) && python3 $F/tools/check_elf.py $F/build/h750 | tail -1
 ```
 
-Expected: `FAIL app: Reset_Handler calls no memcpy/memset (calls: …__memset_veneer…)` and `elf: 1 check(s) failed`, then `elf: ok` after the restore. The `touch` is needed: `cp` keeps the old modification time and CMake would not reconfigure.
+Expected: `FAIL app: Reset_Handler calls no memcpy/memset (calls: …__memset_veneer…)` and `elf: 1 check(s) failed`, then `elf: ok` after the restore. The `touch` is needed: `cp` keeps the old modification time and CMake would not reconfigure. If a build fails, nothing is printed: the check never runs on a stale ELF.
 
 - [ ] **Step 11: The app on the board**
 
@@ -2649,14 +2724,14 @@ git commit -m "stm32 app: XIP Reset_Handler (FPU, SRAM clocks, copy tables, MPU 
 
 **Files:**
 - Create: `stm32/firmware/test/bench/boot_check.py`
-- Create: `stm32/firmware/tools/openocd/sbiot-h750.cfg`
+- Create: `stm32/firmware/tools/openocd/sbiot-h750.cfg`, `stm32/firmware/tools/openocd/qspi_hostile.tcl`
 - Modify: `stm32/README.md` (Commands and Status)
 
 **Interfaces:**
 - Consumes:
   - from Task 4: `board.listen`, `board.hard_reset`, `flash.sh`, and the boot log lines;
   - from Task 5: the app log lines and the console commands `i`, `c`, `r`, `w`.
-- Produces: `python3 stm32/firmware/test/bench/boot_check.py BUILD_DIR [--cold]`, which prints `bench: ok`.
+- Produces: `python3 stm32/firmware/test/bench/boot_check.py BUILD_DIR [--hostile | --cold]`, which prints `bench: ok`.
 
 - [ ] **Step 1: Write the bench check**
 
@@ -2721,7 +2796,15 @@ def infos(lines):
 def main():
     build = sys.argv[1]
     app_bin = open(os.path.join(build, 'app.bin'), 'rb').read()
-    if '--cold' in sys.argv:
+    if '--hostile' in sys.argv:
+        # Review Focus 1: a reset while the flash is in continuous-read mode or busy erasing.
+        for proc, what in [('qspi_hostile_continuous', 'continuous-read mode'), ('qspi_hostile_erase', 'a running sector erase')]:
+            for n in range(3):
+                out = []
+                b = boots(board.listen(5, during=lambda: out.append(board.openocd(proc))))
+                note = [l for l in ''.join(out).splitlines() if l.startswith('hostile:')]
+                check(len(b) == 1 and len(note) == 1, 'reset during %s %d: one complete boot (%s)' % (what, n + 1, note))
+    elif '--cold' in sys.argv:
         print('power-cycle the board now (60 s)...', flush=True)
         b = boots(board.listen(60))
         check(len(b) >= 1, 'cold boot reaches the app')
@@ -2774,14 +2857,14 @@ ok   IWDG1 reset 3: …
 bench: ok
 ```
 
-- [ ] **Step 3: A debugger halt does not trip IWDG1 (Review Focus 4)**
+- [ ] **Step 3: OpenOCD files, a debugger halt, and resets from hostile flash states (Review Focus 1, 4)**
 
 Create `stm32/firmware/tools/openocd/sbiot-h750.cfg`:
 
 ```tcl
 # OpenOCD for debugging the SBIOT-H750 board through the ST-Link (spec §12.4). Flashing goes through
 # tools/flash.sh: stmqspi cannot read this board's flash, so no QSPI flash bank is declared.
-#   openocd -f stm32/firmware/tools/openocd/sbiot-h750.cfg      (Windows build, from WSL: see README)
+# From WSL use test/bench/board.py's openocd(), which runs the Windows build with the right paths.
 source [find interface/stlink.cfg]
 transport select swd
 set CHIPNAME stm32h750vbt6
@@ -2790,23 +2873,79 @@ source [find target/stm32h7x.cfg]
 reset_config none
 ```
 
-Halt the running app for 5 s, resume it, then ask it for its uptime:
+Create `stm32/firmware/tools/openocd/qspi_hostile.tcl`:
+
+```tcl
+# Puts the running board's GD25Q32E into states a warm reset can meet, then resets the MCU with
+# SYSRESETREQ (Plan 02, Review Focus 1). Each proc halts the core, leaves memory-mapped mode with
+# ABORT, sends raw QUADSPI commands (bank 2 stays selected in CR) and ends with "reset run".
+set QSPI 0x52005000
+proc qspi_wait {} { global QSPI; while {[expr {[read_memory [expr {$QSPI + 0x08}] 32 1] & 0x20}]} {} }
+proc qspi_cmd {ccr {ar ""} {dlr ""}} {
+    global QSPI
+    mww [expr {$QSPI + 0x0C}] 0x1B                       ;# FCR: clear the flags
+    if {$dlr ne ""} { mww [expr {$QSPI + 0x10}] $dlr }   ;# DLR: data length - 1
+    mww [expr {$QSPI + 0x14}] $ccr                       ;# CCR: starts at once without an address phase
+    if {$ar ne ""} { mww [expr {$QSPI + 0x18}] $ar }     ;# AR: starts the command
+}
+proc qspi_leave_mapped {} { global QSPI; halt; mmw $QSPI 0x2 0; qspi_wait }
+
+# EBh with M7-0 = A0h (M5-4 = 10b): afterwards the flash takes the next clocks as an address.
+# CCR: indirect read (01), data 4 lines, 4 dummy, alternate 8 bit on 4 lines, address 24 bit on
+# 4 lines, instruction on 1 line, EBh.
+proc qspi_hostile_continuous {} {
+    global QSPI
+    qspi_leave_mapped
+    mww [expr {$QSPI + 0x1C}] 0xA0                       ;# ABR
+    qspi_cmd 0x0710EDEB 0x0 3
+    sleep 2
+    set d [read_memory [expr {$QSPI + 0x20}] 32 1]       ;# one 32-bit read pops the 4 bytes at 0x0 (header: FFh)
+    echo "hostile: continuous-read mode entered (read $d)"
+    reset run
+}
+
+# WREN, then sector erase 20h of the spare block 0x3E0000 (tSE 45-300 ms): the reset lands while
+# the flash is busy. SR1 is read back to show WIP = 1.
+proc qspi_hostile_erase {} {
+    global QSPI
+    qspi_leave_mapped
+    qspi_cmd 0x00000106; qspi_wait                       ;# 06h
+    qspi_cmd 0x00002520 0x003E0000; qspi_wait            ;# 20h, address on 1 line
+    qspi_cmd 0x05000105 "" 0; sleep 1                    ;# 05h: read SR1, 1 byte
+    set sr1 [read_memory [expr {$QSPI + 0x20}] 8 1]
+    echo "hostile: sector erase running (SR1 $sr1)"
+    reset run
+}
+```
+
+The erase hits only the spare block 0x903E0000 used by the loader proof of Task 4.
+
+First check that halting the running app for 5 s causes no reset (IWDG1 is frozen while halted), then ask the app for its uptime:
 
 ```bash
-O=/mnt/c/Users/linh_bui/opt/xpack-openocd-0.12.0-7
-(cd /mnt/c && $O/bin/openocd.exe -s "$(wslpath -w $O/openocd/scripts)" \
-  -f "$(wslpath -w $PWD/stm32/firmware/tools/openocd/sbiot-h750.cfg)" \
-  -c "init; halt; sleep 5000; resume; sleep 300; echo \"rsr=[read_memory 0x58024530 32 1]\"; shutdown" 2>&1 | grep rsr=)
-python3 -c "
+python3 - <<'EOF'
 import sys; sys.path.insert(0, 'stm32/firmware/test/bench'); import board
-for ms, l in board.listen(2.5, sends=[(1.5, 'i')]): print(l)"
+out = board.openocd('halt; sleep 5000; resume; sleep 300; echo "rsr=[read_memory 0x58024530 32 1]"')
+print([l for l in out.splitlines() if l.startswith('rsr=')])
+for ms, l in board.listen(2.5, sends=[(1.5, 'i')]): print(l)
+EOF
 ```
 
 Expected:
-- `rsr=0x0`, because the app cleared RSR at boot and nothing has reset since.
+- `['rsr=0x0']`, because the app cleared RSR at boot and nothing has reset since.
 - An `app: uptime_ms=…` line whose uptime exceeds the RTOS tick by about 5 000. TIM2 keeps counting while the core is halted; the tick stops.
 - `wdog_max_gap_us` near 5 200 000.
 - No `SBIOT-H750 boot` line.
+
+Then the hostile resets:
+
+Run: `python3 stm32/firmware/test/bench/boot_check.py stm32/firmware/build/h750 --hostile`
+Expected:
+- three `ok   reset during continuous-read mode N: one complete boot (['hostile: continuous-read mode entered (read 0xffffffff)'])` lines;
+- three `ok   reset during a running sector erase N: one complete boot (['hostile: sector erase running (SR1 0x03)'])` lines, where SR1 0x03 means WIP and WEL are set;
+- `bench: ok`.
+
+If the continuous-read case fails while the erase case passes, the 10-clock exit of `qf_init` is the suspect.
 
 - [ ] **Step 4: Cold boot (needs the user once)**
 
@@ -2817,7 +2956,7 @@ Expected: `ok   cold boot reaches the app`, `ok   cold boot: PORRSTF set (rsr=�
 
 - [ ] **Step 5: BOR level 2 (spec §11.4)**
 
-Option byte BOR_LEV = 2 (reset below about 2.7 V; the board runs at 3.34 V). The value is kept across power cycles and can be changed back over SWD.
+Option byte BOR_LEV = 2: VBOR2, reset at 2.31 V falling and released at 2.41 V rising (typical values, DS12556 table 25); the board runs at 3.34 V. The value is kept across power cycles and can be changed back over SWD.
 
 ```bash
 CLI="/mnt/c/Program Files/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI.exe"
@@ -2842,7 +2981,7 @@ python3 firmware/tools/check_pins.py                        # .ioc files against
 (cd firmware && cmake --preset h750 && cmake --build --preset boot && cmake --build --preset app)
 python3 firmware/tools/check_elf.py firmware/build/h750     # layout and "app never touches clocks/QSPI/MPU"
 firmware/tools/flash.sh both                                # SWD: boot.bin to 0x08000000, app.bin to QSPI
-python3 firmware/test/bench/boot_check.py firmware/build/h750   # resets, watchdog, XIP CRC on the board
+python3 firmware/test/bench/boot_check.py firmware/build/h750   # resets, watchdog, XIP CRC on the board (--hostile, --cold)
 ```
 
 Replace the `## Status` paragraph with:
@@ -2869,7 +3008,7 @@ python3 stm32/firmware/tools/check_pins.py | tail -1 && python3 stm32/firmware/t
 python3 stm32/firmware/tools/check_elf.py stm32/firmware/build/h750 | tail -1
 python3 stm32/firmware/tools/check_schema.py | tail -1
 sha256sum -c /home/linh/projects/SBIOT-Gateway/.git/esp-tree-before.sha256 --quiet && echo esp-untouched
-git add stm32/firmware/test/bench/boot_check.py stm32/firmware/tools/openocd/sbiot-h750.cfg stm32/README.md
+git add stm32/firmware/test/bench/boot_check.py stm32/firmware/tools/openocd stm32/README.md
 git commit -m "stm32 bench: boot_check (pin, software, IWDG1 resets, XIP CRC, TIM2 vs tick, cold boot), OpenOCD debug config, README"
 ```
 
@@ -2882,6 +3021,6 @@ Expected: `host=0`, `pins: ok`, `test_check_pins: ok`, `elf: ok`, `consistent`, 
 - `cubegen.sh` run twice in a row leaves `git status stm32/firmware/cube` clean.
 - On the board:
   - **Task 4, Step 10:** with a blank QSPI the bootloader refuses to jump and does not reset.
-  - **Task 6, Steps 2–5:** `boot_check.py` prints `bench: ok` for warm and cold boots; a 5 s debugger halt causes no reset; BOR_LEV is 2.
+  - **Task 6, Steps 2–5:** `boot_check.py` prints `bench: ok` for warm boots, hostile flash states (`--hostile`) and a cold boot (`--cold`); a 5 s debugger halt causes no reset; BOR_LEV is 2.
 - The ESP32 tree is untouched (`.git/esp-tree-before.sha256`).
 - Codex approves the plan before execution and the branch after it. Then a PR goes to SBIOT-H750 with STM32 files only.

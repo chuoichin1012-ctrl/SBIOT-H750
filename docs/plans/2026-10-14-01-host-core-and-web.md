@@ -26,11 +26,11 @@
 
 ## Review Focus
 
-1. A config saved by older firmware that still contains `telnet`, `telnetPort` or `rfc2217` must still load at boot (`cfg_load`). The keys silently disappear. Pinned in Task 2, `test_stm32_scope`.
+1. A config saved by older firmware that still contains `telnet`, `telnetPort` or `rfc2217` must still load at boot (`cfg_load`). Those keys disappear, and every valid key (`hostname`, `baudRate`, `tls`) is kept. Pinned in Task 2, `test_stm32_scope`, for both `system` and `port1`.
 2. Values that exist only because the board has two ports must be **accepted**, not just range-checked: `websocketTarget` = 3 (LOG), `edgeReport.channel` = 2, an Edge device with `uart` = 2, IO points `AI2`/`DI2`. Pinned in Task 2, `test_two_port_values` and `test_stm32_scope`.
 3. The UART2 socket page must show the TLS fields and the certificate upload for `port2` in TCP client mode. Pinned in Task 3, Step 6 (mock check).
 4. The Edge page must count against 100, not 300. Pinned in Task 3, Step 6 (mock check `0 of 100 points used`) and Step 1 (grep).
-5. The ESP32 tree must stay byte-for-byte unchanged. Those paths are untracked, so `git status` cannot see edits there. Pinned by the checksum snapshot in Task 1, Step 0, compared in Task 3, Step 8.
+5. The ESP32 tree must stay byte-for-byte unchanged: every source, config, tool and managed-component file. Only the generated build directories are excluded. Those paths are untracked, so `git status` cannot see edits there. Pinned by the checksum snapshot in Task 1, Step 0, compared in Task 3, Step 8.
 
 ---
 
@@ -57,11 +57,18 @@ These paths are not tracked by git yet, so `git status` cannot show changes in t
 
 ```bash
 find firmware src public index.html package.json package-lock.json vite.config.ts tsconfig.json -type f \
-     -not -path 'firmware/build*' -not -path 'firmware/managed_components/*' | sort | xargs sha256sum > .git/esp-tree-before.sha256
+     -not -path 'firmware/build/*' -not -path 'firmware/build-qemu/*' -not -path 'firmware/test/host/build/*' \
+     -not -path '*/__pycache__/*' | sort | xargs sha256sum > .git/esp-tree-before.sha256
 wc -l .git/esp-tree-before.sha256
 ```
 
 Expected: a line count of a few hundred files. The file lives inside `.git/`, so it is never committed.
+
+**What this covers:**
+- every ESP32 source, config and tool file, including `firmware/managed_components/` (downloaded component sources), `sdkconfig*`, `partitions.csv` and `dependencies.lock`;
+- the root UI files.
+
+**Excluded, because they only hold generated output:** `firmware/build/`, `firmware/build-qemu/`, `firmware/test/host/build/` and `__pycache__/`. Nothing in this plan writes to them.
 
 - [ ] **Step 1: Copy the sources**
 
@@ -265,12 +272,21 @@ static void test_stm32_scope(void)
     CHECK(d && !cJSON_GetObjectItem(d, "telnet") && !cJSON_GetObjectItem(d, "telnetPort"), "system default must not carry telnet");
     cJSON_Delete(d);
 
-    // A copy stored by older firmware still loads; the dropped keys just disappear.
+    // Copies stored by older firmware still load: the dropped keys disappear, valid ones are kept.
     cJSON *old = cJSON_Parse("{\"telnet\":1,\"telnetPort\":2323,\"hostname\":\"gw\"}");
     char err[160] = "";
     cJSON *ld = cfg_load(&ENV, "system", old, err, sizeof err);
-    CHECK(ld && !cJSON_GetObjectItem(ld, "telnet") && strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(ld, "hostname")), "gw") == 0,
+    CHECK(ld && !cJSON_GetObjectItem(ld, "telnet") && !cJSON_GetObjectItem(ld, "telnetPort") &&
+              strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(ld, "hostname")), "gw") == 0,
           "stored system with telnet must load without it: %s", err);
+    cJSON_Delete(ld);
+    cJSON_Delete(old);
+    old = cJSON_Parse("{\"rfc2217\":1,\"baudRate\":9600,\"tls\":1}");
+    err[0] = 0;
+    ld = cfg_load(&ENV, "port1", old, err, sizeof err);
+    CHECK(ld && !cJSON_GetObjectItem(ld, "rfc2217") && cJSON_GetNumberValue(cJSON_GetObjectItem(ld, "baudRate")) == 9600 &&
+              cJSON_GetNumberValue(cJSON_GetObjectItem(ld, "tls")) == 1,
+          "stored port1 with rfc2217 must load without it and keep the rest: %s", err);
     cJSON_Delete(ld);
     cJSON_Delete(old);
 
@@ -313,9 +329,10 @@ Expected: exits non-zero with exactly these failures, nothing else:
 - `port default must not carry rfc2217`
 - `system default must not carry telnet`
 - `stored system with telnet must load without it`
+- `stored port1 with rfc2217 must load without it and keep the rest`
 - an `edgeDevices accepted [...]` line, plus `message "" lacks "At most 100 points across all devices."`
 
-That is `8 check(s) failed`. The two-port value checks already pass, because they depend only on the environment. They are there to stop anyone from narrowing the ranges again.
+That is `9 check(s) failed`. The two-port value checks already pass, because they depend only on the environment. They are there to stop anyone from narrowing the ranges again.
 
 - [ ] **Step 3: Change the schema**
 
@@ -476,7 +493,7 @@ Run: `npm --prefix stm32/web run dev:mock`, open the printed URL, and sign in as
 
 | Page | Expected |
 |---|---|
-| `#/port/2/socket` | Set Working mode to **TCP client**. The **TLS** select appears. Set it to TLS 1.2. **Certificate check** and the certificate upload panel appear |
+| `#/port/2/socket` | Set Working mode to **TCP client**. The **TLS** select appears. Set it to TLS 1.2: **Certificate check** appears, with no upload rows yet (the default is None). Set Certificate check to **Verify server certificate**: one row, **Server CA certificate**, appears. Set it to **Verify both sides**: **Client certificate** and **Client private key** rows appear too. Upload any PEM file on the CA row and confirm in the browser's network tab that the request goes to `api/cert?scope=port2&kind=ca` |
 | `#/port/1/serial` | No "Baud rate sync (RFC 2217)" field |
 | `#/system` | No Telnet fields. "Websocket connects to" offers Off, UART1, UART2 and "Gateway log and shell" |
 | `#/edge/acquisition` | The counter reads `… of 100 points used` |
@@ -495,7 +512,8 @@ Expected: exit 0. `stm32/firmware/components/webapi/www/` contains `www_files.c`
 ```bash
 sha256sum --quiet -c .git/esp-tree-before.sha256 && echo "no file changed or deleted"
 find firmware src public index.html package.json package-lock.json vite.config.ts tsconfig.json -type f \
-     -not -path 'firmware/build*' -not -path 'firmware/managed_components/*' | sort \
+     -not -path 'firmware/build/*' -not -path 'firmware/build-qemu/*' -not -path 'firmware/test/host/build/*' \
+     -not -path '*/__pycache__/*' | sort \
   | diff <(cut -c67- .git/esp-tree-before.sha256) - && echo "no file added"
 ```
 

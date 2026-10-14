@@ -193,7 +193,7 @@ export function PortPage(props: { path?: string; n?: string; tab?: string }) {
       ) : (
         <Panel title="Network socket">
           <Fields defs={socket} {...p} />
-          {tls && <CertUpload scope={`port${n}`} verify={Number(f.values.tlsVerify)} />}
+          {tls && <CertUpload key={`port${n}`} scope={`port${n}`} verify={Number(f.values.tlsVerify)} />}
         </Panel>
       )}
       <SaveBar

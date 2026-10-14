@@ -68,6 +68,14 @@ export function useForm(load: () => Promise<Values>, defs: FieldDef[], deps: unk
   const [touched, setTouched] = useState(false);
   const [ready, setReady] = useState(false);
 
+  // Another document (e.g. a different UART): never show or save the previous one's values.
+  useEffect(() => {
+    setReady(false);
+    setValues({});
+    setTouched(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+
   useEffect(() => {
     if (src.data) {
       setValues(coerce(src.data, defs));

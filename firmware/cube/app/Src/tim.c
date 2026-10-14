@@ -63,7 +63,7 @@ void MX_TIM2_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN TIM2_Init 2 */
-
+  HAL_TIM_Base_Start(&htim2);  // now_us() and HAL_GetTick() count from here
   /* USER CODE END TIM2_Init 2 */
 
 }

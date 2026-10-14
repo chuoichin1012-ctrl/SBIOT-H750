@@ -63,3 +63,28 @@ target_compile_options(boot PRIVATE -Os)
 target_link_options(boot PRIVATE -T${CUBE}/boot/stm32h750vbtx_flash.ld -Wl,-Map=${CMAKE_BINARY_DIR}/boot.map)
 set_target_properties(boot PROPERTIES LINK_DEPENDS ${CUBE}/boot/stm32h750vbtx_flash.ld)
 bin_from_elf(boot)
+
+# ---- app: CubeMX init code for app.ioc (not the clock or QSPI parts), FreeRTOS, app/ ----
+hal_sources(APP_HAL ${HAL_APP})
+set(APP_CUBE
+  ${CUBE}/app/Src/main.c ${CUBE}/app/Src/gpio.c ${CUBE}/app/Src/tim.c ${CUBE}/app/Src/usart.c
+  ${CUBE}/app/Src/memorymap.c ${CUBE}/app/Src/stm32h7xx_it.c ${CUBE}/app/Src/stm32h7xx_hal_msp.c
+  ${SYSTEM_C}
+  ${CUBE}/app/startup_stm32h750xx.s)  # vector table only: its weak Reset_Handler is replaced
+set(APP_RTOS
+  ${RTOS}/tasks.c ${RTOS}/queue.c ${RTOS}/list.c ${RTOS}/timers.c
+  ${RTOS}/portable/GCC/ARM_CM4F/port.c)
+set(APP_OWN
+  app/startup_app.c app/mpu_app.c app/app_main.c app/hal_tick.c app/image_header.c
+  ${BOARD}/board_io.c ${BOARD}/now_us.c ${BOARD}/tick64.c ${BOARD}/wdog.c ${BOARD}/blog.c ${BOARD}/crc32.c
+  ${BOARD}/syscalls.c)
+add_executable(app ${APP_CUBE} ${APP_HAL} ${APP_RTOS} ${APP_OWN})
+image_includes(app ${CUBE}/app)
+target_include_directories(app PRIVATE app ${RTOS}/include ${RTOS}/portable/GCC/ARM_CM4F)
+set_source_files_properties(${APP_OWN} TARGET_DIRECTORY app PROPERTIES COMPILE_OPTIONS "${STRICT}")
+# The copy loops of Reset_Handler must stay loops: memcpy/memset run from ITCM, which they fill.
+set_property(SOURCE app/startup_app.c TARGET_DIRECTORY app APPEND PROPERTY COMPILE_OPTIONS -fno-tree-loop-distribute-patterns)
+target_compile_options(app PRIVATE -O2)
+target_link_options(app PRIVATE -T${CMAKE_SOURCE_DIR}/app/app.ld -Wl,-Map=${CMAKE_BINARY_DIR}/app.map)
+set_target_properties(app PROPERTIES LINK_DEPENDS ${CMAKE_SOURCE_DIR}/app/app.ld)
+bin_from_elf(app)

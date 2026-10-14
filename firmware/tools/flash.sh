@@ -4,7 +4,8 @@
 #   stm32/firmware/tools/flash.sh boot|app|both|blank [BUILD_DIR]
 # "blank" programs the first 4 KB of the QSPI slot to 0xFF (header and vector table erased).
 set -euo pipefail
-what=${1:?boot, app, both or blank}
+what=${1:-}
+case "$what" in boot|app|both|blank) ;; *) echo "usage: flash.sh boot|app|both|blank [BUILD_DIR]" >&2; exit 2 ;; esac
 build=$(cd "${2:-$(dirname "$0")/../build/h750}" && pwd)
 CLI=${CUBEPROG_CLI:-"/mnt/c/Program Files/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI.exe"}
 LOADER="$(dirname "$CLI")/ExternalLoader/STM32H750VBT6_GD25Q32ESIG.stldr"

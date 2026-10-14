@@ -32,25 +32,41 @@ $p.Close()
 '''
 
 
-def listen(seconds, sends=(), during=None):
+def listen(seconds, sends=(), during=None, during_timeout=120):
     """Reads UART7 for `seconds`. sends[i] = (at_s, text) is written at at_s; during() runs once the
-    port is open. Returns [(ms, line)]."""
+    port is open. Returns [(ms, line)] only after during() has finished: it raises RuntimeError when
+    during() raised, or when it is still running during_timeout seconds after the window closed (so
+    the next case never starts while this one still drives the board)."""
     at = ','.join(str(int(t * 1000)) for t, _ in sends)
     tx = ','.join("'%s'" % text for _, text in sends)
     script = _PS % {'port': COM, 'ms': int(seconds * 1000), 'at': at, 'tx': tx}
     enc = base64.b64encode(script.encode('utf-16-le')).decode()
     proc = subprocess.Popen(['powershell.exe', '-NoProfile', '-EncodedCommand', enc], cwd='/mnt/c',
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-    lines = []
+    lines, errors, worker = [], [], None
+
+    def run():
+        try:
+            during()
+        except Exception as e:  # noqa: BLE001 - handed to the caller below
+            errors.append(e)
+
     for raw in proc.stdout:
         ms, sep, line = raw.rstrip('\n').partition('|')
         if line == '__ready__':  # the port is open and drained: only now may during() act on the board
             if during:
-                threading.Thread(target=during).start()
+                worker = threading.Thread(target=run, daemon=True)
+                worker.start()
             continue
         if sep and ms.isdigit():
             lines.append((int(ms), line))
     proc.wait()
+    if worker:
+        worker.join(during_timeout)
+        if worker.is_alive():
+            raise RuntimeError('during() still running %d s after the listen window' % during_timeout)
+        if errors:
+            raise RuntimeError('during() failed: %s' % errors[0])
     return lines
 
 

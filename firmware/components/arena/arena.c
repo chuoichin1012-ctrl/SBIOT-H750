@@ -1,6 +1,7 @@
 #include "arena.h"
 
 #include <assert.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include "cJSON.h"
 #include "tlsf.h"
@@ -67,8 +68,9 @@ void arena_free(arena_t *a, void *p)
 
 bool arena_owns(const arena_t *a, const void *p)
 {
-    const char *c = p, *m = a->mem;
-    return c >= m && c < m + a->size;
+    // Compared as integers: relational operators on pointers into different objects are undefined (C11 6.5.8p5).
+    uintptr_t c = (uintptr_t)p, m = (uintptr_t)a->mem;
+    return p && c >= m && c - m < a->size;
 }
 
 arena_t *arena_current(void) { return s_current; }

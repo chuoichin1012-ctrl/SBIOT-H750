@@ -1,5 +1,6 @@
 // Host tests for components/arena: make -C stm32/firmware/test/host
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "arena.h"
 #include "cJSON.h"
@@ -45,6 +46,14 @@ int main(void)
 #if defined(__SANITIZE_ADDRESS__)
     CHECK(__asan_address_is_poisoned(region + 1024), "the region is poisoned after the scope");
 #endif
+
+    // Ownership is decided by address range, with no pointer comparison across objects.
+    CHECK(!arena_owns(&a, NULL), "NULL is not in the arena");
+    CHECK(arena_owns(&a, region) && arena_owns(&a, region + sizeof region - 1), "first and last byte are in the arena");
+    CHECK(!arena_owns(&a, region + sizeof region), "one past the end is not in the arena");
+    char *elsewhere = malloc(16);
+    CHECK(!arena_owns(&a, elsewhere), "a heap block is not in the arena");
+    free(elsewhere);
 
     // A new scope starts from an empty allocator and a fresh peak.
     arena_begin(&a);

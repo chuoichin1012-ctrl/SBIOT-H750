@@ -12,7 +12,7 @@ all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/
 	$(BUILD)/test_cfgmodel
 	$(BUILD)/test_proto
 	$(BUILD)/test_jsonscan
-	$(BUILD)/test_arena
+	ASAN_OPTIONS=detect_invalid_pointer_pairs=2 $(BUILD)/test_arena
 	$(BUILD)/test_text_small
 	$(BUILD)/test_edge_text
 	$(BUILD)/test_oom
@@ -29,9 +29,10 @@ $(BUILD)/test_jsonscan: test_jsonscan.c ../../components/proto/jsonscan.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
 
+# pointer-compare: ownership checks must not compare pointers into different objects (C11 6.5.8p5).
 $(BUILD)/test_arena: test_arena.c $(ARENA) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) $^ -lm -o $@
+	$(CC) $(CFLAGS) -fsanitize=pointer-compare $^ -lm -o $@
 
 $(BUILD)/test_text_small: test_text_small.c $(CFG) $(ARENA) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)

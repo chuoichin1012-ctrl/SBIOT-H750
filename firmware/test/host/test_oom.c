@@ -33,6 +33,12 @@ static void *flaky_malloc(size_t n)
     return malloc(n);
 }
 
+static bool discard(void *ctx, const char *s, size_t n)
+{
+    (void)ctx, (void)s, (void)n;
+    return true;
+}
+
 typedef cfg_result_t (*entry_fn)(const char *text, char *err, size_t errlen);
 
 static char s_out[CFG_SMALL_BUF];
@@ -41,6 +47,11 @@ static cfg_result_t small(const char *text, char *err, size_t errlen)
 {
     return cfg_validate_text(&ENV, s_name, text, strlen(text), NULL, s_out, sizeof s_out, err, errlen);
 }
+static cfg_result_t edge(const char *text, char *err, size_t errlen)
+{
+    return cfg_edge_text(&ENV, text, strlen(text), true, CFG_EDGE_MAX, discard, NULL, err, errlen);
+}
+
 /** Runs `fn` once clean to count its allocations, then once per allocation with that one failing. */
 static void each_allocation(entry_fn fn, const char *text, const char *label)
 {
@@ -70,6 +81,15 @@ int main(void)
     each_allocation(small, "[{\"topic\":\"a/b\",\"identifier\":\"x\"},{\"topic\":\"c\",\"qos\":2}]", "mqttPublish");
     s_name = "port1";
     each_allocation(small, "{\"baudRate\":300}", "port1 schema error");
+
+    each_allocation(edge,
+                    "[{\"name\":\"io\",\"source\":\"io\",\"nodes\":[{\"ioPoint\":\"AI2\"},{\"ioPoint\":\"DO1\"}]},"
+                    "{\"name\":\"v\",\"source\":\"virtual\",\"addr\":\"200\",\"nodes\":[{\"name\":\"calc\",\"formula\":\"=%s*2\"}]},"
+                    "{\"name\":\"m\",\"protocol\":\"dlt645\",\"addr\":\"123456789012\",\"nodes\":[{\"name\":\"kwh\",\"di\":\"00010000\",\"mapEn\":true,\"mapAddr\":10}]},"
+                    "{\"name\":\"rtu\",\"addr\":\"5\",\"mapEn\":true,\"mapAddr\":6,\"nodes\":[{\"name\":\"t\",\"reg\":3,\"dtype\":\"float32_abcd\"}]}]",
+                    "edgeDevices (valid)");
+    each_allocation(edge, "[{\"name\":\"a\",\"nodes\":[{\"name\":\"p\"}]},{\"name\":\"b\",\"nodes\":[{\"name\":\"p\"}]}]",
+                    "edgeDevices (schema error)");
 
     printf(failures ? "%d FAILED\n" : "oom: all tests passed\n", failures);
     return failures != 0;

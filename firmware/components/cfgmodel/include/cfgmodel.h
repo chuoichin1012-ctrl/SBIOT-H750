@@ -83,6 +83,20 @@ unsigned json_alloc_failures(void);
 cfg_result_t cfg_validate_text(const cfg_env_t *env, const char *name, const char *text, size_t len,
                                const cJSON *current, char *out, size_t out_size, char *err, size_t errlen);
 
+/** Receives the normalised edgeDevices text in order; returns false to stop. */
+typedef bool (*cfg_emit_fn)(void *ctx, const char *text, size_t len);
+
+/**
+ * edgeDevices from JSON text, one device header and one node at a time, never
+ * building the whole tree. With `strict` it applies cfg_validate's save-time
+ * rules, without them cfg_load's. For any valid JSON the emitted text and the
+ * first error message are byte-identical to cfg_validate / cfg_load followed
+ * by cJSON_PrintUnformatted. Emitted text is only meaningful when the result
+ * is CFG_OK: a caller writes it to a new generation and commits it only then.
+ */
+cfg_result_t cfg_edge_text(const cfg_env_t *env, const char *text, size_t len, bool strict, size_t max_out,
+                           cfg_emit_fn emit, void *ctx, char *err, size_t errlen);
+
 #ifdef __cplusplus
 }
 #endif

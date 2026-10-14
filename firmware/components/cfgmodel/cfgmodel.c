@@ -669,3 +669,349 @@ cfg_result_t cfg_validate_text(const cfg_env_t *env, const char *name, const cha
     if (!fits) return fail(err, errlen, "These settings are too large.", NULL, NULL), CFG_TOO_LARGE;
     return CFG_OK;
 }
+
+/** What the save-time rules need to know about one device, kept between passes. */
+typedef struct {
+    char name[17];
+    char addr[13];
+    bool dlt, own, virt, io, map_en;
+    int map_addr;
+} edev_t;
+
+/** What the save-time rules need to know about one point. */
+typedef struct {
+    int dev;
+    char name[17];
+    char di[9];
+    int fc, reg, regs, map_addr;
+    bool is_bool, map_en;
+} enode_t;
+
+typedef struct {
+    edev_t dev[64];
+    enode_t node[MAX_NODES];
+    int ndev, nnode;
+} esum_t;
+
+typedef struct {
+    cfg_emit_fn emit;
+    void *ctx;
+    size_t used, max;
+    cfg_result_t r;
+} eout_t;
+
+static bool out_put(eout_t *o, const char *s, size_t n)
+{
+    if (o->r != CFG_OK) return false;
+    if (o->used + n > o->max) return o->r = CFG_TOO_LARGE, false;
+    if (!o->emit(o->ctx, s, n)) return o->r = CFG_ABORTED, false;
+    o->used += n;
+    return true;
+}
+
+/** Builds the object cJSON would see, keeping only the schema's keys (first occurrence wins later). */
+static cJSON *pick(js_span_t obj, const field_t *fields, size_t n)
+{
+    cJSON *o = cJSON_CreateObject();
+    if (!o) return NULL;
+    js_iter_t it;
+    js_span_t k, v;
+    js_iter_init(&it, obj);
+    while (js_iter_next(&it, &k, &v)) {
+        for (size_t i = 0; i < n; i++) {
+            if (!js_key_is(k, fields[i].key, false)) continue;
+            cJSON *val = cJSON_ParseWithLength(v.p, v.n);
+            if (!val || !cJSON_AddItemToObject(o, fields[i].key, val)) {  // the key copy can fail too
+                cJSON_Delete(val);
+                cJSON_Delete(o);
+                return NULL;
+            }
+            break;
+        }
+    }
+    return o;
+}
+
+/** The value of the first member named "nodes" in any case, as cJSON_GetObjectItem finds it. */
+static js_span_t nodes_of(js_span_t dev)
+{
+    js_iter_t it;
+    js_span_t k, v, none = {"", 0};
+    if (js_type(dev) != JS_OBJECT) return none;
+    js_iter_init(&it, dev);
+    while (js_iter_next(&it, &k, &v))
+        if (js_key_is(k, "nodes", true)) return v;
+    return none;
+}
+
+/** One device through the header schema: NULL with `err` set on a schema error, or on no memory. */
+static cJSON *edge_header(const cfg_env_t *env, js_span_t dev, const cJSON *base, char *err, size_t errlen)
+{
+    if (js_type(dev) != JS_OBJECT) return fail(err, errlen, "Expected an object for %s.", "edgeDevices", NULL), NULL;
+    cJSON *in = pick(dev, device_fields, N(device_fields));
+    if (!in) return NULL;
+    cJSON *s = object(env, "edgeDevices", device_fields, N(device_fields), in, base, err, errlen);
+    cJSON_Delete(in);
+    return s;
+}
+
+static int unit_of(const edev_t *d) { return d->map_en ? d->map_addr : d->own ? atoi(d->addr) : -1; }
+
+static bool span_of(const edev_t *d, const enode_t *n, int *fc, long *start, int *width)
+{
+    if (d->dlt && !n->map_en) return false;
+    *fc = d->dlt ? 3 : n->fc;
+    *start = n->map_en ? n->map_addr : n->reg;
+    *width = *fc <= 2 ? 1 : n->regs;
+    return true;
+}
+
+/** slaves_strict() over the summary, in the same order with the same messages. */
+static bool edge_strict(const esum_t *m, char *err, size_t errlen)
+{
+    for (int i = 0; i < m->ndev; i++) {
+        const edev_t *s = &m->dev[i];
+        if (s->dlt && !all_digits(s->addr, 12, 12)) {
+            return fail(err, errlen, "%s: enter the 12-digit meter address.", s->name, NULL), false;
+        }
+        if (!s->dlt && !s->io && !(all_digits(s->addr, 1, 3) && atoi(s->addr) >= 1 && atoi(s->addr) <= 255)) {
+            return fail(err, errlen, "%s: the slave ID must be 1 to 255.", s->name, NULL), false;
+        }
+        int unit = unit_of(s);
+        if (unit >= 0 && (s->map_en || s->virt)) {
+            for (int k = 0; k < m->ndev; k++) {
+                if (k != i && unit_of(&m->dev[k]) == unit) {
+                    return fail(err, errlen, "%s: its slave ID is already answered for %s.", s->name, m->dev[k].name), false;
+                }
+            }
+        }
+        for (int j = 0; j < m->nnode; j++) {
+            const enode_t *n = &m->node[j];
+            if (n->dev != i) continue;
+            if (s->dlt) {
+                bool hex = strlen(n->di) == 8;
+                for (const char *p = n->di; hex && *p; p++) hex = (*p >= '0' && *p <= '9') || ((*p | 0x20) >= 'a' && (*p | 0x20) <= 'f');
+                if (!hex) return fail(err, errlen, "%s: the data identifier must be 8 hex digits.", n->name, NULL), false;
+                if (n->is_bool) return fail(err, errlen, "%s: a meter value is a number, not bool.", n->name, NULL), false;
+            } else if ((n->fc <= 2) != n->is_bool) {
+                return fail(err, errlen, n->fc <= 2 ? "%s: coils and discrete inputs are bool." : "%s: registers hold numbers, not bool.",
+                            n->name, NULL), false;
+            }
+            int width = n->fc <= 2 && !s->dlt ? 1 : n->regs;
+            if (!s->dlt && n->reg + width > 65536) return fail(err, errlen, "%s: its registers run past 65535.", n->name, NULL), false;
+            int xfc, xw;
+            long start;
+            if (!span_of(s, n, &xfc, &start, &xw)) continue;
+            if (start + xw > 65536) return fail(err, errlen, "%s: its mapped registers run past 65535.", n->name, NULL), false;
+            if (!n->map_en) continue;
+            for (int q = 0; q < m->nnode; q++) {
+                const enode_t *o = &m->node[q];
+                int ofc, ow;
+                long ostart;
+                if (o->dev != i || q == j || !span_of(s, o, &ofc, &ostart, &ow) || ofc != xfc) continue;
+                if (start < ostart + ow && ostart < start + xw) {
+                    return fail(err, errlen, "%s: its mapped registers overlap %s.", n->name, o->name), false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+/** cJSON_ReplaceItemInObject that frees `item` when it cannot be placed. */
+static void put_any(cJSON *dst, const char *key, cJSON *item)
+{
+    if (!cJSON_ReplaceItemInObject(dst, key, item)) cJSON_Delete(item);
+}
+
+/** Prints `doc` into buf without reallocation; false when it does not fit (no memory). */
+static bool print_into(const cJSON *doc, char *buf, int size) { return cJSON_PrintPreallocated((cJSON *)doc, buf, size, false); }
+
+cfg_result_t cfg_edge_text(const cfg_env_t *env, const char *text, size_t len, bool strict, size_t max_out,
+                           cfg_emit_fn emit, void *ctx, char *err, size_t errlen)
+{
+    js_span_t root;
+    if (!js_parse_root(text, len, &root)) return fail(err, errlen, NOT_JSON, NULL, NULL), CFG_INVALID;
+    if (js_type(root) != JS_ARRAY) return fail(err, errlen, "Expected a list for %s.", "edgeDevices", NULL), CFG_INVALID;
+    if (js_count(root) > 64) return fail(err, errlen, "Too many entries in %s.", "edgeDevices", NULL), CFG_INVALID;
+
+    enum { PRINT_MAX = 1024 };
+    cfg_result_t r = CFG_NO_MEMORY;
+    esum_t *m = cJSON_malloc(sizeof *m);
+    char *buf = cJSON_malloc(PRINT_MAX);
+    cJSON *dev_base = cJSON_Parse(ITEM_SLAVE), *node_base = cJSON_Parse(ITEM_NODE);
+    cJSON *s = NULL, *o = NULL;
+    eout_t out = {emit, ctx, 0, max_out, CFG_OK};
+    unsigned failures = json_alloc_failures();
+    // A failed allocation can leave a field out of an object (object() skips it) or keep an old
+    // value (a replacement fails), so check before reading any field of a fresh object.
+#define NO_MEMORY_YET() (json_alloc_failures() == failures)
+    if (!m || !buf || !dev_base || !node_base || !NO_MEMORY_YET()) goto done;
+    m->ndev = m->nnode = 0;
+    if (err && errlen) err[0] = '\0';
+
+    // Pass 1, as list(): every device header against the schema, before anything else.
+    js_iter_t it;
+    js_span_t dev;
+    js_iter_init(&it, root);
+    while (js_iter_next(&it, NULL, &dev)) {
+        s = edge_header(env, dev, dev_base, err, errlen);
+        if (!NO_MEMORY_YET()) goto done;
+        if (!s) goto bad;
+        cJSON_Delete(s);
+        s = NULL;
+    }
+
+    // Pass 2, as slaves(): each device's own rules, then its points, emitting the normalised text.
+    int io = 0, virt = 0, eth = 0;
+    // Text past max_out is not kept, but validation goes on: a schema error is the more useful answer.
+    // A refusal from the store stops everything at once.
+#define PUT(s, n)                                                     \
+    do {                                                              \
+        if (!out_put(&out, s, n) && out.r == CFG_ABORTED) goto aborted; \
+    } while (0)
+    PUT("[", 1);
+    js_iter_init(&it, root);
+    while (js_iter_next(&it, NULL, &dev)) {
+        s = edge_header(env, dev, dev_base, err, errlen);
+        if (!NO_MEMORY_YET()) goto done;
+        if (!s) goto bad;
+        const char *src = sget(s, "source");
+        bool is_io = strcmp(src, "io") == 0, is_virt = strcmp(src, "virtual") == 0;
+        if ((is_io && ++io > 1) || (is_virt && ++virt > 1)) {
+            fail(err, errlen, is_io ? "Only one built-in IO device is allowed." : "Only one virtual device is allowed.", NULL, NULL);
+            goto bad;
+        }
+        if (is_io || is_virt) put_any(s, "name", cJSON_CreateString(is_io ? IO_DEVICE : VIRTUAL_DEVICE));
+        if (!NO_MEMORY_YET()) goto done;
+        const char *sname = sget(s, "name");
+        if (!name_ok(sname)) {
+            fail(err, errlen, "Device name \"%s\" is not valid.", sname, NULL);
+            goto bad;
+        }
+        if (!is_io && !is_virt && (strcmp(sname, IO_DEVICE) == 0 || strcmp(sname, VIRTUAL_DEVICE) == 0)) {
+            fail(err, errlen, "\"%s\" is reserved for the built-in IO and virtual devices.", sname, NULL);
+            goto bad;
+        }
+        for (int k = 0; k < m->ndev; k++) {
+            if (strcmp(m->dev[k].name, sname) == 0) {
+                fail(err, errlen, "Device name \"%s\" is used twice.", sname, NULL);
+                goto bad;
+            }
+        }
+        if (strcmp(src, "eth") == 0 && ++eth > MAX_ETH_SLAVES) {
+            fail(err, errlen, "At most 5 Modbus TCP devices.", NULL, NULL);
+            goto bad;
+        }
+        edev_t *d = &m->dev[m->ndev];
+        snprintf(d->name, sizeof d->name, "%s", sname);
+        snprintf(d->addr, sizeof d->addr, "%s", sget(s, "addr"));
+        d->dlt = strcmp(src, "uart") == 0 && strcmp(sget(s, "protocol"), "dlt645") == 0;
+        d->own = (strcmp(src, "uart") == 0 && strcmp(sget(s, "protocol"), "modbus") == 0) || strcmp(src, "eth") == 0 || is_virt;
+        d->virt = is_virt;
+        d->io = is_io;
+        d->map_en = bget(s, "mapEn");
+        d->map_addr = iget(s, "mapAddr");
+        if (!print_into(s, buf, PRINT_MAX)) goto done;
+        cJSON_Delete(s);
+        s = NULL;
+        if (m->ndev) PUT(",", 1);
+        PUT(buf, strlen(buf) - 1);  // the header without its closing brace
+        PUT(",\"nodes\":[", 10);
+
+        js_iter_t nit;
+        js_span_t node;
+        int here = 0;
+        js_iter_init(&nit, nodes_of(dev));
+        while (js_iter_next(&nit, NULL, &node)) {
+            if (m->nnode + 1 > MAX_NODES) {
+                fail(err, errlen, "At most 100 points across all devices.", NULL, NULL);
+                goto bad;
+            }
+            if (js_type(node) != JS_OBJECT) {
+                fail(err, errlen, "Expected an object for %s.", "edgeDevices", NULL);
+                goto bad;
+            }
+            cJSON *in = pick(node, node_fields, N(node_fields));
+            if (!in) goto done;
+            o = object(env, "edgeDevices", node_fields, N(node_fields), in, node_base, err, errlen);
+            cJSON_Delete(in);
+            if (!NO_MEMORY_YET()) goto done;
+            if (!o) goto bad;
+            if (is_io) {
+                const char *ch = sget(o, "ioPoint");
+                if (!io_channel_ok(env, ch)) {
+                    fail(err, errlen, "IO channel \"%s\" does not exist on this gateway.", ch ? ch : "", NULL);
+                    goto bad;
+                }
+                int idx = atoi(ch + 2) - 1, fc = ch[1] == 'O' ? 1 : ch[1] == 'I' && ch[0] == 'D' ? 2 : 4;
+                put_any(o, "name", cJSON_CreateString(ch));
+                put_any(o, "fc", cJSON_CreateNumber(fc));
+                put_any(o, "reg", cJSON_CreateNumber(fc == 4 ? idx * 2 : idx));
+                put_any(o, "dtype", cJSON_CreateString(fc == 4 ? "float32_abcd" : "bool"));
+            } else if (is_virt) {
+                put_any(o, "fc", cJSON_CreateNumber(4));
+                if (strcmp(sget(o, "dtype"), "bool") == 0) {
+                    fail(err, errlen, "Virtual point \"%s\" is an input register: choose a number type, not bool.", sget(o, "name"), NULL);
+                    goto bad;
+                }
+            }
+            if (!NO_MEMORY_YET()) goto done;
+            const char *nname = sget(o, "name"), *dtype = sget(o, "dtype");
+            if (!name_ok(nname)) {
+                fail(err, errlen, "Point name \"%s\" is not valid.", nname, NULL);
+                goto bad;
+            }
+            for (int k = 0; k < m->nnode; k++) {
+                if (strcmp(m->node[k].name, nname) == 0) {
+                    fail(err, errlen, "Point name \"%s\" is used twice.", nname, NULL);
+                    goto bad;
+                }
+            }
+            enode_t *e = &m->node[m->nnode++];
+            e->dev = m->ndev;
+            snprintf(e->name, sizeof e->name, "%s", nname);
+            snprintf(e->di, sizeof e->di, "%s", sget(o, "di"));
+            e->fc = iget(o, "fc");
+            e->reg = iget(o, "reg");
+            e->regs = regs_of(dtype);
+            e->is_bool = strcmp(dtype, "bool") == 0;
+            e->map_en = bget(o, "mapEn");
+            e->map_addr = iget(o, "mapAddr");
+            if (!print_into(o, buf, PRINT_MAX)) goto done;
+            cJSON_Delete(o);
+            o = NULL;
+            if (here++) PUT(",", 1);
+            PUT(buf, strlen(buf));
+        }
+        PUT("]}", 2);
+        m->ndev++;
+    }
+    PUT("]", 1);
+#undef PUT
+#undef NO_MEMORY_YET
+
+    // Pass 3, as slaves_strict(): the save-time rules across devices and points.
+    if (strict && !edge_strict(m, err, errlen)) goto bad;
+    r = out.r;
+    if (r == CFG_TOO_LARGE) fail(err, errlen, "The Edge model is too large.", NULL, NULL);
+    goto done;
+aborted:
+    r = CFG_ABORTED;
+    fail(err, errlen, "The Edge model could not be stored.", NULL, NULL);
+    goto done;
+bad:
+    // A failed allocation inside object() leaves no message; a schema error always writes one.
+    r = (err && errlen && err[0]) ? CFG_INVALID : CFG_NO_MEMORY;
+done:
+    // cJSON and object() do not report every failed allocation (a field can silently keep its default).
+    if (r != CFG_ABORTED && json_alloc_failures() != failures) r = CFG_NO_MEMORY;
+    if (r == CFG_NO_MEMORY) fail(err, errlen, "Out of memory.", NULL, NULL);
+    cJSON_Delete(o);
+    cJSON_Delete(s);
+    cJSON_Delete(node_base);
+    cJSON_Delete(dev_base);
+    cJSON_free(buf);
+    cJSON_free(m);
+    return r;
+}

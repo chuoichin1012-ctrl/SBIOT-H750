@@ -6,3 +6,10 @@ firmware/test/host/build
 firmware/build
 firmware/build-*
 firmware/components/webapi/www
+# CubeMX output that the build does not use (tools/cubegen.sh deletes it after each generation)
+firmware/cube/*/Drivers
+firmware/cube/*/cmake
+firmware/cube/*/CMakeLists.txt
+firmware/cube/*/CMakePresets.json
+firmware/cube/*/Projects
+firmware/tools/__pycache__

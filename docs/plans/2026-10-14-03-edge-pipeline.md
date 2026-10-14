@@ -1779,7 +1779,7 @@ In the spec §9.4, replace the whole line that starts with `  Hash FNV-1a chỉ 
   Với tối đa 64 thiết bị và 100 điểm, các tên được so sánh tuyến tính bằng `strcmp`, không cần hash.
 ```
 
-In the roadmap row 03, replace `cfg_edge_begin/device/node/end (3 phases)` with `cfg_edge_text (3 passes mirroring list/slaves/slaves_strict), cfg_validate_text`.
+In the roadmap row 03, replace the text `` `cfg_edge_begin/device/node/end` (3 phases) `` with `` `cfg_edge_text` (3 passes mirroring `list`/`slaves`/`slaves_strict`), `cfg_validate_text` ``.
 
 ```bash
 git add stm32/firmware/components/cfgmodel stm32/firmware/test/host/test_edge_text.c stm32/firmware/test/host/Makefile stm32/docs/specs/2026-10-14-stm32-firmware-design.md stm32/docs/plans/2026-10-14-00-roadmap.md

@@ -81,7 +81,7 @@ stm32/
 ├── web/                  bản sao Web UI (Vite + Preact + Tailwind), phát triển độc lập
 └── firmware/
     ├── CMakeLists.txt, CMakePresets.json (boot, app), cmake/arm-none-eabi.cmake
-    ├── cube/             .ioc + code CubeMX sinh ra. Chỉ sửa trong các khối USER CODE
+    ├── cube/             boot/boot.ioc, app/app.ioc + code CubeMX sinh ra (tools/cubegen.sh, CubeMX chạy headless). Chỉ sửa trong các khối USER CODE
     ├── boot/             bootloader (flash nội), linker script riêng
     ├── app/              main.c, linker script XIP (0x90000000), FreeRTOSConfig.h, lwipopts.h, mbedtls_config.h, mongoose_config.h
     ├── components/       board cfgmodel iomgr netmgr proto serial services store syslog sysmgr webapi
@@ -286,21 +286,25 @@ Ngoài bảng trên còn có:
 Code trên QSPI không được cấu hình lại chính đường đang dùng để thực thi nó.
 
 **Bootloader sở hữu:**
-- Toàn bộ cây clock: HSE 25 MHz, PLL1 làm SYSCLK, PLL2 và PLL3 cấp kernel clock cho USART, SPI, ADC. Mục tiêu 480 MHz với chip rev V (VOS0).
+- Phần cây clock mà XIP phụ thuộc: HSE 25 MHz, PLL1 làm SYSCLK (M=5, N=192, P=2: 480 MHz với chip rev V, VOS0, nguồn LDO, flash latency 4), AHB ÷2 (240 MHz), APB1–4 ÷2 (120 MHz). Bootloader nằm trong flash nội và không cập nhật qua OTA, nên phần nó cố định phải nhỏ nhất có thể: PLL2/PLL3 và các bộ chọn kernel clock của ngoại vi do app cấu hình trong các hàm MspInit mà CubeMX sinh ra (ví dụ PLL2P 20 MHz cho ADC3 trong `HAL_ADC_MspInit`). USART và SPI dùng PCLK làm kernel clock.
+- IWDG1 (LSI/32, reload 1600 ≈ 1,6 s), đóng băng khi debugger dừng lõi (`DBGMCU_APB4FZ1.DBG_IWDG1`). Lý do ở §11.4.
 - QUADSPI, gồm:
   - bank 2 (`FSEL`=1), chân BK2;
   - bật bit **QE** của GD25Q32E nếu chưa bật (ghi vào thanh ghi trạng thái non-volatile, chỉ ghi khi bit đang tắt);
-  - lệnh đọc Quad I/O Fast Read (`0xEB`) với số dummy cycle theo datasheet ở tần số đã chọn;
-  - prescaler sao cho clock QSPI ≤ giới hạn của GD25Q32E ở 3,3 V;
-  - trước khi cấu hình, gửi Reset Enable và Reset (`0x66`, `0x99`) để đưa flash về trạng thái đã biết, vì MCU có thể vừa reset trong lúc flash đang ở một chế độ khác;
+  - lệnh đọc Quad I/O Fast Read (`0xEB`): địa chỉ 4 dòng, byte M = `0xFF` trên 4 dòng (M5-4 ≠ 10, flash không bao giờ vào continuous read mode), rồi 4 dummy clock khi bit DC (SR3 bit 0) = 0, 8 khi DC = 1 (GD25Q32E Rev 1.3 §6, §7.11). DC không bao giờ được ghi;
+  - kernel clock pll1_q_ck 160 MHz (DIVQ1 = 6), prescaler 1: 80 MHz với hệ số chia chẵn, duty 50 % (ES0392 Rev 15 §2.7.6: HCLK chia lẻ không giữ được duty 50 %, mà GD25Q32E cần tCLH, tCLL ≥ 45 %), dưới giới hạn 104 MHz khi DC = 0. Sample shift nửa chu kỳ, CS high 2 chu kỳ (tSHSL ≥ 20 ns). Các chân QSPI đặt tốc độ very high (với tốc độ low, mọi lệnh đọc đều timeout ở 80 MHz);
+  - **workaround ES0392 §2.7.4** ("QUADSPI internal timing criticality", áp dụng cho rev V): chuỗi thanh ghi của errata chạy sau mỗi lần reset (trong `HAL_QSPI_MspInit` của bootloader, khi kernel clock đã bật, ngắt tắt) và mỗi lần rời memory-mapped sang chế độ khác (Plan 04); lệnh disable cuối phải xong trong 127 kernel clock sau lần ghi CCR đầu tiên;
+  - **FSIZE = 22 (8 MB) cho chip 4 MB**: theo ES0392 §2.7.5 (ES0396 §2.4.4), đọc memory-mapped byte cuối của vùng FSIZE luôn trả 0x00 và đọc lại làm treo bus AXI; region MPU 1 vẫn chỉ 4 MB nên phần dư không truy cập được;
+  - trước khi cấu hình: 10 clock với IO0–IO3 ở mức 1 (lệnh `0xFF` 4 dòng cộng 32 bit alternate byte, không dùng pha địa chỉ vì địa chỉ ngoài FSIZE làm QUADSPI báo TEF) để thoát continuous read mode, rồi Reset Enable và Reset (`0x66`, `0x99`) và chờ 13 ms (tRST_E 12 ms), vì MCU có thể vừa reset trong lúc flash đang ở một chế độ khác;
   - bật memory-mapped.
-- Region MPU của QSPI.
+- Region MPU của QSPI (`MPU_Config` do CubeMX sinh từ `boot.ioc`): region 0 nền mặc định của CubeMX (4 GB, tắt sub-region 0, 1, 2, 7, nên 0x60000000–0xDFFFFFFF không truy cập được và không bị fetch suy đoán) và region 1 là cửa sổ QSPI 4 MB, chỉ đọc, cacheable, thực thi được.
 
 **Trạng thái bàn giao cho app** (bootloader bảo đảm, app kiểm bằng `assert` khi build debug): PLL1 đang chạy và là SYSCLK; QSPI ở memory-mapped; ngắt bị tắt (`PRIMASK`=1); SysTick tắt; mọi ngắt NVIC bị tắt và không còn ngắt chờ xử lý.
 
 **App:**
-- **Startup và `SystemInit` riêng cho XIP.** Startup GCC chuẩn của ST gọi `SystemInit()` *trước* `main()`, và hàm này reset RCC, tắt PLL. Vì vậy app dùng `system_app.c` riêng, không đụng tới RCC, QSPI và pinmux.
+- **Startup riêng cho XIP.** Startup GCC chuẩn của ST gọi `ExitRun0Mode()` và `SystemInit()` *trước* `main()`, và các hàm này đổi nguồn cấp, reset RCC, tắt PLL. File startup của CubeMX khai báo `Reset_Handler` là weak: app giữ bảng vector của file đó và thay `Reset_Handler` bằng `app/startup_app.c`. `SystemInit` và `ExitRun0Mode` không còn trong `app.elf` (gate `tools/check_elf.py`). App vẫn dùng `system_stm32h7xx.c` (bản cmsis-device-h7 v1.10.7) chỉ để có `SystemCoreClockUpdate()`, hàm này chỉ đọc RCC.
 - Trình tự trong `Reset_Handler` của app:
+  0. bật FPU (`CPACR`), trước mọi code có thể dùng FPU;
   1. bật clock SRAM D2/D3;
   2. đặt VTOR = 0x90000400;
   3. chép `.data`, xóa `.bss`, chép `.itcm_text` và `.dtcm_data`;
@@ -308,7 +312,7 @@ Code trên QSPI không được cấu hình lại chính đường đang dùng �
   5. bật I-cache và D-cache;
   6. `SystemCoreClockUpdate()`;
   7. `main()`.
-- Trong `.ioc` của app, đặt "Do not generate function call" cho `SystemClock_Config` và `MX_QUADSPI_Init`. HAL sẽ từ chối đổi PLL1 khi nó đang là SYSCLK, và khởi tạo lại QUADSPI sẽ làm hỏng XIP.
+- Trong `app.ioc`, đặt "Do not generate function call" cho `SystemClock_Config`, `MX_QUADSPI_Init` và `MX_CORTEX_M7_Init` (MPU). HAL sẽ từ chối đổi PLL1 khi nó đang là SYSCLK, khởi tạo lại QUADSPI sẽ làm hỏng XIP, và MPU chỉ được lập một lần trong `Reset_Handler`. Timebase của HAL trong app là `now_us()` (TIM2): `HAL_InitTick` không làm gì, `HAL_GetTick` = `now_us()/1000`; SysTick, SVC và PendSV thuộc FreeRTOS (CubeMX không sinh ba handler này cho app).
 - **Kiểm chứng:** disassembly của `Reset_Handler` không gọi các hàm RCC/QSPI của HAL. Boot nguội (cấp nguồn từ đầu) và boot ấm (reset bằng watchdog) đều chạy được.
 
 ### 6.3 Thứ tự khởi động của app
@@ -877,7 +881,7 @@ Header 1 KB đặt ở đầu image:
 | # | Điều kiện | Hành động |
 |---|---|---|
 | 1 | Không có `Vq`, `Vb` lẫn `Vs` | **Cứu hộ dừng hẳn.** Hàng này xét **trước mọi nhánh phục hồi**, nên các hàng sau luôn có ít nhất một nguồn hợp lệ |
-| 2 | Thao tác chép dữ liệu (xóa, ghi page, đọc lại) quá deadline, tức 2 lần giá trị tối đa trong datasheet GD25Q32E, ở **bất kỳ** đường chép nào: có checkpoint (state machine, hàng 10) hoặc theo dõi tiến độ trong RAM (hàng 6) | **Ngừng kick**, SGM706 reset board. Lần thử đã được đếm **trước** khi bắt đầu: bằng `attempts` trong bản ghi (đường có checkpoint), hoặc bằng `ram_fail` trong handoff block (đường RAM) |
+| 2 | Thao tác chép dữ liệu (xóa, ghi page, đọc lại) quá deadline, tức 2 lần giá trị tối đa trong datasheet GD25Q32E, ở **bất kỳ** đường chép nào: có checkpoint (state machine, hàng 10) hoặc theo dõi tiến độ trong RAM (hàng 6) | **Ngừng kick** (WDI và IWDG1): IWDG1 reset board (và SGM706 nếu R20 được lắp, §11.4). Lần thử đã được đếm **trước** khi bắt đầu: bằng `attempts` trong bản ghi (đường có checkpoint), hoặc bằng `ram_fail` trong handoff block (đường RAM) |
 | 3 | Ghi **bản ghi trạng thái** thất bại (quá deadline, hoặc đọc lại không khớp) | **Không** ngừng kick. `rec_fail + 1` trong handoff block, rồi xét hàng 4–6 |
 | 4 | Hàng 3, và có `Vq`, **ở bất kỳ trạng thái nào**, kể cả `WRITE` hoặc `RESTORE` (ví dụ đã ghi xong checkpoint cuối nhưng cập nhật bản ghi thất bại) | **Không xóa QSPI.** Nhảy vào app với `degraded` = 1. Không đổi trạng thái, nên cài đặt đang chờ được hoãn lại. App ghi cảnh báo vào log và **từ chối OTA** (409). Ở `TRIAL` thì `trial` không tăng được: app vẫn chạy, nhưng không xác nhận được, vì xác nhận cũng phải ghi bản ghi |
 | 5 | Hàng 3, **không** có `Vq`, `rec_fail` < 3 | Reset và thử lại |
@@ -943,11 +947,11 @@ Logic trạng thái và cài đặt viết trong `boot/install.c` bằng C thu�
   - "Khởi tạo" nghĩa là tạo được task, socket listener và tài nguyên.
   - Việc broker hay Internet không truy cập được **không** tính là lỗi khởi tạo.
 - Mọi dịch vụ đã khởi tạo xong và chạy được 30 s thì `ota_confirm` ghi `CONFIRMED`.
-- **Deadline của `TRIAL`:** `init` chưa xong sau 60 s, hoặc chưa xác nhận sau 120 s kể từ lúc boot, thì `wdog` ngừng kick. Board reset và `trial` tăng lên. App bị treo hay HardFault cũng làm `trial` tăng.
+- **Deadline của `TRIAL`:** `init` chưa xong sau 60 s, hoặc chưa xác nhận sau 120 s kể từ lúc boot, thì `wdog` ngừng kick (WDI và IWDG1). IWDG1 reset board và `trial` tăng lên. App bị treo hay HardFault cũng làm `trial` tăng.
 
 ### 11.4 Các cơ chế an toàn khác
 
-- **SGM706:** timeout tối thiểu 1,0 s, danh định 1,6 s (datasheet SGM706, trang 4). `wdog` kick mỗi 200 ms.
+- **SGM706 và IWDG1:** SGM706 có timeout tối thiểu 1,0 s, danh định 1,6 s (datasheet SGM706, trang 4). **Trên board hiện tại R20 (WDO → MR) chưa lắp**, nên SGM706 hết thời gian cũng không reset được MCU (đã thử trên bench: ngừng kick 60 s không reset). Vì vậy bootloader bật IWDG1 (LSI/32, reload 1600: 1,5–1,74 s theo dải LSI), và "kick" luôn nghĩa là đảo WDI **và** nạp lại IWDG1 (`board_kick()`); "ngừng kick" là ngừng cả hai. IWDG1 không tắt được cho tới lần reset sau và được đóng băng khi debugger dừng lõi. Khi R20 được lắp, cả hai cùng hoạt động. `wdog` kick mỗi 200 ms. **Đề xuất cho phần cứng:** lắp R20.
   - Vì `wdog` là task chứ không phải ISR, scheduler treo thì watchdog sẽ reset board.
   - `wdog` còn giám sát deadline của `init` và `TRIAL` (§11.3).
   - Ngoài phạm vi này, tiến triển của từng task dịch vụ **không** được giám sát (giữ như ESP32).
@@ -1048,7 +1052,8 @@ Ngoài ra, file map của linker phải cho thấy mỗi section nằm trong ng�
 - `embed_web.py`, `check_schema.py`, `audit_keys.py`: bản riêng, trỏ vào `stm32/web` và `stm32/firmware`.
 - `mkimage.py`: thêm header.
 - CMake preset `boot` và `app`. Kết quả gồm `boot.elf`, `app.elf` và `app.img` (đã có header).
-- Nạp lần đầu qua SWD (P6) bằng OpenOCD với flash bank `stmqspi`, QSPI bank 2. Script phải đặt `FSEL`=1 trước khi probe. Flash nội nạp cùng lúc. Đường thay thế là STM32CubeProgrammer, nhưng cần một external loader viết riêng cho board.
+- Nạp qua SWD (P6) bằng STM32CubeProgrammer CLI (`tools/flash.sh`, chạy từ WSL): flash nội nạp trực tiếp; QSPI bank 2 qua external loader. OpenOCD `stmqspi` không đọc được flash trên board này ("Failed to read memory at 0x52005020"), nên OpenOCD chỉ dùng để debug, với `QUADSPI 0`.
+- Plan 02 dùng loader của nhóm `STM32H750VBT6_GD25Q32ESIG.stldr` (Dev_info: 0x90000000, 4 MB, page 256 B, 1024 sector 4 KB; SHA-256 `5ef2de362969bb2ad9d0c92604e58f27b018614533fe421e6ac5974c9bcb0699`), sau khi chứng minh xóa, ghi và đọc lại trên vùng dự trữ 0x903E0000. Loader này không kick WDI: chỉ an toàn khi R20 chưa lắp. Plan 04 thay bằng loader build từ mã nguồn (cùng driver QSPI với bootloader, kick WDI và IWDG1 trong các vòng chờ).
 - Log debug ra UART7, 115200 baud.
 
 ## 13. Khác biệt so với bản ESP32
@@ -1076,8 +1081,8 @@ Ngoài ra, file map của linker phải cho thấy mỗi section nằm trong ng�
 
 | Rủi ro hoặc mục cần xác minh | Cách xử lý |
 |---|---|
-| Startup XIP: `SystemInit` và các hàm HAL đụng tới RCC hoặc QSPI | `system_app.c` riêng. Kiểm disassembly, boot nguội và boot ấm (§6.2) |
-| Cấu hình QSPI: QE, opcode, dummy cycle, prescaler | Lấy từ datasheet GD25Q32E. Kiểm XIP ở tần số đích khi bring-up |
+| Startup XIP: `SystemInit` và các hàm HAL đụng tới RCC hoặc QSPI | `Reset_Handler` riêng thay hàm weak trong startup của CubeMX; `tools/check_elf.py` kiểm `app.elf` không còn `SystemInit`, `ExitRun0Mode`, hàm clock/QSPI/MPU của HAL, và `Reset_Handler` không gọi `memcpy`/`memset`; bench kiểm boot nguội và boot ấm (§6.2) |
+| Cấu hình QSPI: QE, opcode, dummy cycle, prescaler | Lấy từ datasheet GD25Q32E Rev 1.3 (§6.2). Đã kiểm XIP ở 80 MHz trên bench: CRC của image đọc qua XIP trùng `app.bin` |
 | Hiệu năng XIP (TLS handshake, Edge 10 ms) | Đưa code nóng vào ITCM. Đo thời gian handshake và độ trễ linkage trên bench |
 | Cache và DMA (ETH, USART, SPI4) | Quy tắc §5.4. Test bench có tải lớn |
 | Ngân sách RAM | File map của linker và `/api/status.mem` với hai kịch bản (§12.3). Nếu thiếu, giảm `MEM_SIZE` hoặc số client WebSocket trước khi đụng tới tính năng |
@@ -1087,9 +1092,10 @@ Ngoài ra, file map của linker phải cho thấy mỗi section nằm trong ng�
 | UART3 không có RTS/CTS | DMA 4 KB với HT, TC, IDLE. Bench tải liên tục, `overrun` = 0 |
 | t1.5/t3.5 trên phần cứng | Logic analyzer và bộ phát RS485 có kiểm soát timing (§12.2) |
 | Thời gian tối đa khi xóa và ghi GD25Q32E | Lấy từ datasheet, dùng làm deadline (§11.2) |
-| Hậu tố của SGM706 trên BOM | Chốt cùng nhóm phần cứng |
+| Hậu tố của SGM706 trên BOM; R20 chưa lắp | Chốt cùng nhóm phần cứng. Tới khi R20 được lắp, IWDG1 là nguồn reset duy nhất (§11.4) |
 | Thời gian mở FlashDB qua SPI | Đo khi bring-up. Nếu chậm thì thêm cache header trong RAM |
-| OpenOCD `stmqspi` trên bank 2 | Script đặt `FSEL`=1 trước khi probe. Kiểm ngay ở bước bring-up đầu tiên |
+| OpenOCD `stmqspi` trên bank 2 | Không chạy trên board này (lỗi đọc 0x52005020). Dùng STM32CubeProgrammer với external loader (§12.4) |
+| Lỗi trong gói CubeMX H7 1.12.0: `D1CorePrescTable` của `system_stm32h7xx.c` đọc APB ÷2 thành ÷1 (mọi baud và kernel clock sai gấp đôi) | Dùng HAL v1.11.6, CMSIS device v1.10.7, CMSIS core 5.9.0 từ GitHub, khóa phiên bản trong `third_party/stm32cube_h7` |
 | Cửa sổ relay lúc cấp nguồn (R103 kéo OE xuống) | Ghi nhận là giới hạn của board hiện tại (§11.2). Đề xuất đổi phần cứng |
 | License Mongoose | Quyết định GPLv2 hay thương mại trước khi phát hành |
 

@@ -1,0 +1,219 @@
+// Host unit tests for the config model: build with `make -C test/host`.
+// Payloads below are copied from the web UI's mock (src/lib/mock.ts), so a
+// failure here means firmware and UI disagree about a field.
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#include "cfgmodel.h"
+
+static const cfg_env_t ENV = {.uart_count = 1, .do_count = 2, .di_count = 1, .ai_count = 1};
+static int failures;
+
+#define CHECK(cond, ...)                                  \
+    do {                                                  \
+        if (!(cond)) {                                    \
+            failures++;                                   \
+            printf("FAIL %s:%d: ", __FILE__, __LINE__);   \
+            printf(__VA_ARGS__);                          \
+            printf("\n");                                 \
+        }                                                 \
+    } while (0)
+
+static cJSON *ok(const char *name, const char *json)
+{
+    char err[160] = "";
+    cJSON *in = cJSON_Parse(json);
+    CHECK(in, "%s: test JSON does not parse", name);
+    cJSON *out = cfg_validate(&ENV, name, in, NULL, err, sizeof err);
+    CHECK(out, "%s rejected: %s", name, err);
+    cJSON_Delete(in);
+    return out;
+}
+
+static void bad(const char *name, const char *json, const char *expect)
+{
+    char err[160] = "";
+    cJSON *in = cJSON_Parse(json);
+    cJSON *out = cfg_validate(&ENV, name, in, NULL, err, sizeof err);
+    CHECK(!out, "%s accepted %s", name, json);
+    CHECK(strstr(err, expect), "%s: message \"%s\" lacks \"%s\"", name, err, expect);
+    cJSON_Delete(out);
+    cJSON_Delete(in);
+}
+
+static void test_defaults_validate(void)
+{
+    const char *names[16];
+    size_t n = cfg_names(&ENV, names, 16);
+    CHECK(n == 11, "expected 11 configs with one UART, got %zu", n);
+    for (size_t i = 0; i < n; i++) {
+        cJSON *d = cfg_default(&ENV, names[i]);
+        CHECK(d, "default for %s does not parse", names[i]);
+        char err[160] = "";
+        cJSON *v = cfg_validate(&ENV, names[i], d, NULL, err, sizeof err);
+        CHECK(v, "default for %s fails its own schema: %s", names[i], err);
+        cJSON_Delete(v);
+        cJSON_Delete(d);
+    }
+    CHECK(!cfg_known(&ENV, "port2"), "port2 must not exist with one UART");
+    cfg_env_t two = ENV;
+    two.uart_count = 2;
+    CHECK(cfg_known(&two, "port2"), "port2 must exist with two UARTs");
+}
+
+static void test_coercion_and_unknown_keys(void)
+{
+    cJSON *o = ok("port1", "{\"baudRate\":\"9600\",\"serialHeartbeat\":\"1\",\"modbusPoll\":0,\"bogus\":5,\"workMode\":1}");
+    if (!o) return;
+    CHECK(cJSON_GetNumberValue(cJSON_GetObjectItem(o, "baudRate")) == 9600, "baudRate not coerced");
+    CHECK(cJSON_IsTrue(cJSON_GetObjectItem(o, "serialHeartbeat")), "\"1\" not coerced to true");
+    CHECK(cJSON_IsFalse(cJSON_GetObjectItem(o, "modbusPoll")), "0 not coerced to false");
+    CHECK(!cJSON_GetObjectItem(o, "bogus"), "unknown key kept");
+    CHECK(cJSON_GetNumberValue(cJSON_GetObjectItem(o, "listenPort")) == 23, "missing key not filled from defaults");
+    cJSON_Delete(o);
+}
+
+static void test_ranges(void)
+{
+    bad("port1", "{\"baudRate\":300}", "baudRate must be 600 to 230400");
+    bad("port1", "{\"workMode\":1.5}", "workMode must be 0 to 4");
+    bad("system", "{\"websocketTarget\":3}", "websocketTarget must be 0 to 2");
+    bad("system", "{\"password\":\"\"}", "cannot be empty");
+    bad("system", "{\"idleRestart\":30}", "Idle restart must be 0 (off) or 60");
+    bad("port1", "{\"parity\":3}", "parity must be 0 to 2");
+    bad("io", "{\"timer0Output\":2}", "timer0Output must be 0 to 1");
+    bad("edgeReport", "{\"channel\":2}", "channel must be 0 to 1");
+    bad("mqtt", "{\"host\":5}", "host must be text");
+    bad("network", "{\"apnAuth\":4}", "apnAuth must be 0 to 3");
+    bad("port1", "{\"flowControl\":1}", "not available on RS485");
+    bad("port1", "{\"allowedClients\":\"192.168.1.300\"}", "Allowed clients");
+    bad("port1", "{\"allowedClients\":\"10.0.0.0/33\"}", "Allowed clients");
+    bad("port1", "{\"allowedClients\":\"1.1.1.1 2.2.2.2 3.3.3.3 4.4.4.4 5.5.5.5 6.6.6.6 7.7.7.7 8.8.8.8 9.9.9.9\"}", "Allowed clients");
+}
+
+static void test_lists(void)
+{
+    cJSON *t = ok("mqttPublish",
+                  "[{\"enabled\":true,\"mode\":0,\"topic\":\"site/gw/up\",\"ports\":1,\"qos\":1,\"retain\":false,"
+                  "\"ioControl\":false,\"identifier\":\"\",\"delimiter\":\",\"}]");
+    CHECK(t && cJSON_GetArraySize(t) == 1, "topic list");
+    cJSON_Delete(t);
+
+    cJSON *e = ok("edgeDevices",
+                  "[{\"name\":\"device01\",\"source\":\"uart\",\"uart\":1,\"ip\":\"\",\"ethPort\":502,"
+                  "\"protocol\":\"modbus\",\"addr\":\"1\",\"poll\":1000,\"mapEn\":false,\"mapAddr\":1,\"merge\":false,"
+                  "\"nodes\":[{\"name\":\"node0101\",\"fc\":3,\"reg\":0,\"di\":\"\",\"dtype\":\"uint16\",\"timeout\":200,"
+                  "\"onChange\":false,\"range\":1,\"mapEn\":false,\"mapAddr\":0,\"formula\":\"\",\"ioPoint\":\"\","
+                  "\"ioReport\":0,\"upper\":0,\"lower\":0},{\"name\":\"node0102\",\"fc\":3,\"reg\":1,\"dtype\":"
+                  "\"float32_cdab\",\"formula\":\"=%s*0.1\"}]}]");
+    if (e) {
+        cJSON *nodes = cJSON_GetObjectItem(cJSON_GetArrayItem(e, 0), "nodes");
+        CHECK(cJSON_GetArraySize(nodes) == 2, "nodes kept");
+        CHECK(cJSON_GetNumberValue(cJSON_GetObjectItem(cJSON_GetArrayItem(nodes, 1), "timeout")) == 200,
+              "node default filled");
+    }
+    cJSON_Delete(e);
+
+    bad("edgeDevices", "[{\"name\":\"a\",\"nodes\":[{\"name\":\"x\"},{\"name\":\"x\"}]}]", "used twice");
+    // The built-in IO and virtual devices: fixed names (whatever is sent), one of each, names reserved.
+    e = ok("edgeDevices", "[{\"name\":\"anything\",\"source\":\"io\"},{\"name\":\"x\",\"source\":\"virtual\",\"addr\":\"200\"}]");
+    CHECK(e && strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(e, 0), "name")), "SBIOT_IO") == 0 &&
+              strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(e, 1), "name")), "SBIOT_VIRTUAL") == 0,
+          "IO and virtual devices get their fixed names");
+    cJSON_Delete(e);
+    bad("edgeDevices", "[{\"name\":\"a\",\"source\":\"io\"},{\"name\":\"b\",\"source\":\"io\"}]", "Only one built-in IO");
+    bad("edgeDevices", "[{\"name\":\"a\",\"source\":\"virtual\"},{\"name\":\"b\",\"source\":\"virtual\"}]",
+        "Only one virtual");
+    bad("edgeDevices", "[{\"name\":\"SBIOT_IO\",\"source\":\"uart\"}]", "reserved");
+    bad("edgeDevices", "[{\"name\":\"d1\"},{\"name\":\"d1\"}]", "Device name \"d1\" is used twice");
+    // IO points are named after their channel; the channel must exist; each once.
+    e = ok("edgeDevices", "[{\"name\":\"io\",\"source\":\"io\",\"nodes\":[{\"name\":\"whatever\",\"ioPoint\":\"DO2\"}]}]");
+    CHECK(e && strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetArrayItem(e, 0),
+                                                                                                      "nodes"), 0), "name")),
+                      "DO2") == 0,
+          "IO point named after its channel");
+    if (e) {
+        cJSON *pt = cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetArrayItem(e, 0), "nodes"), 0);
+        CHECK(cJSON_GetNumberValue(cJSON_GetObjectItem(pt, "fc")) == 1 && cJSON_GetNumberValue(cJSON_GetObjectItem(pt, "reg")) == 1 &&
+                  strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(pt, "dtype")), "bool") == 0,
+              "DO2 sits at coil 1, bool");
+    }
+    cJSON_Delete(e);
+    e = ok("edgeDevices", "[{\"name\":\"io\",\"source\":\"io\",\"nodes\":[{\"name\":\"a\",\"ioPoint\":\"AI1\",\"fc\":3}]},"
+                          "{\"name\":\"v\",\"source\":\"virtual\",\"addr\":\"200\",\"nodes\":[{\"name\":\"s\",\"fc\":3,"
+                          "\"dtype\":\"float32_abcd\",\"formula\":\"=%s+1,AI1\"}]}]");
+    if (e) {
+        cJSON *ai = cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetArrayItem(e, 0), "nodes"), 0);
+        cJSON *vs = cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetArrayItem(e, 1), "nodes"), 0);
+        CHECK(cJSON_GetNumberValue(cJSON_GetObjectItem(ai, "fc")) == 4 &&
+                  strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(ai, "dtype")), "float32_abcd") == 0,
+              "AI1: input register, float32");
+        CHECK(cJSON_GetNumberValue(cJSON_GetObjectItem(vs, "fc")) == 4, "virtual point forced to FC04");
+    }
+    cJSON_Delete(e);
+    bad("edgeDevices", "[{\"name\":\"v\",\"source\":\"virtual\",\"nodes\":[{\"name\":\"s\",\"dtype\":\"bool\"}]}]",
+        "choose a number type");
+    bad("edgeDevices", "[{\"name\":\"io\",\"source\":\"io\",\"nodes\":[{\"name\":\"a\",\"ioPoint\":\"DI3\"}]}]",
+        "IO channel \"DI3\" does not exist");
+    bad("edgeDevices", "[{\"name\":\"io\",\"source\":\"io\",\"nodes\":[{\"name\":\"a\",\"ioPoint\":\"\"}]}]",
+        "does not exist");
+    bad("edgeDevices", "[{\"name\":\"io\",\"source\":\"io\",\"nodes\":[{\"name\":\"a\",\"ioPoint\":\"DO1\"},"
+                       "{\"name\":\"b\",\"ioPoint\":\"DO1\"}]}]", "Point name \"DO1\" is used twice");
+    bad("edgeDevices", "[{\"name\":\"bad name\"}]", "not valid");
+    bad("edgeDevices", "[{\"name\":\"a\",\"source\":\"cloud\"}]", "unsupported value");
+    bad("edgeDevices", "[{\"name\":\"a\",\"uart\":2}]", "uart must be 1 to 1");
+    bad("edgeLinkage", "[{},{},{},{},{},{},{},{},{},{},{}]", "Too many");
+}
+
+/** F15: save-time Edge rules, and a stored model that breaks them still loads. */
+static void test_edge_strict(void)
+{
+    bad("edgeDevices", "[{\"name\":\"a\",\"addr\":\"257\"}]", "slave ID must be 1 to 255");
+    bad("edgeDevices", "[{\"name\":\"a\",\"addr\":\"1x\"}]", "slave ID must be 1 to 255");
+    bad("edgeDevices", "[{\"name\":\"m\",\"protocol\":\"dlt645\",\"addr\":\"12345\"}]", "12-digit meter address");
+    bad("edgeDevices", "[{\"name\":\"m\",\"protocol\":\"dlt645\",\"addr\":\"000000000001\",\"nodes\":[{\"name\":\"e\",\"di\":\"0201zz00\"}]}]",
+        "8 hex digits");
+    bad("edgeDevices", "[{\"name\":\"a\",\"nodes\":[{\"name\":\"c\",\"fc\":1,\"dtype\":\"uint16\"}]}]", "coils and discrete inputs are bool");
+    bad("edgeDevices", "[{\"name\":\"a\",\"nodes\":[{\"name\":\"h\",\"fc\":3,\"dtype\":\"bool\"}]}]", "registers hold numbers");
+    bad("edgeDevices", "[{\"name\":\"a\",\"nodes\":[{\"name\":\"f\",\"reg\":65534,\"dtype\":\"float64\"}]}]", "run past 65535");
+    bad("edgeDevices", "[{\"name\":\"a\",\"nodes\":[{\"name\":\"f\",\"mapEn\":true,\"mapAddr\":65533,\"dtype\":\"float64\"}]}]",
+        "mapped registers run past");
+    bad("edgeDevices", "[{\"name\":\"a\",\"nodes\":[{\"name\":\"x\",\"reg\":10,\"dtype\":\"uint32_abcd\"},"
+                       "{\"name\":\"y\",\"reg\":0,\"mapEn\":true,\"mapAddr\":11}]}]", "overlap x");
+    bad("edgeDevices", "[{\"name\":\"a\",\"addr\":\"5\"},{\"name\":\"b\",\"addr\":\"6\",\"mapEn\":true,\"mapAddr\":5}]",
+        "already answered for a");
+    bad("edgeDevices", "[{\"name\":\"a\",\"addr\":\"7\"},{\"name\":\"v\",\"source\":\"virtual\",\"addr\":\"7\"}]",
+        "already answered for a");
+    // Same register in another function code, an unmapped duplicate read and two PLCs on unit 1 stay allowed.
+    cJSON *e = ok("edgeDevices", "[{\"name\":\"a\",\"nodes\":[{\"name\":\"x\",\"fc\":4,\"reg\":3},{\"name\":\"y\",\"fc\":3,\"reg\":0,\"mapEn\":true,\"mapAddr\":3},"
+                                 "{\"name\":\"z\",\"fc\":4,\"reg\":3,\"dtype\":\"int16\"}]},"
+                                 "{\"name\":\"p1\",\"source\":\"eth\",\"ip\":\"10.0.0.1\",\"addr\":\"1\"},"
+                                 "{\"name\":\"p2\",\"source\":\"eth\",\"ip\":\"10.0.0.2\",\"addr\":\"1\"}]");
+    cJSON_Delete(e);
+
+    // Stored by older firmware: loads (lenient), but would not be accepted as a new save.
+    const char *old = "[{\"name\":\"a\",\"addr\":\"300\",\"nodes\":[{\"name\":\"c\",\"fc\":1,\"dtype\":\"uint16\"}]}]";
+    cJSON *in = cJSON_Parse(old);
+    char err[160] = "";
+    cJSON *l = cfg_load(&ENV, "edgeDevices", in, err, sizeof err);
+    CHECK(l && cJSON_GetArraySize(l) == 1 &&
+          cJSON_GetArraySize(cJSON_GetObjectItem(cJSON_GetArrayItem(l, 0), "nodes")) == 1, "stored model kept on load (%s)", err);
+    cJSON_Delete(l);
+    CHECK(cfg_validate(&ENV, "edgeDevices", in, NULL, err, sizeof err) == NULL, "same model refused on save");
+    cJSON_Delete(in);
+}
+
+int main(void)
+{
+    test_edge_strict();
+    test_defaults_validate();
+    test_coercion_and_unknown_keys();
+    test_ranges();
+    test_lists();
+    if (failures) {
+        printf("%d check(s) failed\n", failures);
+        return 1;
+    }
+    printf("cfgmodel: all checks passed\n");
+    return 0;
+}

@@ -2,56 +2,61 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Validate and normalise every config from JSON text within a fixed 64 KB arena. For `edgeDevices` this works one device header and one node at a time, and gives byte-identical results to the tree-based `cfg_validate` that the ESP32 firmware uses.
+**Goal:** Validate and normalise every config from JSON text within a fixed 64 KB arena. For `edgeDevices` this happens one device header and one node at a time, and the result is byte-identical to the tree-based `cfg_validate` of the ESP32 firmware. Any failed allocation always ends as `CFG_NO_MEMORY`.
 
 **Architecture:**
-- **TLSF** (vendored) provides the allocator for a static region, recreated for every scope (`components/arena`). While a scope is open, cJSON allocates from the arena; otherwise it uses the heap.
-- **`proto/jsonscan`** is a strict RFC 8259 scanner. It validates the text and walks its containers in place, without building a tree.
+- **TLSF** (vendored) is an allocator over a static region, recreated for every scope (`components/arena`). While a scope is open, cJSON allocates from the arena; otherwise from the heap. Every NULL that the cJSON hooks return is counted (`json_alloc_failures()`).
+- **`proto/jsonscan`** is a strict RFC 8259 scanner: well-formed UTF-8, surrogate escapes only in pairs, depth ≤ 32. It validates and walks text in place, and accepts only strings that cJSON also accepts.
 - **`cfgmodel` gains two text entry points:**
-  - `cfg_validate_text()` for the small configs. It frees the input tree before printing, and prints into a caller buffer of `CFG_SMALL_MAX + 1` bytes.
-  - `cfg_edge_text()` for `edgeDevices`, in three passes that mirror `list()`, `slaves()` and `slaves_strict()`. It parses only the schema's keys of one device header or one node at a time, keeps a compact summary for the cross-device rules, and streams the normalised text to an emit callback.
-- **The tree-based code stays unchanged as the oracle.** A differential test (fixed cases plus 4 000 random models) compares the two paths byte for byte.
+  - `cfg_validate_text()` for small configs. It frees the input tree before printing, prints into a caller buffer of `CFG_SMALL_BUF` bytes (cJSON needs 5 bytes beyond the text), and enforces the 10 240-byte limit on the real length.
+  - `cfg_edge_text()` for `edgeDevices`. It runs three passes mirroring `list()`, `slaves()` and `slaves_strict()`, parses only the schema's keys, keeps a compact summary for the cross-device rules, and streams the text to an emit callback. It stops at once when the callback refuses.
+- **The tree-based code stays the oracle.** Its only change is that it no longer leaks or drops an item when an allocation fails (`put_field`, `object()`, `list()`). Its success paths are unchanged.
+- **Proofs:**
+  - a differential test: fixed cases plus 4 000 random models, compared byte for byte with the tree-based path;
+  - a fault-injection test: every allocation fails once, in turn;
+  - mutants;
+  - fatal UBSan (`-fno-sanitize-recover=all`).
 
 **Tech Stack:** C11, gcc with ASan/UBSan, GNU make, cJSON 1.7.19, TLSF (mattconte/tlsf at `deff9ab509341f264addbd3c8ada533678591905`, BSD).
 
-**Spec:** `stm32/docs/specs/2026-10-14-stm32-firmware-design.md` (§5.5, §9.2–9.4, §10.1, §12.1). **Roadmap:** `stm32/docs/plans/2026-10-14-00-roadmap.md`, row 03.
+**Spec:** `stm32/docs/specs/2026-10-14-stm32-firmware-design.md` (§5.5, §9.2–9.4, §10.1, §12.1). **Roadmap:** `stm32/docs/plans/2026-10-14-00-roadmap.md`, row 03. **Review:** `stm32/docs/review/codex-gpt-6-astra-plan03-2026-10-14.md` (round 1, NOT APPROVED). Every finding is addressed here.
 
 ## Global Constraints
 
-- Arena: **64 KB** static region, TLSF, recreated for each scope. **Peak ≤ 60 KB** for the largest accepted input (§9.3, §12.1).
-- Limits in bytes: `CFG_SMALL_MAX 10240`, `CFG_EDGE_MAX 49152` (§9.3, §9.4). Messages are exactly:
+- Arena: **64 KB** static region, TLSF, recreated for each scope. **Peak ≤ 60 KB**, measured inside a real 64 KB pool on the 64-bit host, which uses more memory than the 32-bit target (§9.3, §12.1).
+- Limits in bytes: `CFG_SMALL_MAX 10240`, `CFG_EDGE_MAX 49152`, `CFG_SMALL_BUF (CFG_SMALL_MAX + 6)`. Messages are exactly:
   - `These settings are too large.` (413)
   - `The Edge model is too large.` (413)
   - `The request body is not valid JSON.` (400)
   - `Out of memory.` (500)
   - `The Edge model could not be stored.` (emit refused)
+- Any allocation failure during a text entry point gives `CFG_NO_MEMORY`. It never gives `CFG_OK` with missing or default fields, never gives a misleading schema message, never crashes, and never leaks.
 - Edge model limits: 64 devices, 5 Modbus TCP devices, 100 points (D6).
-- For RFC 8259-valid JSON, the normalised text and the first error message of the text path equal those of `cfg_validate` / `cfg_load` followed by `cJSON_PrintUnformatted`, byte for byte (§9.4 "Ràng buộc kiểm thử").
-- Nesting deeper than `JS_MAX_DEPTH` (32) is rejected as invalid JSON. This keeps the scanner's recursion within the `web` task stack.
-- Unchanged: the tree-based `cfg_validate`, `cfg_load`, `list()`, `slaves()` and `slaves_strict()` in `cfgmodel.c`. Host build flags stay `-std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize=address,undefined`.
+- For RFC 8259-valid JSON (well-formed UTF-8, surrogates in pairs, depth ≤ 32), the text path's normalised text and first error message equal those of `cfg_validate` / `cfg_load` followed by `cJSON_PrintUnformatted`, byte for byte. Anything else is `The request body is not valid JSON.`
+- Host flags: `-std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all`.
 - Run every command from the repository root `/home/linh/projects/SBIOT-Gateway`.
 
 ## Review Focus
 
-1. **Body ≤ 10 240 bytes but normalised text larger.** Control characters print as `\u00XX`. The result must be 413 with `These settings are too large.`, never a truncated document. Pinned in Task 3, `test_small` (15 escaped topics).
-2. **A device with a huge unknown member** (40 KB of numbers under `junk`) must be accepted without parsing that member. Arena peak < 20 KB. Pinned in Task 4, `test_memory_edges`.
-3. **The arena runs out mid-model.** The result is `CFG_NO_MEMORY` with `Out of memory.`, never `CFG_OK` with half a model. Pinned in Task 4, `test_memory_edges` (12 KB arena).
-4. **cJSON's own key rules.** `"nodes"` is matched case-insensitively, the first duplicate key wins, keys are compared after decoding escapes (`\u006D`), a key ends at a decoded NUL, and `nodes` given as an object is walked by member. Each must give the tree path's result. Pinned in Task 4, `test_cases`.
-5. **An emit callback that refuses** (flash write failed) stops the run with `CFG_ABORTED`. Pinned in Task 4, `test_abort`.
+1. **An allocation fails anywhere** inside either entry point. The result is `CFG_NO_MEMORY` with `Out of memory.`: no crash, no leak, no partial `CFG_OK`. Pinned in Tasks 3–4, `test_oom` (each of about 1 800 allocations failed once).
+2. **Normalised text of exactly 10 239 / 10 240 / 10 241 bytes.** The first two are accepted, the last is 413. Pinned in Task 3, `test_exact_limit`.
+3. **A device with a 40 KB unknown member** is accepted without parsing it (arena peak < 20 KB), and **a full arena** gives `CFG_NO_MEMORY`. Pinned in Task 4, `test_memory_edges`.
+4. **cJSON's key rules and Unicode.** `"nodes"` is matched in any case, the first duplicate key wins, keys are compared after decoding escapes (`\u006D`), a key ends at a decoded NUL, `nodes` given as an object is walked by member, and non-ASCII values and names are handled. All must equal the tree path. Lone surrogates and malformed UTF-8 are not valid JSON. Pinned in Task 2, `test_validity`, and Task 4, `test_cases`.
+5. **The store refuses its third write while a schema error comes later.** The result is `CFG_ABORTED` with no further emit calls. Pinned in Task 4, `test_abort`.
 
 ---
 
 ### Task 1: TLSF and the JSON arena
 
 **Files:**
-- Create: `stm32/firmware/third_party/tlsf/tlsf.c`, `tlsf.h`, `README.md` (vendored, pinned commit)
+- Create: `stm32/firmware/third_party/tlsf/tlsf.c`, `tlsf.h`, `README.md` (vendored, pinned)
 - Create: `stm32/firmware/components/arena/include/arena.h`, `stm32/firmware/components/arena/arena.c`
 - Test: `stm32/firmware/test/host/test_arena.c`
 - Modify: `stm32/firmware/test/host/Makefile`
 
 **Interfaces:**
-- Consumes: cJSON (`stm32/firmware/third_party/cjson`).
-- Produces: `arena_t {mem, size, tlsf, used, peak, failed}`, `arena_init(arena_t*, void*, size_t)`, `arena_begin(arena_t*)`, `arena_end(arena_t*)`, `arena_malloc`, `arena_free`, `arena_owns`, `arena_current()`, `json_alloc_install()`.
+- Consumes: cJSON.
+- Produces: `arena_t {mem, size, tlsf, used, peak, failed}`, `arena_init`, `arena_begin`, `arena_end`, `arena_malloc`, `arena_free`, `arena_owns`, `arena_current()`, `json_alloc_install()`, `unsigned json_alloc_failures(void)`.
 
 - [ ] **Step 1: Vendor TLSF at the pinned commit**
 
@@ -111,6 +116,9 @@ arena_t *arena_current(void);
 
 /** Installs cJSON hooks: blocks come from arena_current() when a scope is open, else from malloc. */
 void json_alloc_install(void);
+
+/** Allocations through the cJSON hooks that returned NULL, ever (heap or arena). */
+unsigned json_alloc_failures(void);
 
 #ifdef __cplusplus
 }
@@ -180,14 +188,15 @@ int main(void)
 }
 ```
 
-Replace `stm32/firmware/test/host/Makefile` with:
+Replace `stm32/firmware/test/host/Makefile` with this (recipe lines start with a tab):
 
 ```make
 # Host tests for the hardware-free modules of the STM32 firmware: make -C stm32/firmware/test/host
 CJSON := ../../third_party/cjson
 TLSF := ../../third_party/tlsf
 INC := -I../../components/cfgmodel/include -I../../components/proto/include -I../../components/arena/include -I$(CJSON) -I$(TLSF)
-CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize=address,undefined $(INC)
+# UBSan findings stop the test (-fno-sanitize-recover), so a NULL dereference can never pass unnoticed.
+CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all $(INC)
 BUILD := build
 CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c
 ARENA := ../../components/arena/arena.c $(TLSF)/tlsf.c
@@ -215,12 +224,10 @@ clean:
 .PHONY: all clean
 ```
 
-(Recipe lines start with a tab.)
-
 - [ ] **Step 3: Run the tests to verify they fail**
 
 Run: `make -C stm32/firmware/test/host`
-Expected: the `test_arena` link fails with `undefined reference to 'arena_init'` (and the other `arena_*` functions). `test_cfgmodel` and `test_proto` still build.
+Expected: make stops with `No rule to make target '../../components/arena/arena.c', needed by 'build/test_arena'`. The implementation does not exist yet.
 
 - [ ] **Step 4: Implement the arena**
 
@@ -247,6 +254,7 @@ Create `stm32/firmware/components/arena/arena.c`:
 static arena_t *s_current;
 // The one arena whose blocks json_free must recognise, also after its scope closed.
 static arena_t *s_known;
+static unsigned s_failures;
 
 void arena_init(arena_t *a, void *mem, size_t size)
 {
@@ -304,8 +312,12 @@ arena_t *arena_current(void) { return s_current; }
 static void *json_malloc(size_t size)
 {
     arena_t *a = arena_current();
-    return a ? arena_malloc(a, size) : malloc(size);
+    void *p = a ? arena_malloc(a, size) : malloc(size);
+    if (!p) s_failures++;
+    return p;
 }
+
+unsigned json_alloc_failures(void) { return s_failures; }
 
 static void json_free(void *p)
 {
@@ -329,7 +341,7 @@ Expected: `cfgmodel: all checks passed`, `proto: all tests passed`, `arena: all 
 
 ```bash
 git add stm32/firmware/third_party/tlsf stm32/firmware/components/arena stm32/firmware/test/host/test_arena.c stm32/firmware/test/host/Makefile
-git commit -m "stm32: JSON arena over TLSF with per-scope reset, ASan poisoning and cJSON routing"
+git commit -m "stm32: JSON arena over TLSF with per-scope reset, ASan poisoning, cJSON routing and a failure count"
 ```
 
 ---
@@ -343,13 +355,7 @@ git commit -m "stm32: JSON arena over TLSF with per-scope reset, ASan poisoning 
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces:
-  - `js_span_t {p, n}`;
-  - `js_type_t` (`JS_INVALID`, `JS_OBJECT`, `JS_ARRAY`, `JS_STRING`, `JS_NUMBER`, `JS_TRUE`, `JS_FALSE`, `JS_NULL`);
-  - `JS_MAX_DEPTH` = 32;
-  - `bool js_parse_root(const char*, size_t, js_span_t*)`, `js_type(js_span_t)`;
-  - `js_iter_t`, `js_iter_init(js_iter_t*, js_span_t)`, `bool js_iter_next(js_iter_t*, js_span_t *key, js_span_t *val)`, `size_t js_count(js_span_t)`;
-  - `bool js_key_is(js_span_t key, const char *lit, bool nocase)`.
+- Produces: `js_span_t {p, n}`, `js_type_t`, `JS_MAX_DEPTH` = 32, `js_parse_root`, `js_type`, `js_iter_t`, `js_iter_init`, `js_iter_next(it, key, val)`, `js_count`, `js_key_is(key, lit, nocase)`.
 
 - [ ] **Step 1: Write the header and the failing test**
 
@@ -381,8 +387,11 @@ typedef enum { JS_INVALID, JS_OBJECT, JS_ARRAY, JS_STRING, JS_NUMBER, JS_TRUE, J
 #define JS_MAX_DEPTH 32
 
 /**
- * True when s[0..n) holds exactly one JSON value, optionally surrounded by
- * whitespace, nested at most JS_MAX_DEPTH deep. On success *root is the value.
+ * True when s[0..n) holds exactly one JSON value (RFC 8259: well-formed UTF-8,
+ * surrogate escapes in pairs), optionally surrounded by whitespace, nested at
+ * most JS_MAX_DEPTH deep. On success *root is the value. Every string this
+ * accepts is one cJSON accepts too, so a later cJSON_Parse of a span can only
+ * fail for lack of memory.
  */
 bool js_parse_root(const char *s, size_t n, js_span_t *root);
 
@@ -445,9 +454,15 @@ static bool valid(const char *s)
 static void test_validity(void)
 {
     const char *good[] = {"[]", " {} ", "0", "-0.5e+10", "\"a\\u00e9\\n\"", "true", "null", "[1,[2,{\"a\":[]}],\"x\"]",
-                          "{\"a\":1,\"a\":2}", "\t[ 1 , 2 ]\r\n"};
+                          "{\"a\":1,\"a\":2}", "\t[ 1 , 2 ]\r\n", "\"\\uD83D\\uDE00\"", "\"\xc3\xa9\"", "\"\xe2\x82\xac\"",
+                          "\"\xf0\x9f\x98\x80\"", "\"\\u0000\""};
     const char *bad[] = {"", " ", "[", "[1,]", "{\"a\"}", "{\"a\":}", "{a:1}", "01", "1.", "+1", ".5", "1e", "\"\\x\"",
-                         "\"\\u12g4\"", "\"tab\there\"", "tru", "nul", "[1]x", "[1] [2]", "{\"a\":1,}", "\"open"};
+                         "\"\\u12g4\"", "\"tab\there\"", "tru", "nul", "[1]x", "[1] [2]", "{\"a\":1,}", "\"open",
+                         // surrogates as cJSON wants them: a high one followed by a low one, never alone
+                         "\"\\uD800\"", "\"\\uDC00\"", "\"\\uD800x\"", "\"\\uD800\\u0041\"", "{\"\\uD800\":1}",
+                         // UTF-8 (RFC 3629): overlong, encoded surrogate, beyond U+10FFFF, stray and cut bytes
+                         "\"\xc0\x80\"", "\"\xe0\x80\x80\"", "\"\xed\xa0\x80\"", "\"\xf4\x90\x80\x80\"", "\"\xff\"",
+                         "\"\x80\"", "\"\xc3\"", "[\"ok\",\"\xe2\x82\"]"};
     for (size_t i = 0; i < sizeof good / sizeof *good; i++) CHECK(valid(good[i]), "rejected valid %s", good[i]);
     for (size_t i = 0; i < sizeof bad / sizeof *bad; i++) CHECK(!valid(bad[i]), "accepted invalid %s", bad[i]);
     char deep[2 * JS_MAX_DEPTH + 3];
@@ -512,14 +527,15 @@ int main(void)
 }
 ```
 
-Replace `stm32/firmware/test/host/Makefile` with:
+Replace `stm32/firmware/test/host/Makefile` with this (recipe lines start with a tab):
 
 ```make
 # Host tests for the hardware-free modules of the STM32 firmware: make -C stm32/firmware/test/host
 CJSON := ../../third_party/cjson
 TLSF := ../../third_party/tlsf
 INC := -I../../components/cfgmodel/include -I../../components/proto/include -I../../components/arena/include -I$(CJSON) -I$(TLSF)
-CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize=address,undefined $(INC)
+# UBSan findings stop the test (-fno-sanitize-recover), so a NULL dereference can never pass unnoticed.
+CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all $(INC)
 BUILD := build
 CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c
 ARENA := ../../components/arena/arena.c $(TLSF)/tlsf.c
@@ -555,7 +571,7 @@ clean:
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `make -C stm32/firmware/test/host`
-Expected: the `test_jsonscan` link fails with `undefined reference to 'js_parse_root'` (and the other `js_*` functions).
+Expected: make stops with `No rule to make target '../../components/proto/jsonscan.c', needed by 'build/test_jsonscan'`.
 
 - [ ] **Step 3: Implement the scanner**
 
@@ -585,20 +601,60 @@ static int hexval(char c)
 // error: a value always has at least one character, so a real end is never 0.
 static size_t scan_value(const char *s, size_t n, size_t i, int depth);
 
+/** The code unit of a \\uXXXX escape whose 'u' is at s[i], or -1. */
+static long u_escape(const char *s, size_t n, size_t i)
+{
+    if (i + 4 >= n) return -1;
+    long v = 0;
+    for (int k = 1; k <= 4; k++) {
+        int h = hexval(s[i + k]);
+        if (h < 0) return -1;
+        v = v << 4 | h;
+    }
+    return v;
+}
+
+/** Length of the well-formed UTF-8 sequence at s[i] (RFC 3629: no overlongs, no surrogates), or 0. */
+static size_t utf8_len(const unsigned char *s, size_t n, size_t i)
+{
+    unsigned char c = s[i];
+    size_t len = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : 2;
+    if (c < 0xC2 || c > 0xF4 || i + len > n) return 0;
+    for (size_t k = 1; k < len; k++)
+        if ((s[i + k] & 0xC0) != 0x80) return 0;
+    unsigned char d = s[i + 1];
+    if (c == 0xE0 && d < 0xA0) return 0;  // overlong
+    if (c == 0xED && d > 0x9F) return 0;  // U+D800..U+DFFF
+    if (c == 0xF0 && d < 0x90) return 0;  // overlong
+    if (c == 0xF4 && d > 0x8F) return 0;  // above U+10FFFF
+    return len;
+}
+
 static size_t scan_string(const char *s, size_t n, size_t i)
 {
     for (i++; i < n; i++) {
         unsigned char c = (unsigned char)s[i];
         if (c == '"') return i + 1;
         if (c < 0x20) return 0;
+        if (c >= 0x80) {
+            size_t len = utf8_len((const unsigned char *)s, n, i);
+            if (!len) return 0;
+            i += len - 1;
+            continue;
+        }
         if (c != '\\') continue;
         if (++i >= n) return 0;
         c = (unsigned char)s[i];
         if (c == 'u') {
-            if (i + 4 >= n) return 0;
-            for (int k = 1; k <= 4; k++)
-                if (hexval(s[i + k]) < 0) return 0;
+            long u = u_escape(s, n, i);
+            if (u < 0 || (u >= 0xDC00 && u <= 0xDFFF)) return 0;  // a low surrogate on its own
             i += 4;
+            if (u >= 0xD800 && u <= 0xDBFF) {  // a high surrogate must be followed by a low one, as cJSON requires
+                if (i + 2 >= n || s[i + 1] != '\\' || s[i + 2] != 'u') return 0;
+                long lo = u_escape(s, n, i + 2);
+                if (lo < 0xDC00 || lo > 0xDFFF) return 0;
+                i += 6;
+            }
         } else if (!strchr("\"\\/bfnrt", c) || c == '\0') {
             return 0;
         }
@@ -766,37 +822,40 @@ bool js_key_is(js_span_t key, const char *lit, bool nocase)
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `make -C stm32/firmware/test/host`
-Expected: `jsonscan: all tests passed`, and the earlier suites still pass. `test_proto` now also compiles `jsonscan.c` through its wildcard; that is expected.
+Expected: `jsonscan: all tests passed`, and the earlier suites still pass. `test_proto` also compiles `jsonscan.c` through its wildcard; that is expected.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add stm32/firmware/components/proto/include/jsonscan.h stm32/firmware/components/proto/jsonscan.c stm32/firmware/test/host/test_jsonscan.c stm32/firmware/test/host/Makefile
-git commit -m "stm32 proto: strict JSON scanner that validates and walks text in place"
+git commit -m "stm32 proto: strict RFC 8259 scanner (UTF-8, surrogate pairs, depth 32) that walks text in place"
 ```
 
 ---
 
-### Task 3: `cfg_validate_text`, small configs within the arena
+### Task 3: `cfg_validate_text`, and no silent loss on a failed allocation
 
 **Files:**
-- Modify: `stm32/firmware/components/cfgmodel/include/cfgmodel.h` (insert the block below just before the closing `#ifdef __cplusplus` / `}` / `#endif`)
-- Modify: `stm32/firmware/components/cfgmodel/cfgmodel.c` (append the block below at the end of the file)
-- Test: `stm32/firmware/test/host/test_text_small.c`
+- Modify: `stm32/firmware/components/cfgmodel/include/cfgmodel.h` (insert directly after the `cfg_load` declaration)
+- Modify: `stm32/firmware/components/cfgmodel/cfgmodel.c`:
+  - allocation-failure handling in `take()`, `object()` and `list()`;
+  - the new block appended at the end
+- Test: `stm32/firmware/test/host/test_text_small.c`, `stm32/firmware/test/host/test_oom.c`
 - Modify: `stm32/firmware/test/host/Makefile`
 
 **Interfaces:**
-- Consumes: Task 1 (`arena_*`, `json_alloc_install`), Task 2 (`js_parse_root`).
+- Consumes: Task 1 (`arena_*`, `json_alloc_install`, `json_alloc_failures`), Task 2 (`js_parse_root`).
 - Produces:
   - `cfg_result_t` (`CFG_OK`, `CFG_INVALID`, `CFG_TOO_LARGE`, `CFG_NO_MEMORY`, `CFG_ABORTED`);
-  - `CFG_SMALL_MAX` = 10240, `CFG_EDGE_MAX` = 49152;
-  - `cfg_result_t cfg_validate_text(const cfg_env_t*, const char *name, const char *text, size_t len, const cJSON *current, char *out, size_t out_size, char *err, size_t errlen)`.
+  - `CFG_SMALL_MAX`, `CFG_EDGE_MAX`, `CFG_SMALL_BUF`;
+  - `unsigned json_alloc_failures(void)` (weak default 0 in cfgmodel);
+  - `cfg_validate_text(env, name, text, len, current, out, out_size, err, errlen)`.
 
-  Plan 06 (`webapi`) calls it with `out_size = CFG_SMALL_MAX + 1`.
+  Plan 06 calls it with a `CFG_SMALL_BUF` buffer and the full stored document as `current`.
 
-- [ ] **Step 1: Declare the API and write the failing test**
+- [ ] **Step 1: Declare the API and write the failing tests**
 
-Insert into `cfgmodel.h`, directly after the `cfg_load` declaration:
+Insert into `cfgmodel.h`, directly after the line `cJSON *cfg_load(const cfg_env_t *env, const char *name, const cJSON *in, char *err, size_t errlen);`, an empty line and then:
 
 ```c
 // ---- Text in, text out (STM32: bounded memory, spec §9.3-9.4) -------------------------
@@ -812,10 +871,22 @@ typedef enum {
 /** Exact limits of the accepted normalised text, in bytes (spec §9.3, §9.4). */
 #define CFG_SMALL_MAX 10240
 #define CFG_EDGE_MAX 49152
+/** cJSON_PrintPreallocated needs 5 bytes beyond the text (cJSON.h); size buffers for cfg_validate_text with this. */
+#define CFG_SMALL_BUF (CFG_SMALL_MAX + 6)
+
+/**
+ * Allocations through the cJSON hooks that returned NULL so far. The JSON allocator
+ * (components/arena) provides it; a weak default here returns 0. cJSON and the
+ * tree-based validator ignore some failed allocations (a field silently keeps its
+ * default), so the text entry points below compare this count before and after,
+ * and any failure turns the result into CFG_NO_MEMORY.
+ */
+unsigned json_alloc_failures(void);
 
 /**
  * One config other than edgeDevices, from JSON text to normalised JSON text in
- * `out` (NUL-terminated, at most out_size - 1 bytes; pass CFG_SMALL_MAX + 1).
+ * `out` (NUL-terminated; a buffer of CFG_SMALL_BUF bytes). Text longer than
+ * CFG_SMALL_MAX bytes is CFG_TOO_LARGE.
  * Same rules and messages as cfg_validate. The input tree is freed before the
  * output is printed, and the output is printed into `out` without reallocation,
  * which keeps the arena peak low.
@@ -827,8 +898,9 @@ cfg_result_t cfg_validate_text(const cfg_env_t *env, const char *name, const cha
 Create `stm32/firmware/test/host/test_text_small.c`:
 
 ```c
-// cfg_validate_text: the round trip, the 10 240-byte limit and the arena peak for the
-// configs other than edgeDevices (spec §9.3): make -C stm32/firmware/test/host
+// cfg_validate_text: the round trip, the 10 240-byte limit and the arena peak for the configs
+// other than edgeDevices (spec §9.3). Every call runs inside a real 64 KB arena scope, as on
+// the target: make -C stm32/firmware/test/host
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -849,94 +921,319 @@ static int failures;
 
 static _Alignas(8) char region[64 * 1024];
 static arena_t s_arena;
+static size_t s_worst;  // highest arena peak seen in this run
+static char s_out[CFG_SMALL_BUF], s_err[200];
 
-/** Small configs: the round trip holds, an oversized normalised text is 413, and the arena peak fits. */
-static void test_small(void)
+/** cfg_validate_text inside one arena scope, the way the web task calls it. */
+static cfg_result_t run(const char *name, const char *text, const cJSON *current)
 {
-    static char in[CFG_SMALL_MAX + 1], out[CFG_SMALL_MAX + 1], again[CFG_SMALL_MAX + 1];
-    char err[200];
-    size_t o = (size_t)snprintf(in, sizeof in, "[");
-    for (int i = 0; i < 16; i++) {
-        char t[129], id[65], d[17];
-        memset(t, 't', 128), t[128] = 0, memset(id, 'i', 64), id[64] = 0, memset(d, 'd', 16), d[16] = 0;
-        o += (size_t)snprintf(in + o, sizeof in - o,
-                              "%s{\"enabled\":true,\"mode\":1,\"topic\":\"%s\",\"ports\":3,\"qos\":2,\"retain\":true,\"ioControl\":true,"
-                              "\"identifier\":\"%s\",\"delimiter\":\"%s\"}",
-                              i ? "," : "", t, id, d);
-    }
-    snprintf(in + o, sizeof in - o, "]");
     arena_begin(&s_arena);
-    cfg_result_t r = cfg_validate_text(&ENV, "mqttPublish", in, strlen(in), NULL, out, sizeof out, err, sizeof err);
-    size_t peak = s_arena.peak;
+    cfg_result_t r = cfg_validate_text(&ENV, name, text, strlen(text), current, s_out, sizeof s_out, s_err, sizeof s_err);
+    if (s_arena.peak > s_worst) s_worst = s_arena.peak;
+    CHECK(s_arena.peak <= 60 * 1024, "%s: arena peak %zu bytes (limit 60 KB)", name, s_arena.peak);
     arena_end(&s_arena);
-    CHECK(r == CFG_OK, "16 full topics rejected: %d %s", r, err);
-    CHECK(peak <= 60 * 1024, "arena peak %zu bytes for 16 full topics (limit 60 KB)", peak);
-    printf("  16 full topics: %zu bytes, arena peak %zu bytes\n", strlen(out), peak);
-    r = cfg_validate_text(&ENV, "mqttPublish", out, strlen(out), NULL, again, sizeof again, err, sizeof err);
-    CHECK(r == CFG_OK && strcmp(out, again) == 0, "POST -> GET -> POST changes the text");
+    return r;
+}
 
-    // Control characters print as \u00XX: 15 topics fit the input limit but not the output one.
-    o = (size_t)snprintf(in, sizeof in, "[");
-    for (int i = 0; i < 15; i++) {
-        o += (size_t)snprintf(in + o, sizeof in - o, "%s{\"topic\":\"", i ? "," : "");
-        for (int k = 0; k < 128; k++) in[o++] = 't';
-        o += (size_t)snprintf(in + o, sizeof in - o, "\",\"identifier\":\"");
-        for (int k = 0; k < 64; k++) o += (size_t)snprintf(in + o, sizeof in - o, "\\u0001");
-        o += (size_t)snprintf(in + o, sizeof in - o, "\",\"delimiter\":\"");
-        for (int k = 0; k < 16; k++) o += (size_t)snprintf(in + o, sizeof in - o, "\\u0001");
-        o += (size_t)snprintf(in + o, sizeof in - o, "\"}");
+/** The tree-based reference, on the heap: normalised length of `text`, or 0 if it is rejected. */
+static size_t reference_len(const char *name, const char *text)
+{
+    char err[200];
+    cJSON *in = cJSON_Parse(text);
+    cJSON *out = in ? cfg_validate(&ENV, name, in, NULL, err, sizeof err) : NULL;
+    char *t = out ? cJSON_PrintUnformatted(out) : NULL;
+    size_t n = t ? strlen(t) : 0;
+    free(t);
+    cJSON_Delete(out);
+    cJSON_Delete(in);
+    return n;
+}
+
+static bool accepted(const char *name, const char *text) { return reference_len(name, text) > 0; }
+
+/**
+ * The largest document the schema accepts for `name`, found by probing the reference
+ * validator: every string field as long as it allows (the last three characters are
+ * an index, so list items stay unique), and a list as long as it allows.
+ */
+static char *largest_doc(const char *name)
+{
+    cJSON *def = cfg_default(&ENV, name);
+    bool list = cJSON_IsArray(def);
+    cJSON *item;
+    if (list) {  // one item with every field at its default
+        cJSON *probe = cJSON_Parse("[{}]");
+        char err[200];
+        cJSON *v = cfg_validate(&ENV, name, probe, NULL, err, sizeof err);
+        item = v ? cJSON_DetachItemFromArray(v, 0) : cJSON_CreateObject();
+        cJSON_Delete(v);
+        cJSON_Delete(probe);
+    } else {
+        item = cJSON_Duplicate(def, true);
     }
-    snprintf(in + o, sizeof in - o, "]");
-    CHECK(strlen(in) <= CFG_SMALL_MAX, "the escaped payload must fit the input limit (%zu)", strlen(in));
-    r = cfg_validate_text(&ENV, "mqttPublish", in, strlen(in), NULL, out, sizeof out, err, sizeof err);
-    CHECK(r == CFG_TOO_LARGE && strcmp(err, "These settings are too large.") == 0, "escaped topics: %d %s", r, err);
+    cJSON_Delete(def);
+    cJSON *f;
+    cJSON_ArrayForEach(f, item)
+    {
+        if (!cJSON_IsString(f)) continue;
+        int lo = -1, hi = 4096;  // largest accepted length of 'a's, by bisection
+        while (hi - lo > 1) {
+            int mid = (lo + hi) / 2;
+            char *s = malloc((size_t)mid + 1);
+            memset(s, 'a', (size_t)mid), s[mid] = '\0';
+            cJSON *t = cJSON_Duplicate(item, true);
+            cJSON_ReplaceItemInObjectCaseSensitive(t, f->string, cJSON_CreateString(s));
+            cJSON *doc = list ? cJSON_CreateArray() : t;
+            if (list) cJSON_AddItemToArray(doc, t);
+            char *txt = cJSON_PrintUnformatted(doc);
+            if (accepted(name, txt)) lo = mid;
+            else hi = mid;
+            free(txt), free(s), cJSON_Delete(doc);
+        }
+        if (lo >= 3) {
+            char *s = malloc((size_t)lo + 1);
+            memset(s, 'a', (size_t)lo), s[lo] = '\0';
+            cJSON_SetValuestring(f, s);
+            free(s);
+        }
+    }
+    cJSON *doc = item;
+    if (list) {
+        doc = cJSON_CreateArray();
+        for (int n = 1; n <= 64; n++) {  // grow until the schema refuses another item
+            cJSON *t = cJSON_Duplicate(item, true);
+            cJSON *g;
+            cJSON_ArrayForEach(g, t)
+            {
+                size_t k = cJSON_IsString(g) ? strlen(g->valuestring) : 0;
+                if (k >= 3) snprintf(g->valuestring + k - 3, 4, "%03u", (unsigned)n % 1000u);
+            }
+            cJSON_AddItemToArray(doc, t);
+            char *txt = cJSON_PrintUnformatted(doc);
+            bool ok = accepted(name, txt);
+            free(txt);
+            if (!ok) {
+                cJSON_DeleteItemFromArray(doc, cJSON_GetArraySize(doc) - 1);
+                break;
+            }
+        }
+        cJSON_Delete(item);
+    }
+    char *txt = cJSON_PrintUnformatted(doc);
+    cJSON_Delete(doc);
+    return txt;
+}
 
-    // Every config's defaults round-trip; a schema error keeps its message; bad JSON is named.
+/** mqttPublish whose normalised text is exactly `target` bytes, or NULL. */
+static char *publish_of_len(size_t target)
+{
+    static char buf[CFG_SMALL_MAX * 2];
+    // Escaped characters (6 output bytes each) fill the identifier (64) and then the delimiter (16)
+    // of every topic; the length of the last topic (1 byte each) fills the gaps between steps.
+    for (int esc = 0; esc <= 80; esc++) {
+        for (int last = 0; last <= 128; last++) {
+            size_t o = (size_t)snprintf(buf, sizeof buf, "[");
+            for (int i = 0; i < 16; i++) {
+                int tl = i == 15 ? last : 128;
+                o += (size_t)snprintf(buf + o, sizeof buf - o, "%s{\"topic\":\"", i ? "," : "");
+                for (int k = 0; k < tl; k++) buf[o++] = 't';
+                o += (size_t)snprintf(buf + o, sizeof buf - o, "\",\"identifier\":\"");
+                for (int k = 0; k < 64; k++) o += (size_t)snprintf(buf + o, sizeof buf - o, k < esc ? "\\u0001" : "i");
+                o += (size_t)snprintf(buf + o, sizeof buf - o, "\",\"delimiter\":\"");
+                for (int k = 0; k < 16; k++) o += (size_t)snprintf(buf + o, sizeof buf - o, 64 + k < esc ? "\\u0001" : "d");
+                o += (size_t)snprintf(buf + o, sizeof buf - o, "\"}");
+            }
+            snprintf(buf + o, sizeof buf - o, "]");
+            size_t n = reference_len("mqttPublish", buf);
+            if (n == target) return buf;
+            if (n > target) break;
+        }
+    }
+    return NULL;
+}
+
+static void test_exact_limit(void)
+{
+    for (size_t want = CFG_SMALL_MAX - 1; want <= CFG_SMALL_MAX + 1; want++) {
+        char *in = publish_of_len(want);
+        CHECK(in != NULL, "could not build a %zu-byte mqttPublish", want);
+        if (!in) continue;
+        cfg_result_t r = run("mqttPublish", in, NULL);
+        if (want <= CFG_SMALL_MAX) {
+            CHECK(r == CFG_OK && strlen(s_out) == want, "%zu bytes must be accepted (%d %s)", want, r, s_err);
+        } else {
+            CHECK(r == CFG_TOO_LARGE && strcmp(s_err, "These settings are too large.") == 0, "%zu bytes must be 413 (%d %s)", want, r,
+                  s_err);
+        }
+    }
+}
+
+static void test_largest_each(void)
+{
     const char *names[16];
     size_t n = cfg_names(&ENV, names, 16);
     for (size_t i = 0; i < n; i++) {
         if (strcmp(names[i], "edgeDevices") == 0) continue;
+        char *doc = largest_doc(names[i]);
+        size_t ref = reference_len(names[i], doc);
+        cfg_result_t r = run(names[i], doc, NULL);
+        CHECK(ref > 0, "%s: the probed document is not accepted by the reference", names[i]);
+        CHECK(r == (ref <= CFG_SMALL_MAX ? CFG_OK : CFG_TOO_LARGE), "%s: largest document gives %d (%s), reference %zu bytes", names[i], r,
+              s_err, ref);
+        printf("  %-13s largest: %5zu bytes in, %5zu normalised, result %d\n", names[i], strlen(doc), ref, r);
+        free(doc);
+    }
+}
+
+static void test_round_trip_and_errors(void)
+{
+    static char again[CFG_SMALL_BUF];
+    const char *names[16];
+    size_t n = cfg_names(&ENV, names, 16);
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(names[i], "edgeDevices") == 0) continue;
+        char *doc = largest_doc(names[i]);
+        if (run(names[i], doc, NULL) == CFG_OK) {
+            strcpy(again, s_out);
+            cfg_result_t r = run(names[i], again, NULL);
+            CHECK(r == CFG_OK && strcmp(again, s_out) == 0, "%s: POST -> GET -> POST changes the text", names[i]);
+        }
+        free(doc);
         cJSON *d = cfg_default(&ENV, names[i]);
         char *t = cJSON_PrintUnformatted(d);
-        r = cfg_validate_text(&ENV, names[i], t, strlen(t), NULL, out, sizeof out, err, sizeof err);
-        CHECK(r == CFG_OK && strcmp(out, t) == 0, "%s defaults do not round-trip (%d %s)", names[i], r, err);
+        cfg_result_t r = run(names[i], t, NULL);
+        CHECK(r == CFG_OK && strcmp(s_out, t) == 0, "%s defaults do not round-trip (%d %s)", names[i], r, s_err);
         free(t);
         cJSON_Delete(d);
     }
-    r = cfg_validate_text(&ENV, "port1", "{\"baudRate\":300}", 16, NULL, out, sizeof out, err, sizeof err);
-    CHECK(r == CFG_INVALID && strcmp(err, "baudRate must be 600 to 230400.") == 0, "schema error: %d %s", r, err);
-    r = cfg_validate_text(&ENV, "port1", "{\"baudRate\":", 12, NULL, out, sizeof out, err, sizeof err);
-    CHECK(r == CFG_INVALID && strcmp(err, "The request body is not valid JSON.") == 0, "bad JSON: %d %s", r, err);
+    // `current` (a full stored document, as the store passes it) supplies the keys the request leaves out.
+    cJSON *cur = cfg_default(&ENV, "port1");
+    cJSON_ReplaceItemInObjectCaseSensitive(cur, "baudRate", cJSON_CreateNumber(9600));
+    cfg_result_t r = run("port1", "{\"dataBits\":7}", cur);
+    CHECK(r == CFG_OK && strstr(s_out, "\"baudRate\":9600") && strstr(s_out, "\"dataBits\":7"), "current values kept (%d %s)", r, s_err);
+    cJSON_Delete(cur);
+    r = run("port1", "{\"baudRate\":300}", NULL);
+    CHECK(r == CFG_INVALID && strcmp(s_err, "baudRate must be 600 to 230400.") == 0, "schema error: %d %s", r, s_err);
+    r = run("port1", "{\"baudRate\":", NULL);
+    CHECK(r == CFG_INVALID && strcmp(s_err, "The request body is not valid JSON.") == 0, "bad JSON: %d %s", r, s_err);
+    r = run("system", "{\"hostname\":\"\\uD800\"}", NULL);
+    CHECK(r == CFG_INVALID && strcmp(s_err, "The request body is not valid JSON.") == 0, "lone surrogate: %d %s", r, s_err);
 }
 
 int main(void)
 {
     arena_init(&s_arena, region, sizeof region);
     json_alloc_install();
-    test_small();
+    test_exact_limit();
+    test_largest_each();
+    test_round_trip_and_errors();
+    printf("  worst arena peak: %zu bytes\n", s_worst);
     printf(failures ? "%d FAILED\n" : "text_small: all tests passed\n", failures);
     return failures != 0;
 }
 ```
 
-Replace `stm32/firmware/test/host/Makefile` with:
+Create `stm32/firmware/test/host/test_oom.c`:
+
+```c
+// Fault injection for the text entry points: every single allocation is made to fail in
+// turn, and each run must end in CFG_NO_MEMORY ("Out of memory.") with nothing leaked and no
+// partial result (spec §9.3). Links cfgmodel without the arena, with its own failing
+// allocator and its own json_alloc_failures(): make -C stm32/firmware/test/host
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "cfgmodel.h"
+
+static const cfg_env_t ENV = {.uart_count = 2, .do_count = 2, .di_count = 2, .ai_count = 2};
+static int failures;
+#define CHECK(cond, ...)                                \
+    do {                                                \
+        if (!(cond)) {                                  \
+            failures++;                                 \
+            printf("FAIL %s:%d: ", __FILE__, __LINE__); \
+            printf(__VA_ARGS__);                        \
+            printf("\n");                               \
+        }                                               \
+    } while (0)
+
+static long s_count, s_fail_at;  // allocations so far; the 1-based one to fail (0: none)
+static unsigned s_failed;
+
+unsigned json_alloc_failures(void) { return s_failed; }
+
+static void *flaky_malloc(size_t n)
+{
+    if (++s_count == s_fail_at) {
+        s_failed++;
+        return NULL;
+    }
+    return malloc(n);
+}
+
+typedef cfg_result_t (*entry_fn)(const char *text, char *err, size_t errlen);
+
+static char s_out[CFG_SMALL_BUF];
+static const char *s_name;
+static cfg_result_t small(const char *text, char *err, size_t errlen)
+{
+    return cfg_validate_text(&ENV, s_name, text, strlen(text), NULL, s_out, sizeof s_out, err, errlen);
+}
+/** Runs `fn` once clean to count its allocations, then once per allocation with that one failing. */
+static void each_allocation(entry_fn fn, const char *text, const char *label)
+{
+    char err[200];
+    s_count = 0, s_fail_at = 0;
+    cfg_result_t clean = fn(text, err, sizeof err);
+    long total = s_count;
+    CHECK(clean == CFG_OK || clean == CFG_INVALID, "%s: clean run gives %d (%s)", label, clean, err);
+    for (long k = 1; k <= total; k++) {
+        s_count = 0, s_fail_at = k;
+        cfg_result_t r = fn(text, err, sizeof err);
+        CHECK(r == CFG_NO_MEMORY && strcmp(err, "Out of memory.") == 0, "%s: allocation %ld of %ld failing gives %d (%s)", label, k,
+              total, r, err);
+    }
+    printf("  %-28s %ld allocations, each failed once\n", label, total);
+}
+
+int main(void)
+{
+    setvbuf(stdout, NULL, _IONBF, 0);
+    cJSON_Hooks h = {.malloc_fn = flaky_malloc, .free_fn = free};
+    cJSON_InitHooks(&h);
+
+    s_name = "port1";
+    each_allocation(small, "{\"baudRate\":9600,\"remoteHost\":\"data.example.net\",\"tls\":1}", "port1");
+    s_name = "mqttPublish";
+    each_allocation(small, "[{\"topic\":\"a/b\",\"identifier\":\"x\"},{\"topic\":\"c\",\"qos\":2}]", "mqttPublish");
+    s_name = "port1";
+    each_allocation(small, "{\"baudRate\":300}", "port1 schema error");
+
+    printf(failures ? "%d FAILED\n" : "oom: all tests passed\n", failures);
+    return failures != 0;
+}
+```
+
+Replace `stm32/firmware/test/host/Makefile` with this (recipe lines start with a tab):
 
 ```make
 # Host tests for the hardware-free modules of the STM32 firmware: make -C stm32/firmware/test/host
 CJSON := ../../third_party/cjson
 TLSF := ../../third_party/tlsf
 INC := -I../../components/cfgmodel/include -I../../components/proto/include -I../../components/arena/include -I$(CJSON) -I$(TLSF)
-CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize=address,undefined $(INC)
+# UBSan findings stop the test (-fno-sanitize-recover), so a NULL dereference can never pass unnoticed.
+CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all $(INC)
 BUILD := build
 CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c ../../components/proto/jsonscan.c
 ARENA := ../../components/arena/arena.c $(TLSF)/tlsf.c
 
-all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small
+all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_oom
 	$(BUILD)/test_cfgmodel
 	$(BUILD)/test_proto
 	$(BUILD)/test_jsonscan
 	$(BUILD)/test_arena
 	$(BUILD)/test_text_small
+	$(BUILD)/test_oom
 
 $(BUILD)/test_cfgmodel: test_cfgmodel.c $(CFG) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
@@ -958,6 +1255,10 @@ $(BUILD)/test_text_small: test_text_small.c $(CFG) $(ARENA) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $^ -lm -o $@
 
+$(BUILD)/test_oom: test_oom.c $(CFG) $(CJSON)/cJSON.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) $^ -lm -o $@
+
 clean:
 	rm -rf $(BUILD)
 
@@ -969,7 +1270,39 @@ clean:
 Run: `make -C stm32/firmware/test/host`
 Expected: the `test_text_small` link fails with `undefined reference to 'cfg_validate_text'`.
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 3: Stop the tree-based code from dropping or leaking items when an allocation fails**
+
+These edits change no success path. They free an item that cannot be placed, and skip work on a list that could not be allocated:
+
+```python
+p = 'stm32/firmware/components/cfgmodel/cfgmodel.c'
+s = open(p).read()
+def R(a, b, count=1):
+    global s
+    assert s.count(a) == count, (s.count(a), a[:60])
+    s = s.replace(a, b)
+R('/** Reads one field from `src` into `dst` with type coercion.',
+  '/** cJSON_ReplaceItemInObjectCaseSensitive that frees `item` when it cannot be placed (no key, or no memory). */\n'
+  'static void put_field(cJSON *dst, const char *key, cJSON *item)\n'
+  '{\n'
+  '    if (!cJSON_ReplaceItemInObjectCaseSensitive(dst, key, item)) cJSON_Delete(item);\n'
+  '}\n\n'
+  '/** Reads one field from `src` into `dst` with type coercion.')
+R('cJSON_ReplaceItemInObjectCaseSensitive(dst, f->key, ', 'put_field(dst, f->key, ', 4)
+R('        if (b) cJSON_AddItemToObject(out, fields[i].key, cJSON_Duplicate(b, true));',
+  '        if (b) {\n'
+  '            cJSON *copy = cJSON_Duplicate(b, true);\n'
+  '            if (!cJSON_AddItemToObject(out, fields[i].key, copy)) cJSON_Delete(copy);  // the key copy failed\n'
+  '        }')
+R('        cJSON *o = object(env, cfg, fields, n, it, base, err, errlen);\n        if (!o) {\n            cJSON_Delete(out);',
+  '        cJSON *o = out ? object(env, cfg, fields, n, it, base, err, errlen) : NULL;  // out is NULL only without memory\n        if (!o) {\n            cJSON_Delete(out);')
+open(p, 'w').write(s)
+```
+
+Run it: `python3 - < /dev/stdin`, or save it as a file and run it from the repository root. Then run `make -C stm32/firmware/test/host build/test_cfgmodel && stm32/firmware/test/host/build/test_cfgmodel`.
+Expected: `cfgmodel: all checks passed`.
+
+- [ ] **Step 4: Implement `cfg_validate_text`**
 
 Append to the end of `stm32/firmware/components/cfgmodel/cfgmodel.c`:
 
@@ -984,41 +1317,42 @@ Append to the end of `stm32/firmware/components/cfgmodel/cfgmodel.c`:
 
 static const char NOT_JSON[] = "The request body is not valid JSON.";
 
+__attribute__((weak)) unsigned json_alloc_failures(void) { return 0; }
+
 cfg_result_t cfg_validate_text(const cfg_env_t *env, const char *name, const char *text, size_t len,
                                const cJSON *current, char *out, size_t out_size, char *err, size_t errlen)
 {
     js_span_t root;
     if (!js_parse_root(text, len, &root)) return fail(err, errlen, NOT_JSON, NULL, NULL), CFG_INVALID;
+    unsigned failures = json_alloc_failures();
     cJSON *in = cJSON_ParseWithLength(root.p, root.n);
-    if (!in) return fail(err, errlen, "Out of memory.", NULL, NULL), CFG_NO_MEMORY;
+    if (!in) return fail(err, errlen, "Out of memory.", NULL, NULL), CFG_NO_MEMORY;  // the scanner accepted it
     char why[160] = "";
     cJSON *doc = cfg_validate(env, name, in, current, why, sizeof why);
     cJSON_Delete(in);  // before printing: the peak is the input or the output, not both
-    if (!doc) {
-        bool oom = !*why;  // every schema error writes a message; only a failed allocation leaves none
-        fail(err, errlen, oom ? "Out of memory." : "%s", why, NULL);
-        return oom ? CFG_NO_MEMORY : CFG_INVALID;
-    }
-    bool fits = cJSON_PrintPreallocated(doc, out, (int)out_size, false);
+    bool fits = doc && cJSON_PrintPreallocated(doc, out, (int)out_size, false) && strlen(out) <= CFG_SMALL_MAX;
     cJSON_Delete(doc);
+    if (json_alloc_failures() != failures) return fail(err, errlen, "Out of memory.", NULL, NULL), CFG_NO_MEMORY;
+    if (!doc) return fail(err, errlen, "%s", why, NULL), CFG_INVALID;
     if (!fits) return fail(err, errlen, "These settings are too large.", NULL, NULL), CFG_TOO_LARGE;
     return CFG_OK;
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `make -C stm32/firmware/test/host`
 Expected:
-- the output contains `  16 full topics: 5201 bytes, arena peak` followed by a number ≤ 61440 (about 41 800 on the 64-bit host);
+- `  worst arena peak:` followed by a number ≤ 61440 (about 41 800);
 - `text_small: all tests passed`;
-- every earlier suite still passes.
+- `oom` lists `port1`, `mqttPublish` and `port1 schema error` with their allocation counts (about 298 / 114 / 142), then `oom: all tests passed`;
+- every earlier suite still passes. ASan reports no leak.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add stm32/firmware/components/cfgmodel stm32/firmware/test/host/test_text_small.c stm32/firmware/test/host/Makefile
-git commit -m "stm32 cfgmodel: cfg_validate_text with the 10 240-byte limit and a bounded arena peak"
+git add stm32/firmware/components/cfgmodel stm32/firmware/test/host/test_text_small.c stm32/firmware/test/host/test_oom.c stm32/firmware/test/host/Makefile
+git commit -m "stm32 cfgmodel: cfg_validate_text (10 240-byte limit, bounded arena peak, any failed allocation is CFG_NO_MEMORY)"
 ```
 
 ---
@@ -1026,24 +1360,22 @@ git commit -m "stm32 cfgmodel: cfg_validate_text with the 10 240-byte limit and 
 ### Task 4: `cfg_edge_text`, edgeDevices node by node
 
 **Files:**
-- Modify: `stm32/firmware/components/cfgmodel/include/cfgmodel.h` (insert after the Task 3 block)
+- Modify: `stm32/firmware/components/cfgmodel/include/cfgmodel.h` (insert just before the closing `#ifdef __cplusplus` / `}` / `#endif`)
 - Modify: `stm32/firmware/components/cfgmodel/cfgmodel.c` (append at the end)
-- Test: `stm32/firmware/test/host/test_edge_text.c`
+- Test: `stm32/firmware/test/host/test_edge_text.c`; `stm32/firmware/test/host/test_oom.c` (replaced by the full version)
 - Modify: `stm32/firmware/test/host/Makefile`
-- Modify: `stm32/docs/specs/2026-10-14-stm32-firmware-design.md` (the hash sentence in §9.4)
-- Modify: `stm32/docs/plans/2026-10-14-00-roadmap.md` (the API name in row 03)
+- Modify: `stm32/docs/specs/2026-10-14-stm32-firmware-design.md` (§9.3, §9.4)
+- Modify: `stm32/docs/plans/2026-10-14-00-roadmap.md` (row 03)
 
 **Interfaces:**
 - Consumes: Tasks 1–3.
-- Produces:
-  - `typedef bool (*cfg_emit_fn)(void *ctx, const char *text, size_t len)`;
-  - `cfg_result_t cfg_edge_text(const cfg_env_t*, const char *text, size_t len, bool strict, size_t max_out, cfg_emit_fn emit, void *ctx, char *err, size_t errlen)`.
+- Produces: `typedef bool (*cfg_emit_fn)(void *ctx, const char *text, size_t len)` and `cfg_edge_text(env, text, len, strict, max_out, emit, ctx, err, errlen)`.
+  - Plan 05 (`store`) emits into 8 KB FlashDB records and commits only on `CFG_OK`.
+  - Plan 06 calls it with `strict = true`; boot calls it with `strict = false`.
 
-  Plan 05 (`store`) emits into 8 KB FlashDB records and commits the generation only on `CFG_OK`. Plan 06 calls it with `strict = true`; boot calls it with `strict = false`.
+- [ ] **Step 1: Declare the API and write the failing tests**
 
-- [ ] **Step 1: Declare the API and write the failing test**
-
-Insert into `cfgmodel.h`, after the Task 3 block:
+Insert into `cfgmodel.h` just before the final `#ifdef __cplusplus` / `}` / `#endif`:
 
 ```c
 /** Receives the normalised edgeDevices text in order; returns false to stop. */
@@ -1160,6 +1492,8 @@ static void test_cases(void)
     both("[{\"name\\u0000x\":\"nul\"}]", "key with a NUL");
     both("[{\"name\":\"a\",\"name\":\"b\"}]", "duplicate key: first wins");
     both("[{\"name\":\"a\",\"junk\":[1,2,{\"deep\":true}]}]", "unknown keys dropped");
+    both("[{\"name\":\"a\",\"ip\":\"\\uD83D\\uDE00\",\"nodes\":[{\"name\":\"p\",\"formula\":\"\xc3\xa9\"}]}]", "non-ASCII values");
+    both("[{\"name\":\"\xc3\xa9\"}]", "non-ASCII device name");
     both("[{\"name\":\"a\",\"nodes\":[5]}]", "point not an object");
     both("[{\"name\":\"a\",\"uart\":3}]", "header range error");
     both("[{\"name\":\"a\"},{\"name\":\"b\",\"uart\":\"x\"}]", "second header bad");
@@ -1359,11 +1693,24 @@ static void test_memory_edges(void)
 
 static bool refuse(void *ctx, const char *s, size_t n) { (void)ctx, (void)s, (void)n; return false; }
 
+static int s_calls;
+static bool refuse_third(void *ctx, const char *s, size_t n)
+{
+    (void)ctx, (void)s, (void)n;
+    return ++s_calls < 3;
+}
+
 static void test_abort(void)
 {
     char err[200];
     cfg_result_t r = cfg_edge_text(&ENV, "[{\"name\":\"a\"}]", 14, true, CFG_EDGE_MAX, refuse, NULL, err, sizeof err);
-    CHECK(r == CFG_ABORTED, "emit failure: %d %s", r, err);
+    CHECK(r == CFG_ABORTED && strcmp(err, "The Edge model could not be stored.") == 0, "emit failure: %d %s", r, err);
+    // The store fails on its third write; a schema error further on must not replace the abort.
+    const char *later = "[{\"name\":\"a\",\"nodes\":[{\"name\":\"p\"}]},{\"name\":\"a\"}]";
+    s_calls = 0;
+    r = cfg_edge_text(&ENV, later, strlen(later), true, CFG_EDGE_MAX, refuse_third, NULL, err, sizeof err);
+    CHECK(r == CFG_ABORTED, "emit failure before a schema error: %d %s", r, err);
+    CHECK(s_calls == 3, "emitting goes on after a refusal (%d calls)", s_calls);
 }
 
 int main(void)
@@ -1381,25 +1728,128 @@ int main(void)
 }
 ```
 
-Replace `stm32/firmware/test/host/Makefile` with:
+Replace `stm32/firmware/test/host/test_oom.c` with the full version (it adds the two `edgeDevices` runs):
+
+```c
+// Fault injection for the text entry points: every single allocation is made to fail in
+// turn, and each run must end in CFG_NO_MEMORY ("Out of memory.") with nothing leaked and no
+// partial result (spec §9.3). Links cfgmodel without the arena, with its own failing
+// allocator and its own json_alloc_failures(): make -C stm32/firmware/test/host
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "cfgmodel.h"
+
+static const cfg_env_t ENV = {.uart_count = 2, .do_count = 2, .di_count = 2, .ai_count = 2};
+static int failures;
+#define CHECK(cond, ...)                                \
+    do {                                                \
+        if (!(cond)) {                                  \
+            failures++;                                 \
+            printf("FAIL %s:%d: ", __FILE__, __LINE__); \
+            printf(__VA_ARGS__);                        \
+            printf("\n");                               \
+        }                                               \
+    } while (0)
+
+static long s_count, s_fail_at;  // allocations so far; the 1-based one to fail (0: none)
+static unsigned s_failed;
+
+unsigned json_alloc_failures(void) { return s_failed; }
+
+static void *flaky_malloc(size_t n)
+{
+    if (++s_count == s_fail_at) {
+        s_failed++;
+        return NULL;
+    }
+    return malloc(n);
+}
+
+static bool discard(void *ctx, const char *s, size_t n)
+{
+    (void)ctx, (void)s, (void)n;
+    return true;
+}
+
+typedef cfg_result_t (*entry_fn)(const char *text, char *err, size_t errlen);
+
+static char s_out[CFG_SMALL_BUF];
+static const char *s_name;
+static cfg_result_t small(const char *text, char *err, size_t errlen)
+{
+    return cfg_validate_text(&ENV, s_name, text, strlen(text), NULL, s_out, sizeof s_out, err, errlen);
+}
+static cfg_result_t edge(const char *text, char *err, size_t errlen)
+{
+    return cfg_edge_text(&ENV, text, strlen(text), true, CFG_EDGE_MAX, discard, NULL, err, errlen);
+}
+
+/** Runs `fn` once clean to count its allocations, then once per allocation with that one failing. */
+static void each_allocation(entry_fn fn, const char *text, const char *label)
+{
+    char err[200];
+    s_count = 0, s_fail_at = 0;
+    cfg_result_t clean = fn(text, err, sizeof err);
+    long total = s_count;
+    CHECK(clean == CFG_OK || clean == CFG_INVALID, "%s: clean run gives %d (%s)", label, clean, err);
+    for (long k = 1; k <= total; k++) {
+        s_count = 0, s_fail_at = k;
+        cfg_result_t r = fn(text, err, sizeof err);
+        CHECK(r == CFG_NO_MEMORY && strcmp(err, "Out of memory.") == 0, "%s: allocation %ld of %ld failing gives %d (%s)", label, k,
+              total, r, err);
+    }
+    printf("  %-28s %ld allocations, each failed once\n", label, total);
+}
+
+int main(void)
+{
+    setvbuf(stdout, NULL, _IONBF, 0);
+    cJSON_Hooks h = {.malloc_fn = flaky_malloc, .free_fn = free};
+    cJSON_InitHooks(&h);
+
+    s_name = "port1";
+    each_allocation(small, "{\"baudRate\":9600,\"remoteHost\":\"data.example.net\",\"tls\":1}", "port1");
+    s_name = "mqttPublish";
+    each_allocation(small, "[{\"topic\":\"a/b\",\"identifier\":\"x\"},{\"topic\":\"c\",\"qos\":2}]", "mqttPublish");
+    s_name = "port1";
+    each_allocation(small, "{\"baudRate\":300}", "port1 schema error");
+
+    each_allocation(edge,
+                    "[{\"name\":\"io\",\"source\":\"io\",\"nodes\":[{\"ioPoint\":\"AI2\"},{\"ioPoint\":\"DO1\"}]},"
+                    "{\"name\":\"v\",\"source\":\"virtual\",\"addr\":\"200\",\"nodes\":[{\"name\":\"calc\",\"formula\":\"=%s*2\"}]},"
+                    "{\"name\":\"m\",\"protocol\":\"dlt645\",\"addr\":\"123456789012\",\"nodes\":[{\"name\":\"kwh\",\"di\":\"00010000\",\"mapEn\":true,\"mapAddr\":10}]},"
+                    "{\"name\":\"rtu\",\"addr\":\"5\",\"mapEn\":true,\"mapAddr\":6,\"nodes\":[{\"name\":\"t\",\"reg\":3,\"dtype\":\"float32_abcd\"}]}]",
+                    "edgeDevices (valid)");
+    each_allocation(edge, "[{\"name\":\"a\",\"nodes\":[{\"name\":\"p\"}]},{\"name\":\"b\",\"nodes\":[{\"name\":\"p\"}]}]",
+                    "edgeDevices (schema error)");
+
+    printf(failures ? "%d FAILED\n" : "oom: all tests passed\n", failures);
+    return failures != 0;
+}
+```
+
+Replace `stm32/firmware/test/host/Makefile` with this (recipe lines start with a tab):
 
 ```make
 # Host tests for the hardware-free modules of the STM32 firmware: make -C stm32/firmware/test/host
 CJSON := ../../third_party/cjson
 TLSF := ../../third_party/tlsf
 INC := -I../../components/cfgmodel/include -I../../components/proto/include -I../../components/arena/include -I$(CJSON) -I$(TLSF)
-CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize=address,undefined $(INC)
+# UBSan findings stop the test (-fno-sanitize-recover), so a NULL dereference can never pass unnoticed.
+CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all $(INC)
 BUILD := build
 CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c ../../components/proto/jsonscan.c
 ARENA := ../../components/arena/arena.c $(TLSF)/tlsf.c
 
-all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text
+all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom
 	$(BUILD)/test_cfgmodel
 	$(BUILD)/test_proto
 	$(BUILD)/test_jsonscan
 	$(BUILD)/test_arena
 	$(BUILD)/test_text_small
 	$(BUILD)/test_edge_text
+	$(BUILD)/test_oom
 
 $(BUILD)/test_cfgmodel: test_cfgmodel.c $(CFG) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
@@ -1425,6 +1875,10 @@ $(BUILD)/test_edge_text: test_edge_text.c $(CFG) $(ARENA) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $^ -lm -o $@
 
+$(BUILD)/test_oom: test_oom.c $(CFG) $(CJSON)/cJSON.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) $^ -lm -o $@
+
 clean:
 	rm -rf $(BUILD)
 
@@ -1441,6 +1895,7 @@ Expected: the `test_edge_text` link fails with `undefined reference to 'cfg_edge
 Append to the end of `stm32/firmware/components/cfgmodel/cfgmodel.c`:
 
 ```c
+
 /** What the save-time rules need to know about one device, kept between passes. */
 typedef struct {
     char name[17];
@@ -1492,11 +1947,11 @@ static cJSON *pick(js_span_t obj, const field_t *fields, size_t n)
         for (size_t i = 0; i < n; i++) {
             if (!js_key_is(k, fields[i].key, false)) continue;
             cJSON *val = cJSON_ParseWithLength(v.p, v.n);
-            if (!val) {
+            if (!val || !cJSON_AddItemToObject(o, fields[i].key, val)) {  // the key copy can fail too
+                cJSON_Delete(val);
                 cJSON_Delete(o);
                 return NULL;
             }
-            cJSON_AddItemToObject(o, fields[i].key, val);
             break;
         }
     }
@@ -1589,6 +2044,12 @@ static bool edge_strict(const esum_t *m, char *err, size_t errlen)
     return true;
 }
 
+/** cJSON_ReplaceItemInObject that frees `item` when it cannot be placed. */
+static void put_any(cJSON *dst, const char *key, cJSON *item)
+{
+    if (!cJSON_ReplaceItemInObject(dst, key, item)) cJSON_Delete(item);
+}
+
 /** Prints `doc` into buf without reallocation; false when it does not fit (no memory). */
 static bool print_into(const cJSON *doc, char *buf, int size) { return cJSON_PrintPreallocated((cJSON *)doc, buf, size, false); }
 
@@ -1607,7 +2068,11 @@ cfg_result_t cfg_edge_text(const cfg_env_t *env, const char *text, size_t len, b
     cJSON *dev_base = cJSON_Parse(ITEM_SLAVE), *node_base = cJSON_Parse(ITEM_NODE);
     cJSON *s = NULL, *o = NULL;
     eout_t out = {emit, ctx, 0, max_out, CFG_OK};
-    if (!m || !buf || !dev_base || !node_base) goto done;
+    unsigned failures = json_alloc_failures();
+    // A failed allocation can leave a field out of an object (object() skips it) or keep an old
+    // value (a replacement fails), so check before reading any field of a fresh object.
+#define NO_MEMORY_YET() (json_alloc_failures() == failures)
+    if (!m || !buf || !dev_base || !node_base || !NO_MEMORY_YET()) goto done;
     m->ndev = m->nnode = 0;
     if (err && errlen) err[0] = '\0';
 
@@ -1617,6 +2082,7 @@ cfg_result_t cfg_edge_text(const cfg_env_t *env, const char *text, size_t len, b
     js_iter_init(&it, root);
     while (js_iter_next(&it, NULL, &dev)) {
         s = edge_header(env, dev, dev_base, err, errlen);
+        if (!NO_MEMORY_YET()) goto done;
         if (!s) goto bad;
         cJSON_Delete(s);
         s = NULL;
@@ -1624,10 +2090,17 @@ cfg_result_t cfg_edge_text(const cfg_env_t *env, const char *text, size_t len, b
 
     // Pass 2, as slaves(): each device's own rules, then its points, emitting the normalised text.
     int io = 0, virt = 0, eth = 0;
-    out_put(&out, "[", 1);
+    // Text past max_out is not kept, but validation goes on: a schema error is the more useful answer.
+    // A refusal from the store stops everything at once.
+#define PUT(s, n)                                                     \
+    do {                                                              \
+        if (!out_put(&out, s, n) && out.r == CFG_ABORTED) goto aborted; \
+    } while (0)
+    PUT("[", 1);
     js_iter_init(&it, root);
     while (js_iter_next(&it, NULL, &dev)) {
         s = edge_header(env, dev, dev_base, err, errlen);
+        if (!NO_MEMORY_YET()) goto done;
         if (!s) goto bad;
         const char *src = sget(s, "source");
         bool is_io = strcmp(src, "io") == 0, is_virt = strcmp(src, "virtual") == 0;
@@ -1635,9 +2108,9 @@ cfg_result_t cfg_edge_text(const cfg_env_t *env, const char *text, size_t len, b
             fail(err, errlen, is_io ? "Only one built-in IO device is allowed." : "Only one virtual device is allowed.", NULL, NULL);
             goto bad;
         }
-        if (is_io || is_virt) cJSON_ReplaceItemInObject(s, "name", cJSON_CreateString(is_io ? IO_DEVICE : VIRTUAL_DEVICE));
+        if (is_io || is_virt) put_any(s, "name", cJSON_CreateString(is_io ? IO_DEVICE : VIRTUAL_DEVICE));
+        if (!NO_MEMORY_YET()) goto done;
         const char *sname = sget(s, "name");
-        if (!sname) goto done;  // the replacement string could not be allocated
         if (!name_ok(sname)) {
             fail(err, errlen, "Device name \"%s\" is not valid.", sname, NULL);
             goto bad;
@@ -1668,9 +2141,9 @@ cfg_result_t cfg_edge_text(const cfg_env_t *env, const char *text, size_t len, b
         if (!print_into(s, buf, PRINT_MAX)) goto done;
         cJSON_Delete(s);
         s = NULL;
-        if (m->ndev) out_put(&out, ",", 1);
-        out_put(&out, buf, strlen(buf) - 1);  // the header without its closing brace
-        out_put(&out, ",\"nodes\":[", 10);
+        if (m->ndev) PUT(",", 1);
+        PUT(buf, strlen(buf) - 1);  // the header without its closing brace
+        PUT(",\"nodes\":[", 10);
 
         js_iter_t nit;
         js_span_t node;
@@ -1689,6 +2162,7 @@ cfg_result_t cfg_edge_text(const cfg_env_t *env, const char *text, size_t len, b
             if (!in) goto done;
             o = object(env, "edgeDevices", node_fields, N(node_fields), in, node_base, err, errlen);
             cJSON_Delete(in);
+            if (!NO_MEMORY_YET()) goto done;
             if (!o) goto bad;
             if (is_io) {
                 const char *ch = sget(o, "ioPoint");
@@ -1697,19 +2171,19 @@ cfg_result_t cfg_edge_text(const cfg_env_t *env, const char *text, size_t len, b
                     goto bad;
                 }
                 int idx = atoi(ch + 2) - 1, fc = ch[1] == 'O' ? 1 : ch[1] == 'I' && ch[0] == 'D' ? 2 : 4;
-                cJSON_ReplaceItemInObject(o, "name", cJSON_CreateString(ch));
-                cJSON_ReplaceItemInObject(o, "fc", cJSON_CreateNumber(fc));
-                cJSON_ReplaceItemInObject(o, "reg", cJSON_CreateNumber(fc == 4 ? idx * 2 : idx));
-                cJSON_ReplaceItemInObject(o, "dtype", cJSON_CreateString(fc == 4 ? "float32_abcd" : "bool"));
+                put_any(o, "name", cJSON_CreateString(ch));
+                put_any(o, "fc", cJSON_CreateNumber(fc));
+                put_any(o, "reg", cJSON_CreateNumber(fc == 4 ? idx * 2 : idx));
+                put_any(o, "dtype", cJSON_CreateString(fc == 4 ? "float32_abcd" : "bool"));
             } else if (is_virt) {
-                cJSON_ReplaceItemInObject(o, "fc", cJSON_CreateNumber(4));
+                put_any(o, "fc", cJSON_CreateNumber(4));
                 if (strcmp(sget(o, "dtype"), "bool") == 0) {
                     fail(err, errlen, "Virtual point \"%s\" is an input register: choose a number type, not bool.", sget(o, "name"), NULL);
                     goto bad;
                 }
             }
+            if (!NO_MEMORY_YET()) goto done;
             const char *nname = sget(o, "name"), *dtype = sget(o, "dtype");
-            if (!nname || !dtype) goto done;  // a replacement could not be allocated
             if (!name_ok(nname)) {
                 fail(err, errlen, "Point name \"%s\" is not valid.", nname, NULL);
                 goto bad;
@@ -1733,25 +2207,31 @@ cfg_result_t cfg_edge_text(const cfg_env_t *env, const char *text, size_t len, b
             if (!print_into(o, buf, PRINT_MAX)) goto done;
             cJSON_Delete(o);
             o = NULL;
-            if (here++) out_put(&out, ",", 1);
-            out_put(&out, buf, strlen(buf));
+            if (here++) PUT(",", 1);
+            PUT(buf, strlen(buf));
         }
-        out_put(&out, "]}", 2);
+        PUT("]}", 2);
         m->ndev++;
     }
-    out_put(&out, "]", 1);
+    PUT("]", 1);
+#undef PUT
+#undef NO_MEMORY_YET
 
     // Pass 3, as slaves_strict(): the save-time rules across devices and points.
     if (strict && !edge_strict(m, err, errlen)) goto bad;
     r = out.r;
     if (r == CFG_TOO_LARGE) fail(err, errlen, "The Edge model is too large.", NULL, NULL);
-    if (r == CFG_ABORTED) fail(err, errlen, "The Edge model could not be stored.", NULL, NULL);
+    goto done;
+aborted:
+    r = CFG_ABORTED;
+    fail(err, errlen, "The Edge model could not be stored.", NULL, NULL);
     goto done;
 bad:
     // A failed allocation inside object() leaves no message; a schema error always writes one.
     r = (err && errlen && err[0]) ? CFG_INVALID : CFG_NO_MEMORY;
-    if (out.r == CFG_TOO_LARGE && r == CFG_INVALID) r = CFG_INVALID;  // the schema error is the more useful answer
 done:
+    // cJSON and object() do not report every failed allocation (a field can silently keep its default).
+    if (r != CFG_ABORTED && json_alloc_failures() != failures) r = CFG_NO_MEMORY;
     if (r == CFG_NO_MEMORY) fail(err, errlen, "Out of memory.", NULL, NULL);
     cJSON_Delete(o);
     cJSON_Delete(s);
@@ -1768,47 +2248,67 @@ done:
 Run: `make -C stm32/firmware/test/host`
 Expected:
 - `  largest Edge model: 37904 bytes in, 37904 bytes out, arena peak` followed by a number ≤ 61440 (about 15 700);
-- `edge_text: all tests passed (8086 payloads compared)`;
-- every earlier suite still passes.
+- `edge_text: all tests passed (8090 payloads compared)`;
+- `oom` adds `edgeDevices (valid)` (about 886 allocations) and `edgeDevices (schema error)` (about 378), then `oom: all tests passed`;
+- every suite passes, with no ASan or UBSan report.
 
 - [ ] **Step 5: Align the docs, then commit**
 
-In the spec §9.4, replace the whole line that starts with `  Hash FNV-1a chỉ dùng để tìm nhanh.` with this line (keep the two leading spaces):
+In the spec, make these edits:
 
-```
-  Với tối đa 64 thiết bị và 100 điểm, các tên được so sánh tuyến tính bằng `strcmp`, không cần hash.
-```
+1. **§9.4, the hash line.** Replace the whole line that starts with `  Hash FNV-1a chỉ dùng để tìm nhanh.` with:
+
+   ```
+     Với tối đa 64 thiết bị và 100 điểm, các tên được so sánh tuyến tính bằng `strcmp`, không cần hash.
+   ```
+
+2. **§9.4, the JSON domain.** Directly after the line `**Validate theo đúng thứ tự của \`cfgmodel.c\`**` paragraph's table and its bullet list (that is, just before the line that starts with `**Ghi:**`), add:
+
+   ```
+   **Miền JSON được chấp nhận:** JSON theo RFC 8259: UTF-8 hợp lệ, escape surrogate chỉ đi theo cặp (như cJSON yêu cầu), lồng sâu tối đa 32 cấp (`JS_MAX_DEPTH`, để đệ quy nằm gọn trong stack của task `web`). Ngoài miền này thì trả 400 `The request body is not valid JSON.`. Bản ESP32 chấp nhận một số dạng cJSON vẫn đọc được (như `01` hay rác ở cuối), nhưng bản STM32 thì không. Phép so sánh tương đương giữa hai đường xử lý chỉ áp dụng trong miền này.
+
+   **Thiếu bộ nhớ:** mọi lần cấp phát thất bại đều được đếm (`json_alloc_failures()`), và kết quả luôn là `CFG_NO_MEMORY` (500 `Out of memory.`), không bao giờ là một mô hình thiếu trường hay một câu báo lỗi schema gây hiểu nhầm.
+   ```
+
+3. **§9.3.** In the bullet that starts with `- body ≤ **10.240 byte**`, append: ` Buffer in ra là \`CFG_SMALL_BUF\` = 10.246 byte, vì \`cJSON_PrintPreallocated\` cần dư 5 byte; giới hạn được kiểm trên độ dài thật của văn bản.`
 
 In the roadmap row 03, replace the text `` `cfg_edge_begin/device/node/end` (3 phases) `` with `` `cfg_edge_text` (3 passes mirroring `list`/`slaves`/`slaves_strict`), `cfg_validate_text` ``.
 
 ```bash
-git add stm32/firmware/components/cfgmodel stm32/firmware/test/host/test_edge_text.c stm32/firmware/test/host/Makefile stm32/docs/specs/2026-10-14-stm32-firmware-design.md stm32/docs/plans/2026-10-14-00-roadmap.md
+git add stm32/firmware/components/cfgmodel stm32/firmware/test/host/test_edge_text.c stm32/firmware/test/host/test_oom.c stm32/firmware/test/host/Makefile stm32/docs/specs/2026-10-14-stm32-firmware-design.md stm32/docs/plans/2026-10-14-00-roadmap.md
 git commit -m "stm32 cfgmodel: cfg_edge_text, edgeDevices node by node, byte-identical to cfg_validate"
 ```
 
-- [ ] **Step 6: Prove the differential test bites (mutation check)**
+- [ ] **Step 6: Prove the tests bite (mutation check)**
 
-Run each mutant, check the result, then restore:
+Run each mutant, check the result, then restore. The code from Step 3 is committed in Step 5, so `git checkout` brings it back.
 
 ```bash
 C=stm32/firmware/components/cfgmodel/cfgmodel.c
+H=stm32/firmware/test/host
 sed -i 's/if (js_key_is(k, "nodes", true)) return v;/if (js_key_is(k, "nodes", false)) return v;/' $C
-make -C stm32/firmware/test/host build/test_edge_text >/dev/null && (cd stm32/firmware/test/host && ./build/test_edge_text | tail -1)
-git checkout $C
+make -C $H build/test_edge_text >/dev/null && (cd $H && ./build/test_edge_text | tail -1); git checkout $C
 sed -i 's/if (k != i \&\& unit_of(\&m->dev\[k\]) == unit)/if (k > i \&\& unit_of(\&m->dev[k]) == unit)/' $C
-make -C stm32/firmware/test/host build/test_edge_text >/dev/null && (cd stm32/firmware/test/host && ./build/test_edge_text | tail -1)
-git checkout $C
+make -C $H build/test_edge_text >/dev/null && (cd $H && ./build/test_edge_text | tail -1); git checkout $C
+sed -i 's/if (!out_put(\&out, s, n) \&\& out.r == CFG_ABORTED) goto aborted;/(void)out_put(\&out, s, n);/' $C
+make -C $H build/test_edge_text >/dev/null && (cd $H && ./build/test_edge_text | tail -1); git checkout $C
+python3 -c "import sys; p=sys.argv[1]; s=open(p).read(); a='            cJSON_Delete(in);\n            if (!NO_MEMORY_YET()) goto done;\n            if (!o) goto bad;'; assert s.count(a)==1; open(p,'w').write(s.replace(a,'            cJSON_Delete(in);\n            if (!o) goto bad;'))" $C
+make -C $H build/test_oom >/dev/null && (cd $H && ./build/test_oom 2>&1 | grep -m1 -E 'runtime error|FAILED|passed'); git checkout $C
+make -C $H | tail -1
 ```
 
-Expected: each mutant prints a `… FAILED (… payloads compared)` line, and `git checkout` restores the file.
+Expected:
+- the first three mutants each print `… FAILED (8090 payloads compared)`;
+- the fourth prints a UBSan `runtime error: null pointer passed …` line;
+- after the restores, the last `make` ends with `oom: all tests passed`.
 
-Nothing to commit after this step: the mutants are reverted.
+Nothing to commit: the mutants are reverted.
 
 ---
 
 ## Plan 03 done when
 
-- `make -C stm32/firmware/test/host` passes all six suites.
+- `make -C stm32/firmware/test/host` passes all seven suites, with no ASan or UBSan report.
 - The arena peaks printed by the tests are ≤ 61 440 bytes.
-- `edge_text` compares 8 086 payloads without a difference, and both mutants in Task 4 Step 5 are caught.
+- `edge_text` compares 8 090 payloads without a difference, and all four mutants in Task 4 Step 6 are caught.
 - `python3 stm32/firmware/tools/check_schema.py` still prints `consistent`.

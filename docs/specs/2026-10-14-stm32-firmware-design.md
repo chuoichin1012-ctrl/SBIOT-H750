@@ -838,19 +838,19 @@ Header 1 KB đặt ở đầu image:
 - **Không bản ghi nào hợp lệ** (lần đầu sau khi nạp qua SWD, hoặc cả hai đều hỏng):
   - image QSPI hợp lệ: coi như `CONFIRMED`, ghi bản ghi mới;
   - image QSPI hỏng và backup hợp lệ: chuyển sang `RESTORE`;
-  - cả hai đều hỏng: theo hàng 8 hoặc 9 của bảng quyết định, tùy staging còn hợp lệ hay không.
+  - cả hai đều hỏng: theo hàng 9 (còn staging hợp lệ) hoặc hàng 1 của bảng quyết định.
 
 **Các trạng thái:**
 
 | Trạng thái | Bootloader làm gì | Chuyển sang |
 |---|---|---|
-| `CONFIRMED` | Kiểm SHA-256 của image QSPI | Hợp lệ: nhảy vào app. Hỏng: `RESTORE(0)` nếu backup hợp lệ; ngược lại theo hàng 8 hoặc 9 của bảng quyết định |
+| `CONFIRMED` | Kiểm SHA-256 của image QSPI | Hợp lệ: nhảy vào app. Hỏng: `RESTORE(0)` nếu backup hợp lệ; ngược lại theo hàng 9 (còn staging hợp lệ) hoặc hàng 1 của bảng quyết định |
 | `PENDING` (app ghi khi staging đã đầy đủ) | **Kiểm header, kích thước và SHA của staging trước khi xóa bất cứ thứ gì** | Hợp lệ: `BACKUP(0)`, hoặc thẳng `WRITE(0)` nếu image QSPI hiện tại hỏng (khi đó giữ backup cũ). Hỏng: `CONFIRMED`, kèm lý do |
 | `BACKUP(off)` | Chép QSPI → backup từ checkpoint `off` | Xong: **kiểm SHA của backup** khớp header của image đang chạy, rồi `WRITE(0)`. Không khớp: làm lại `BACKUP(0)` một lần, lần hai vẫn sai thì `CONFIRMED` (hủy cài) |
 | `WRITE(off)` | Chép staging → QSPI từ checkpoint `off` | Xong: `VERIFY` |
-| `VERIFY` | SHA của QSPI so với header của staging | Khớp: `TRIAL(0)`. Không khớp: `verify_fail + 1`, làm lại `WRITE(0)`. Cạn lượt thử: theo hàng 7 và 8 của bảng quyết định |
+| `VERIFY` | SHA của QSPI so với header của staging | Khớp: `TRIAL(0)`. Không khớp: `verify_fail + 1`, làm lại `WRITE(0)`. Cạn lượt thử: theo hàng 8 và 9 của bảng quyết định |
 | `TRIAL(n)` | `n + 1`, ghi bản ghi, rồi nhảy vào app | `n + 1 > 3`: `RESTORE(0)`. App xác nhận: `CONFIRMED`. App yêu cầu rollback: `RESTORE(0)` |
-| `RESTORE(off)` | Ở `off = 0`: **kiểm SHA của backup trước khi xóa QSPI**. Rồi chép backup → QSPI từ `off`. **Backup là nguồn không đổi** của trạng thái này: không bao giờ chép vào backup khi đang `RESTORE` | Xong và SHA của QSPI khớp: `CONFIRMED`. **Xong mà SHA không khớp:** `verify_fail + 1`, làm lại `RESTORE(0)`. Cạn lượt thử: theo hàng 8 của bảng quyết định. Backup hỏng ngay từ đầu: nếu image QSPI còn hợp lệ thì chạy nó (`CONFIRMED`, ghi lý do); nếu không thì theo hàng 8 (còn staging hợp lệ) hoặc hàng 9 |
+| `RESTORE(off)` | Ở `off = 0`: **kiểm SHA của backup trước khi xóa QSPI**. Rồi chép backup → QSPI từ `off`. **Backup là nguồn không đổi** của trạng thái này: không bao giờ chép vào backup khi đang `RESTORE` | Xong và SHA của QSPI khớp: `CONFIRMED`. **Xong mà SHA không khớp:** `verify_fail + 1`, làm lại `RESTORE(0)`. Cạn lượt thử: theo hàng 9 của bảng quyết định. Backup hỏng ngay từ đầu: nếu image QSPI còn hợp lệ thì chạy nó (`CONFIRMED`, ghi lý do); nếu không thì theo hàng 9 (còn staging hợp lệ) hoặc hàng 1 |
 
 **Quy tắc chung:**
 - **Kiểm image trước mọi lần nhảy**, kể cả ở `CONFIRMED` và `TRIAL`, không có ngoại lệ. Phải đạt cả: magic, CRC32 của header, mã phần cứng, `size` ≤ slot, SHA-256 của phần thân, MSP và reset vector (§11.1).
@@ -865,26 +865,44 @@ Header 1 KB đặt ở đầu image:
   - Bộ đếm này **không phân biệt** mất nguồn với lỗi flash. Vì vậy cạn lượt thử không bị coi là lỗi phần cứng, mà dẫn tới chế độ cứu hộ có **tự thử lại** (bên dưới).
 - **Handoff block:** 64 B ở cuối backup SRAM, có magic và CRC, còn nguyên qua reset khi board vẫn có nguồn.
   - Magic hoặc CRC sai (lần cấp nguồn đầu tiên) thì khởi tạo lại về 0.
-  - Gồm `rec_fail` (số lần liên tiếp không ghi được bản ghi trạng thái), cờ `degraded` cho app, và lý do của lần boot.
-  - `rec_fail` về 0 ngay khi ghi bản ghi thành công.
+  - Gồm `rec_fail` (số lần liên tiếp không ghi được bản ghi trạng thái), `ram_fail` (số lần thử phục hồi theo dõi tiến độ trong RAM), cờ `degraded` cho app, và lý do của lần boot.
+  - `rec_fail` về 0 ngay khi ghi bản ghi thành công. `ram_fail` về 0 khi phục hồi qua đường RAM thành công.
 
-**Bảng quyết định duy nhất.** Các hàng loại trừ nhau, xét từ trên xuống, dừng ở hàng đầu tiên khớp:
+**Bảng quyết định duy nhất.** Trước khi xét bảng, bootloader xác định ba nguồn: `Vq` (image QSPI hợp lệ), `Vb` (backup hợp lệ) và `Vs` (staging hợp lệ). Các hàng loại trừ nhau, xét từ trên xuống, dừng ở hàng đầu tiên khớp:
 
 | # | Điều kiện | Hành động |
 |---|---|---|
-| 1 | Thao tác chép dữ liệu của `BACKUP`, `WRITE` hoặc `RESTORE` (xóa, ghi page, đọc lại) quá deadline (2 lần giá trị tối đa trong datasheet GD25Q32E) | **Ngừng kick**, SGM706 reset board. Lần thử đã được đếm trong `attempts` |
-| 2 | Ghi **bản ghi trạng thái** thất bại (quá deadline, hoặc đọc lại không khớp) | **Không** ngừng kick. `rec_fail + 1` trong handoff block, rồi xét hàng 3–5 |
-| 3 | Hàng 2, QSPI **chưa bị đụng tới** (trạng thái `CONFIRMED`, `TRIAL`, `PENDING` hoặc `BACKUP`), và image QSPI hợp lệ | Nhảy vào app với `degraded` = 1. Không đổi trạng thái, nên cài đặt đang chờ được hoãn lại. App ghi cảnh báo vào log và **từ chối OTA** (409). Ở `TRIAL` thì `trial` không tăng được: app vẫn chạy, nhưng không xác nhận được, vì xác nhận cũng phải ghi bản ghi |
-| 4 | Hàng 2, QSPI **đang dở** (`WRITE` hoặc `RESTORE`), `rec_fail` < 3 | Reset và thử lại |
-| 5 | Hàng 2, QSPI đang dở, `rec_fail` ≥ 3 | **Phục hồi không có checkpoint:** chép toàn bộ từ nguồn hợp lệ (backup trước, không có thì staging) sang QSPI, chỉ theo dõi tiến độ trong RAM, kiểm SHA, rồi nhảy vào app với `degraded` = 1. Lần boot sau, nếu vẫn không ghi được bản ghi, thì lặp lại hàng này |
-| 6 | `BACKUP`: `attempts` > 3 | Hủy cài: `CONFIRMED`. Image đang chạy còn nguyên, vì BACKUP chỉ đọc QSPI |
-| 7 | `WRITE`: `attempts` > 3 hoặc `verify_fail` ≥ 2, và backup hợp lệ (header trong bản ghi, SHA đã kiểm khi BACKUP xong) | `RESTORE(0)` |
-| 8 | `WRITE` cạn lượt thử và **không** có backup hợp lệ, hoặc `RESTORE`: `attempts` > 3 hoặc `verify_fail` ≥ 2 | **Cứu hộ có thử lại** |
-| 9 | Không có image QSPI hợp lệ, không có backup hợp lệ, và không có staging hợp lệ | **Cứu hộ dừng hẳn** |
+| 1 | Không có `Vq`, `Vb` lẫn `Vs` | **Cứu hộ dừng hẳn.** Hàng này xét **trước mọi nhánh phục hồi**, nên các hàng sau luôn có ít nhất một nguồn hợp lệ |
+| 2 | Thao tác chép dữ liệu (xóa, ghi page, đọc lại) quá deadline, tức 2 lần giá trị tối đa trong datasheet GD25Q32E, ở **bất kỳ** đường chép nào: có checkpoint (state machine, hàng 10) hoặc theo dõi tiến độ trong RAM (hàng 6) | **Ngừng kick**, SGM706 reset board. Lần thử đã được đếm **trước** khi bắt đầu: bằng `attempts` trong bản ghi (đường có checkpoint), hoặc bằng `ram_fail` trong handoff block (đường RAM) |
+| 3 | Ghi **bản ghi trạng thái** thất bại (quá deadline, hoặc đọc lại không khớp) | **Không** ngừng kick. `rec_fail + 1` trong handoff block, rồi xét hàng 4–6 |
+| 4 | Hàng 3, QSPI **chưa bị đụng tới** (trạng thái `CONFIRMED`, `TRIAL`, `PENDING` hoặc `BACKUP`), và có `Vq` | Nhảy vào app với `degraded` = 1. Không đổi trạng thái, nên cài đặt đang chờ được hoãn lại. App ghi cảnh báo vào log và **từ chối OTA** (409). Ở `TRIAL` thì `trial` không tăng được: app vẫn chạy, nhưng không xác nhận được, vì xác nhận cũng phải ghi bản ghi |
+| 5 | Hàng 3, QSPI **đang dở** (`WRITE` hoặc `RESTORE`), `rec_fail` < 3 | Reset và thử lại |
+| 6 | Hàng 3, QSPI đang dở, `rec_fail` ≥ 3 | **Phục hồi theo dõi tiến độ trong RAM**, xem bên dưới |
+| 7 | `BACKUP`: `attempts` > 3 | Hủy cài: `CONFIRMED`. Image đang chạy còn nguyên, vì BACKUP chỉ đọc QSPI |
+| 8 | `WRITE`: `attempts` > 3 hoặc `verify_fail` ≥ 2, và có `Vb` | `RESTORE(0)` |
+| 9 | `WRITE` cạn lượt thử và không có `Vb`; hoặc `RESTORE`: `attempts` > 3 hoặc `verify_fail` ≥ 2 | **Cứu hộ có thử lại**. Theo hàng 1, chắc chắn còn ít nhất một nguồn |
+| 10 | Các trường hợp còn lại | Chạy state machine ở bảng trạng thái phía trên |
+
+**Phục hồi theo dõi tiến độ trong RAM** (hàng 6). Đây là đường dành cho lúc SPI4 không ghi được bản ghi trạng thái, nên mọi bộ đếm đều nằm trong handoff block:
+1. `ram_fail + 1` trong handoff block, **trước khi** làm gì khác.
+2. `ram_fail` > 3: **cứu hộ có thử lại**.
+3. Chọn nguồn: `Vb` trước, không có thì `Vs`. Hàng 1 bảo đảm có ít nhất một trong hai, vì QSPI đang dở nên không có `Vq`.
+4. **Kiểm nguồn** (header, kích thước, SHA) **trước khi** xóa QSPI. Nguồn hỏng thì loại nó khỏi danh sách rồi quay lại bước 3. Hết nguồn thì **cứu hộ dừng hẳn**.
+5. Chép toàn bộ, mỗi thao tác đều có deadline. Quá deadline thì theo hàng 2: lần thử này đã được đếm ở bước 1.
+6. Kiểm image QSPI theo đúng các điều kiện trước khi nhảy (§11.1):
+   - đạt: `ram_fail` = 0, rồi nhảy vào app với `degraded` = 1;
+   - **không đạt: tuyệt đối không nhảy.** Reset, và lần thử đã được đếm ở bước 1.
+
+Mất nguồn thì handoff block mất theo. Lần cấp nguồn sau, `rec_fail` = `ram_fail` = 0, và bootloader thử ghi bản ghi lại từ đầu. Nếu SPI4 đã hoạt động lại thì quay về đường có checkpoint.
 
 **Hai chế độ cứu hộ:**
-- **Cứu hộ có thử lại:** LED WORK nháy nhanh, vẫn kick WDI. Cứ 60 s lại đặt `attempts` = 0, `verify_fail` = 0 và thử phục hồi QSPI từ nguồn hợp lệ: backup trước, không có thì staging. Thành công thì về `CONFIRMED` (từ backup) hoặc `TRIAL(0)` (từ staging). Như vậy một chuỗi mất nguồn hay lỗi tạm thời không giữ board ở cứu hộ mãi.
-- **Cứu hộ dừng hẳn:** LED WORK nháy nhanh, vẫn kick WDI, chỉ nạp lại được qua SWD. Chỉ vào chế độ này khi không còn nguồn hợp lệ nào để phục hồi.
+- **Cứu hộ có thử lại:** LED WORK nháy nhanh, vẫn kick WDI.
+  - Cứ 60 s, đặt lại các bộ đếm (`attempts` và `verify_fail` nếu ghi được bản ghi, `ram_fail` trong handoff block) và thử phục hồi QSPI từ nguồn hợp lệ: backup trước, không có thì staging.
+  - Lần thử dùng đường có checkpoint nếu ghi được bản ghi, ngược lại dùng đường RAM.
+  - Thành công thì về `CONFIRMED` (từ backup) hoặc `TRIAL(0)` (từ staging).
+  - Nếu trong lúc thử phát hiện không còn nguồn hợp lệ nào thì chuyển sang cứu hộ dừng hẳn.
+  - Như vậy một chuỗi mất nguồn hay lỗi tạm thời không giữ board ở cứu hộ mãi.
+- **Cứu hộ dừng hẳn:** LED WORK nháy nhanh, vẫn kick WDI, chỉ nạp lại được qua SWD. Chỉ vào chế độ này khi không còn nguồn hợp lệ nào (hàng 1).
 
 Gate kiểm thử ở §12.1 dùng đúng bảng này: mỗi hàng có ít nhất một ca fault injection.
 
@@ -952,14 +970,20 @@ Logic trạng thái và cài đặt viết trong `boot/install.c` bằng C thu�
 • **RESTORE xong mà SHA sai**;
 • **`attempts` vượt 3** ở từng pha;
 • **image hỏng khi đang `TRIAL`**: phải không nhảy vào;
-• **SPI4 lỗi khi ghi bản ghi** (hàng 2–5);
-• **`WRITE` hết lượt thử** khi có và khi không có backup (hàng 7, 8);
+• **SPI4 lỗi khi ghi bản ghi** (hàng 3–6);
+• **`WRITE` hết lượt thử** khi có và khi không có backup (hàng 8, 9);
 • cắt điện đúng lúc ghi `attempts`.
- **Mỗi hàng 1–9 của bảng quyết định ở §11.2 có ít nhất một ca.** Điều kiện đạt:
+ **Mỗi hàng 1–10 của bảng quyết định ở §11.2 có ít nhất một ca.** Điều kiện đạt:
 • lần nào cũng kết thúc ở một image hợp lệ;
-• hoặc ở *cứu hộ có thử lại* (hàng 8), và **tự thoát** về một image hợp lệ trong lần thử lại kế tiếp sau khi ngừng giả lập lỗi;
-• hoặc ở *cứu hộ dừng hẳn*, chỉ khi không còn nguồn hợp lệ nào (hàng 9).
-Thêm các ca: `rec_fail` tăng dần tới 3 trong lúc `WRITE` (hàng 4 rồi 5); handoff block có CRC sai lúc cấp nguồn |
+• hoặc ở *cứu hộ có thử lại*, và **tự thoát** về một image hợp lệ trong lần thử lại kế tiếp sau khi ngừng giả lập lỗi;
+• hoặc ở *cứu hộ dừng hẳn*, chỉ khi không còn nguồn hợp lệ nào (hàng 1);
+• **không bao giờ nhảy vào một image không qua được bước kiểm.**
+
+Thêm các ca:
+• `rec_fail` tăng dần tới 3 trong lúc `WRITE` (hàng 5 rồi 6);
+• **`WRITE` cạn lượt thử trong khi QSPI, backup và staging đều hỏng**: phải dừng hẳn (hàng 1), không được thử lại;
+• **đường RAM (hàng 6)**: quá deadline khi chép, SHA của đích sai, nguồn hỏng phát hiện ở bước 4, mất nguồn giữa chừng, `ram_fail` vượt 3;
+• handoff block có CRC sai lúc cấp nguồn |
 | MQTT | Adapter transport (đọc một phần, AGAIN, EOF, lỗi). Outbox: mất kết nối ở từng bước QoS 1/2, Session Present 0 và 1 (3.1.1), **3.1 với `cleanSession` 0 và 1** (bản vá đặt `sessionPresent`), clean session, hết hạn chỉ áp dụng cho `QUEUED`, giới hạn 64 KB, `bufferOffline`, đăng ký lại subscribe. Phiên mới: tin đang dở quay về `QUEUED` với packet id mới. Byte của gói CONNECT 3.1 và 3.1.1 |
 | CMUX | Mã hóa và giải mã frame, FCS, frame bị cắt, trường độ dài 1 và 2 byte (kể cả đúng 2048 byte), tái đồng bộ sau rác, SABM/UA kèm T1 và N2, DM/DISC, CLD. **FCoff/FCon dừng và tiếp mọi DLC dữ liệu, còn DLC0 vẫn gửi và nhận được** (kiểm response và FCon trong lúc FCoff). **MSC dừng và tiếp đúng một DLC**, có trả response, Test và NSC. **Hàng đợi TX đầy**, kể cả khi đầy ở lần gọi callback thứ hai trở đi của cùng một frame: callback trả 0, đếm `ppp_out_drop`, phía nhận (PPP giả lập) bỏ frame cụt nhờ FCS, và frame kế tiếp vẫn được nhận đúng. **Luồng PPP có nhiều `0x7D`/`0x7E`** (sau escape dài gần gấp đôi) bị cắt thành nhiều frame ≤ N1 rồi ghép lại đúng. `pppos_input_tcpip` trả `ERR_MEM`: thử lại 3 lần rồi bỏ và đếm |
 | ADC (logic C thuần) | Bàn giao hai nửa buffer: đọc đúng nửa đã đầy; `seq` đổi trong lúc cộng thì bỏ cửa sổ và đếm `adc_late`; chưa có cửa sổ đầu tiên thì không công bố giá trị; lỗi thì cả hai kênh failed; trình tự phục hồi; đổi mã sang mA kèm hiệu chuẩn hai điểm; factory record thiếu hoặc CRC sai thì dùng hệ số danh định |

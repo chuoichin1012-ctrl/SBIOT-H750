@@ -58,3 +58,13 @@ Còn mục 16 (bảng pool lwIP): mức "Xử lý chưa đủ" được giữ. B
 | R2-08 (#2) EC600U | §7.2: bảng timing có giá trị cụ thể (PWRKEY ≥ 2 s → dùng 2,5 s; tắt nguồn ≥ 3 s → 3,5 s; RESET_N ≥ 100 ms → 200 ms; deadline chờ UART 15 s, chỉnh lại theo số đo). Ghi rõ nguồn là bản QuecOpen V1.3 |
 | R2-09 Nghiệm thu ADC | §6.6: bảng tiêu chí định lượng gồm sai số, độ dao động, nhiễu 50/60 Hz, ảnh hưởng chéo, độ trễ, phục hồi, số ngắt. Hiệu chuẩn hai điểm lưu trong factory record ở SPI4 0x3F0000 |
 | R2-10 Nhất quán | §5.4 (ADC ở SRAM4, MDMA), §6.2/6.3 (MPU, cache, ITCM chỉ làm trong `Reset_Handler`), §5.5 (template cấp từ heap), §10.1 (một quy tắc timeout chung 2 × 15 s), §5.2/§11.2 (cách làm tròn khi xóa), §7.2 (overhead 7 B), §10.2 (`port2` được bật), §5.3 (DTCM khoảng 95 KB, ≤ 120 KB) |
+
+## Vòng 3–7: từ điều kiện tới phê duyệt
+
+| Vòng | Quyết định | Nội dung chính |
+|---|---|---|
+| 3 | APPROVED WITH CONDITIONS | S1–S7 phải sửa trong spec, P1–P3 để cho kế hoạch |
+| 4 | APPROVED WITH CONDITIONS | S1 (các nhánh OTA), S6 (trạng thái tắt của modem), câu ở S7, diễn giải PPP |
+| 5 | APPROVED WITH CONDITIONS | Bảng quyết định OTA: hàng 8 che hàng 9; đường RAM chưa có nhánh thất bại |
+| 6 | APPROVED WITH CONDITIONS | Đường RAM giả định sai rằng `Vq` = false |
+| 7 | **APPROVED** (commit `8a52dbd`) | Kế hoạch triển khai bắt buộc phải bao gồm: <br>• P1: bảng pool lwIP, file map của linker, đo trong hai kịch bản ở §12.3; <br>• P2: giới hạn công việc mỗi lượt, backpressure, test flood và starvation, bàn giao buffer ADC, nghiệm thu cả cấu hình dự phòng; <br>• P3: factory record, loader SPI4, vòng đời của handoff block; <br>• fault injection OTA cho mọi hàng của bảng quyết định; <br>• modem ON/OFF/UNKNOWN và xung PWRKEY 2,5 s; <br>• CMUX flow control và PPP bị cụt giữa các lần gọi callback; <br>• MQTT reconnect/QoS; <br>• JSON round-trip và lỗi 413 |

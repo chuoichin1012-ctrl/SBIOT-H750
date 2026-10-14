@@ -27,8 +27,7 @@ pin('PA13\\ (JTMS/SWDIO)', Mode='Serial_Wire', Signal='DEBUG_JTMS-SWDIO')
 pin('PA14\\ (JTCK/SWCLK)', Mode='Serial_Wire', Signal='DEBUG_JTCK-SWCLK')
 for p, s in [('PB2', 'QUADSPI_CLK'), ('PC11', 'QUADSPI_BK2_NCS'), ('PE7', 'QUADSPI_BK2_IO0'),
              ('PE8', 'QUADSPI_BK2_IO1'), ('PE9', 'QUADSPI_BK2_IO2'), ('PE10', 'QUADSPI_BK2_IO3')]:
-    # 80 MHz needs the fastest slew; with CubeMX's default "Low" every QSPI read times out.
-    pin(p, Mode='Single Bank 2', Signal=s, GPIO_Speed='GPIO_SPEED_FREQ_VERY_HIGH', GPIOParameters='GPIO_Speed')
+    pin(p, Mode='Single Bank 2', Signal=s)
 pin('PB3\\ (JTDO/TRACESWO)', Mode='Asynchronous', Signal='UART7_RX')
 pin('PB4\\ (NJTRST)', Mode='Asynchronous', Signal='UART7_TX')
 if not BOOT:
@@ -77,6 +76,18 @@ out_pin('PE4', 'SPI4_NSS', 'GPIO_PIN_SET')
 in_pin('PA8', 'RELOAD', 'GPIO_PULLUP')
 in_pin('PB7', 'DI1')
 in_pin('PB6', 'DI2')
+
+# GPIO speed per peripheral: the output slew must suit the signal rate, or the peripheral fails (with
+# CubeMX's default "Low" every QSPI read timed out at 80 MHz). QSPI, ETH (RMII 50 MHz) and SPI very
+# high, UART high (team rule, 2026-10-15). The software NSS of SPI4 follows its bus.
+SPEED = [('QUADSPI_', 'GPIO_SPEED_FREQ_VERY_HIGH'), ('ETH_', 'GPIO_SPEED_FREQ_VERY_HIGH'),
+         ('SPI4_', 'GPIO_SPEED_FREQ_VERY_HIGH'), ('UART', 'GPIO_SPEED_FREQ_HIGH'), ('USART', 'GPIO_SPEED_FREQ_HIGH')]
+for p, kv in pins:
+    key = kv.get('GPIO_Label', '') if kv['Signal'].startswith('GPIO_') else kv['Signal']
+    for prefix, speed in SPEED:
+        if key.startswith(prefix):
+            kv['GPIO_Speed'] = speed
+            kv['GPIOParameters'] = ','.join(x for x in [kv.get('GPIOParameters'), 'GPIO_Speed'] if x)
 
 vps = [('VP_SYS_VS_Systick', 'SysTick', 'SYS_VS_Systick'),
        ('VP_MEMORYMAP_VS_MEMORYMAP', 'CurAppReg', 'MEMORYMAP_VS_MEMORYMAP')]

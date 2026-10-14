@@ -69,12 +69,12 @@ void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(WDI_LED_GPIO_Port, WDI_LED_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : SPI4_NSS_Pin LED_NET_Pin */
-  GPIO_InitStruct.Pin = SPI4_NSS_Pin|LED_NET_Pin;
+  /*Configure GPIO pin : SPI4_NSS_Pin */
+  GPIO_InitStruct.Pin = SPI4_NSS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(SPI4_NSS_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : LTE_RESET_Pin LTE_PWR_Pin */
   GPIO_InitStruct.Pin = LTE_RESET_Pin|LTE_PWR_Pin;
@@ -83,14 +83,26 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : DO1_D_Pin DO2_D_Pin ETH_RESET_Pin LATCH_LE_Pin
-                           LATCH_OE_Pin */
-  GPIO_InitStruct.Pin = DO1_D_Pin|DO2_D_Pin|ETH_RESET_Pin|LATCH_LE_Pin
-                          |LATCH_OE_Pin;
+  /*Configure GPIO pin : LED_NET_Pin */
+  GPIO_InitStruct.Pin = LED_NET_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(LED_NET_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : DO1_D_Pin DO2_D_Pin LATCH_LE_Pin LATCH_OE_Pin */
+  GPIO_InitStruct.Pin = DO1_D_Pin|DO2_D_Pin|LATCH_LE_Pin|LATCH_OE_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : ETH_RESET_Pin */
+  GPIO_InitStruct.Pin = ETH_RESET_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(ETH_RESET_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : RELOAD_Pin */
   GPIO_InitStruct.Pin = RELOAD_Pin;

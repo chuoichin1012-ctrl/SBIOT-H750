@@ -55,7 +55,12 @@ def main():
              'QUADSPI.FlashSize'),
             ('QSPI pin at low speed', APP,
              [(r'^PE9\.GPIO_Speed=GPIO_SPEED_FREQ_VERY_HIGH', 'PE9.GPIO_Speed=GPIO_SPEED_FREQ_LOW')],
-             'PE9 is not at very high speed'),
+             'PE9 (QUADSPI_BK2_IO2) speed GPIO_SPEED_FREQ_LOW'),
+            ('ETH pin at low speed', APP,
+             [(r'^PA1\.GPIO_Speed=GPIO_SPEED_FREQ_VERY_HIGH', 'PA1.GPIO_Speed=GPIO_SPEED_FREQ_LOW')],
+             'PA1 (ETH_REF_CLK) speed GPIO_SPEED_FREQ_LOW'),
+            ('UART pin without a speed', BOOT, [(r'^PB4\\ \(NJTRST\)\.GPIO_Speed=GPIO_SPEED_FREQ_HIGH\n', '')],
+             'PB4 (UART7_TX) speed None'),
             ('a pin spec §3 does not assign', APP, [(r'^(PA8\.Signal=GPIO_Input)', r'\1\nPB14.Signal=GPIO_Output')],
              'PB14 carries GPIO_Output'),
         ]

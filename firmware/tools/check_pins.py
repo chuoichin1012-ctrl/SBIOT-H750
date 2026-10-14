@@ -45,7 +45,14 @@ GPIO = {
     'PD13': ('ETH_RESET', 'GPIO_PIN_RESET'), 'PE4': ('SPI4_NSS', 'GPIO_PIN_SET'),
     'PA8': ('RELOAD', None), 'PB7': ('DI1', None), 'PB6': ('DI2', None),
 }
-QSPI_PINS = ['PB2', 'PC11', 'PE7', 'PE8', 'PE9', 'PE10']
+# Output speed by peripheral (team rule): QSPI, ETH and SPI very high, UART high; SPI4's software NSS too.
+SPEED = [('QUADSPI_', 'GPIO_SPEED_FREQ_VERY_HIGH'), ('ETH_', 'GPIO_SPEED_FREQ_VERY_HIGH'),
+         ('SPI4_', 'GPIO_SPEED_FREQ_VERY_HIGH'), ('UART', 'GPIO_SPEED_FREQ_HIGH'), ('USART', 'GPIO_SPEED_FREQ_HIGH')]
+
+
+def speed_for(pin, sig):
+    key = GPIO[pin][0] if sig.startswith('GPIO_') and pin in GPIO else sig
+    return next((s for prefix, s in SPEED if key.startswith(prefix)), None)
 # What the bootloader sets up once and the app relies on (spec §6.2): identical in both files.
 FROZEN = re.compile(r'^(RCC\.(HSE_VALUE|DIV[MNPQR]1|SYSCLKSource|PLLSourceVirtual|D1CPRE|HPRE|D[123]PPRE[12]?|'
                     r'PWR_Regulator_Voltage_Scale|SupplySource|QSPICLockSelection|SYSCLKFreq_VALUE|HCLKFreq_Value|'
@@ -98,9 +105,11 @@ def check_file(name, keys, expected, db, fail):
             fail('%s: %s label %s, expected %s' % (name, pin, keys.get(k + '.GPIO_Label'), label))
         if level and keys.get(k + '.PinState', 'GPIO_PIN_RESET') != level:
             fail('%s: %s initial level %s, expected %s' % (name, pin, keys.get(k + '.PinState'), level))
-    for pin in QSPI_PINS:
-        if keys.get(full.get(pin, pin) + '.GPIO_Speed') != 'GPIO_SPEED_FREQ_VERY_HIGH':
-            fail('%s: %s is not at very high speed (QSPI at 80 MHz)' % (name, pin))
+    for pin, sig in expected.items():
+        want = speed_for(pin, sig)
+        got = keys.get(full.get(pin, pin) + '.GPIO_Speed')
+        if want and got != want:
+            fail('%s: %s (%s) speed %s, expected %s' % (name, pin, sig, got, want))
     for k, v in EXPECT_KEYS.items():
         if keys.get(k) != v:
             fail('%s: %s = %s, expected %s' % (name, k, keys.get(k), v))

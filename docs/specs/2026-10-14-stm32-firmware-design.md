@@ -64,7 +64,7 @@ Lấy từ `docs/Job2.PDF`. Những mục có dấu (✓) phải đối chiếu 
 | DI1 / DI2 | PB7 / PB6 | Opto LTV-814 cộng pull-up: **mức 0 nghĩa là ngõ vào đang tác động** (không có cổng đảo như GW100) |
 | DO1 / DO2 | PD10 / PD11 → 74HC573 D1/D2 | Q1/Q2 → S8050 → relay HF33F: mức cao làm relay hút |
 | 74HC573 LE / OE | PD14 / PD15 | R108 và R103 kéo xuống GND. Lúc cấp nguồn latch có trạng thái bất định (§11.2) |
-| AI1 / AI2 | PC2_C / PC3_C = **ADC3_INP0 / ADC3_INP1** (single-ended) | 4–20 mA qua shunt 120 Ω, LM2904 hệ số 0,499, nên ADC thấy 0,24–1,2 V. VREF+ = REF3030 3,0 V. ADC3 đọc bằng **polling** mỗi 500 ms, không dùng DMA hay BDMA |
+| AI1 / AI2 | PC2_C / PC3_C = **ADC3_INP0 / ADC3_INP1** (single-ended) | 4–20 mA qua shunt 120 Ω, LM2904 hệ số 0,499, nên ADC thấy 0,24–1,2 V. VREF+ = REF3030 3,0 V. ADC3 chạy **oversampling phần cứng, kích bằng timer, BDMA vòng vào SRAM4** (§6.6) |
 | WDI (SGM706) + LED WORK | PC10 | Qua Q6/Q3 |
 | LED_NET | PE11 | |
 | Reload | PA8 | Tích cực mức thấp |
@@ -149,7 +149,7 @@ Cùng một cách xóa và ghi cho mọi thao tác trên slot: **checkpoint** t�
 | AXI SRAM (D1) | 512 KB | Heap FreeRTOS (`heap_5`, **vùng heap duy nhất**) 256 KB: 3 phiên TLS, connection Mongoose, các cấp phát nhỏ lúc chạy (§5.5). **Arena JSON 64 KB** (§9.3). **Buffer văn bản Edge 48 KB** (§9.3). Mô hình Edge lúc chạy, cache giá trị và buffer report khoảng 30 KB. Cache văn bản cấu hình của `store` khoảng 20 KB. Stack của `web` và `edge_tcpN` khoảng 33 KB | Cacheable (write-back). Dư khoảng 60 KB |
 | SRAM1 (D2) | 128 KB | Descriptor, buffer RX và buffer TX của ETH, heap `MEM` của lwIP 64 KB, pool pbuf, ring DMA RX và buffer TX của USART1/2/3, buffer trung chuyển SPI4. Số lượng và kích thước chốt trong bảng pool lwIP (§5.6) | **Non-cacheable qua MPU.** Startup bật clock SRAM D2 trước khi khởi tạo `.data` |
 | SRAM2+3 (D2) | 160 KB | Ring serial → mạng 2 × 8 KB, `bufferOffline` 2 × 32 KB, outbox MQTT 64 KB. Còn 16 KB cho metadata và căn lề | Cacheable |
-| SRAM4 (D3) | 64 KB | Ring syslog 32 KB, ring của `mqtt_io` 2 × 12 KB. Còn 8 KB | |
+| SRAM4 (D3) | 64 KB | Ring syslog 32 KB, ring của `mqtt_io` 2 × 12 KB, **buffer BDMA của ADC3** trong một region non-cacheable 1 KB riêng (§6.6). Còn khoảng 7 KB | Region 1 KB của ADC đặt non-cacheable qua MPU, phần còn lại cacheable |
 | Backup SRAM | 4 KB | Bản ghi HardFault (§11.4) | |
 
 **Cách tính ngân sách:**
@@ -169,12 +169,15 @@ Không có engine DMA nào đọc hay ghi trực tiếp vào buffer của bên g
 | USART RX | Ring DMA non-cacheable, `serial_rx[n]` chép frame ra ngoài |
 | SPI4 (FAL) | Buffer trung chuyển non-cacheable 4 KB cho cả hai chiều. Buffer của FlashDB không bao giờ đi thẳng tới DMA |
 | QSPI | Chỉ bootloader ghi, ở chế độ indirect kèm polling, không dùng DMA |
-| ADC3 | Polling, không dùng DMA |
+| ADC3 | **BDMA** (qua DMAMUX2, cơ chế duy nhất ADC3 dùng được) ghi vòng vào buffer trong region non-cacheable 1 KB của SRAM4 (§6.6) |
 
 **Quy tắc chung cho mọi buffer DMA:**
 - Căn lề 32 byte.
 - Có `__DMB()` trước khi trao descriptor hoặc buffer cho DMA, và sau khi lấy lại.
-- **Chỉ dùng ETH, DMA1 và DMA2.** BDMA chỉ truy cập được SRAM4, ETH thì không truy cập được SRAM4. Không engine nào trong ba engine trên truy cập được TCM.
+- **Dùng ETH, DMA1 và DMA2 cho mọi thứ, trừ ADC3.** ADC3 chỉ có BDMA.
+  - BDMA chỉ truy cập được SRAM4.
+  - ETH không truy cập được SRAM4.
+  - Không engine nào truy cập được TCM.
 
 Nhờ quy tắc này, stack và buffer trong DTCM hay AXI đều an toàn với DMA.
 
@@ -243,7 +246,7 @@ Thang ưu tiên của FreeRTOS là 0–31 (`configMAX_PRIORITIES` = 32). `n` là
 | `serial_rx[n]` | 2 | 3 KB | 12 | Chủ đọc duy nhất của cổng: cắt frame, giao cho transaction hoặc subscriber |
 | `restart` | khi cần | 3 KB | 10 | Chạy các shutdown handler rồi reset |
 | `bridge[n]` | 2 | 6 KB | 8 | Socket của cổng theo chế độ làm việc, TLS, Modbus gateway, polling, heartbeat, registration |
-| `io` | 1 | 3 KB | 6 | DI (10 ms), AI (500 ms), DO/74HC573, 6 timer, `keepOutputs` |
+| `io` | 1 | 3 KB | 6 | DI (10 ms). AI: mỗi 500 ms tính trung bình từ buffer BDMA (§6.6), không có ngắt theo từng mẫu. DO/74HC573, 6 timer, `keepOutputs` |
 | `edge_ctl` | 1 | 4 KB | 6 | Điểm IO và điểm ảo, linkage mỗi 10 ms. Không chờ I/O |
 | `mqtt` | 1 | 6 KB | 5 | Chủ duy nhất của coreMQTT: connect, `MQTT_ProcessLoop`, outbox, gửi lại, `reconnectIfSilent` |
 | `mqtt_io` | 1 | 4 KB | 5 | Hai chiều: subscribe → serial, serial → outbox |
@@ -368,6 +371,23 @@ Quy tắc riêng của bản STM32:
 - **Gửi:** DMA, DE phần cứng (`DEAT`/`DEDT`). Mỗi lần phát đều bật DE. UART1 mắc song song RS232 nên điều này vô hại.
 - Parity hỗ trợ None/Odd/Even. Mark/Space để lại như bản ESP32: bỏ khỏi UI. XON/XOFF xử lý bằng phần mềm trong driver.
 - Baud 600–230400.
+
+### 6.6 Driver ADC (AI1, AI2)
+
+**Mục tiêu:** CPU gần như không phải làm gì khi lấy mẫu, và số đọc ổn định với 4–20 mA trong môi trường nhà máy.
+
+| Thành phần | Cấu hình |
+|---|---|
+| ADC | **ADC3** kênh INP0 (PC2_C, AI1) và INP1 (PC3_C, AI2), single-ended, độ phân giải 16 bit. Nhóm regular quét 2 kênh. Thời gian lấy mẫu 64,5 cycle (nguồn là ngõ ra op-amp LM2904, trở kháng thấp). Kernel clock lấy từ PLL2P hoặc PLL3R, trong giới hạn của datasheet, kèm cấu hình `BOOST` tương ứng |
+| Hiệu chuẩn | Gọi `HAL_ADCEx_Calibration_Start(ADC_CALIB_OFFSET_LINEARITY)` một lần lúc khởi tạo, trước khi bật ADC |
+| **Oversampling phần cứng** | Regular oversampling, tỷ lệ **×16**, dịch phải 4 bit, nên kết quả vẫn là 16 bit. Chế độ *triggered*: một trigger làm ADC chạy liền 16 lần chuyển đổi cho mỗi kênh. Thời gian chuyển đổi cụ thể phụ thuộc kernel clock đã chọn |
+| Trigger | Một timer phần cứng **1 kHz** làm trigger ngoài (chọn timer nằm trong bảng trigger của ADC3 trong CubeMX). Nhịp lấy mẫu cố định, không phụ thuộc lịch chạy task |
+| **DMA** | **BDMA** (DMAMUX2), circular, half-word, `DMNGT` = circular DMA. Đích là `uint16_t adc_buf[100][2]` (400 B), tức **100 ms** dữ liệu. Không bật ngắt HT/TC, chỉ bật ngắt lỗi |
+| Bộ nhớ | `adc_buf` nằm trong region MPU non-cacheable 1 KB, căn 1 KB, ở cuối SRAM4. Không cần thao tác cache |
+| Xử lý (task `io`, mỗi 500 ms) | Chép `adc_buf`, rồi tính trung bình 100 mẫu của từng kênh. Một cửa sổ 100 ms chứa đúng 5 chu kỳ 50 Hz và 6 chu kỳ 60 Hz, nên triệt được nhiễu điện lưới. Đổi sang dòng: `I[mA] = (code / 65535 × 3,0 V) / 0,499 / 0,120 kΩ`, rồi áp hệ số khuếch đại và offset hiệu chuẩn của từng kênh (đo trên bench). Ví dụ 20 mA tương ứng 1,198 V ở ADC, mã khoảng 26.160. Edge nhận giá trị bằng µA như bản ESP32 |
+| Lỗi (F18) | Overrun của ADC (`OVR`) hoặc lỗi truyền BDMA: điểm AI tương ứng bị đánh dấu failed, Modbus trả exception 4 như bản ESP32, và driver khởi động lại ADC cùng BDMA. Sau khi khởi động lại, AI chỉ báo giá trị khi đã có lại đủ một cửa sổ 100 ms |
+
+CPU tốn công cho AI chỉ khoảng 200 phép cộng mỗi 500 ms. Không có ngắt nào theo từng mẫu.
 
 ## 7. Mạng
 
@@ -829,7 +849,7 @@ Logic trạng thái và cài đặt viết trong `boot/install.c` bằng C thu�
 - **Bổ sung, kiểm trên phần cứng:**
   - timing DE (DE giữ tới hết stop bit cuối), t1.5/t3.5, XON/XOFF, nhận liên tục sau nhiều lần RTO, DMA quay vòng có overrun;
   - **UART2:** đo riêng pinmux, DE và timing một lần. Chạy **hai bus đồng thời**: Edge poll trên UART2 trong lúc bộ test bridge chạy trên UART1;
-  - DI, DO qua 74HC573 (kể cả trạng thái relay trong lúc bootloader chạy), AI1 và AI2 (hiệu chuẩn);
+  - DI, DO qua 74HC573 (kể cả trạng thái relay trong lúc bootloader chạy). AI1 và AI2 kiểm bằng nguồn dòng 4, 12 và 20 mA: hiệu chuẩn, độ ổn định khi có nhiễu 50 Hz bơm vào, khôi phục sau lỗi OVR, và xác nhận ADC không phát sinh ngắt theo từng mẫu;
   - PPP + CMUX trên EC600U:
     - tải HTTPS lớn và liên tục trong lúc DLC2 đọc tín hiệu, `overrun` phải bằng 0;
     - phục hồi DLC;
@@ -868,7 +888,7 @@ Ngoài ra, file map của linker phải cho thấy mỗi section nằm trong ng�
 | Mục | ESP32 (GW100) | STM32 (H750) |
 |---|---|---|
 | Cổng nối tiếp | 1 × RS485. Schema đã có sẵn `port2`, nhưng bị tắt theo phần cứng (`cfgmodel.c:178`) | UART1 (RS485 và RS232 song song) và UART2 (RS485), bật `port2` |
-| AI | 1, khoảng 12 bit hiệu dụng | 2, ADC3 16 bit, VREF 3,0 V |
+| AI | 1, khoảng 12 bit hiệu dụng, đọc bằng phần mềm | 2, ADC3 16 bit, VREF 3,0 V. Oversampling ×16 bằng phần cứng, timer kích 1 kHz, BDMA vòng, trung bình 100 ms để triệt nhiễu 50 Hz và 60 Hz |
 | TLS bridge | Chỉ UART1 | Cả hai cổng |
 | Edge | 300 điểm, body 96 KB | **100 điểm, 64 thiết bị, body và văn bản chuẩn hóa ≤ 48 KB** |
 | Body của các cấu hình khác | 96 KB | **6 KB** |

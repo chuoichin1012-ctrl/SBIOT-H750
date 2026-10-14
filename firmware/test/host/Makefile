@@ -8,9 +8,10 @@ BUILD := build
 CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c
 ARENA := ../../components/arena/arena.c $(TLSF)/tlsf.c
 
-all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_arena
+all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena
 	$(BUILD)/test_cfgmodel
 	$(BUILD)/test_proto
+	$(BUILD)/test_jsonscan
 	$(BUILD)/test_arena
 
 $(BUILD)/test_cfgmodel: test_cfgmodel.c $(CFG) $(CJSON)/cJSON.c
@@ -20,6 +21,10 @@ $(BUILD)/test_cfgmodel: test_cfgmodel.c $(CFG) $(CJSON)/cJSON.c
 $(BUILD)/test_proto: test_proto.c $(wildcard ../../components/proto/*.c) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $^ -lm -o $@
+
+$(BUILD)/test_jsonscan: test_jsonscan.c ../../components/proto/jsonscan.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/test_arena: test_arena.c $(ARENA) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)

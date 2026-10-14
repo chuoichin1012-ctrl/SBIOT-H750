@@ -1,0 +1,8 @@
+node_modules
+dist
+dist-firmware
+.env.local
+firmware/test/host/build
+firmware/build
+firmware/build-*
+firmware/components/webapi/www

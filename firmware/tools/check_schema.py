@@ -2,18 +2,21 @@
 """Checks that the web UI's field ids and the firmware's config schema agree.
 
 The firmware drops keys it does not know (cfgmodel), so a field the UI sends
-under a name the schema lacks is silently lost on save. Run from the
-repository root after changing a FieldDef or cfgmodel.c:
+under a name the schema lacks is silently lost on save. Run after changing a
+FieldDef or cfgmodel.c; paths resolve from this file, so any working directory works:
 
-    python3 stm32/firmware/tools/check_schema.py
+    python3 firmware/tools/check_schema.py
 
 Exits 1 on any field the UI sends that the firmware would drop.
 """
 import re
 import sys
+from pathlib import Path
 
-CFG = "stm32/firmware/components/cfgmodel/cfgmodel.c"
-WEB = "stm32/web/src"
+# The STM32 tree (firmware/ and web/ side by side), wherever it is checked out.
+ROOT = Path(__file__).resolve().parents[2]
+CFG = ROOT / "firmware/components/cfgmodel/cfgmodel.c"
+WEB = ROOT / "web/src"
 TIMER_KEYS = ("Enabled", "Time", "Action", "Output", "OutputAction")
 
 

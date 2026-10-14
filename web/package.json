@@ -1,0 +1,28 @@
+{
+  "name": "sbiot-h750-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:mock": "vite --mode mock",
+    "build": "tsc --noEmit && vite build",
+    "build:firmware": "tsc --noEmit && vite build --mode firmware && python3 ../firmware/tools/embed_web.py dist-firmware ../firmware/components/webapi/www",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview",
+    "test:e2e": "node tests/e2e/port-switch.mjs"
+  },
+  "dependencies": {
+    "history": "^5.3.0",
+    "preact": "^11.0.1",
+    "preact-router": "^4.1.2"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.6",
+    "@tailwindcss/vite": "^4.3.3",
+    "playwright-core": "^1.56.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  }
+}

@@ -303,7 +303,25 @@ Quy tắc riêng của bản STM32:
   1. Nếu `AT` không phản hồi trong 3 s thì nhấn PWRKEY 700 ms.
   2. Nếu vẫn không phản hồi thì kích `RESET_N`. Board này có chân reset, bản ESP32 thì không.
   3. Đồng bộ AT, đọc IMEI và ICCID.
-  4. Gửi `AT+CMUX=0`, chuyển sang chế độ CMUX cơ bản (3GPP 27.010).
+  4. Gửi **`AT+CMUX=0,0,5,2048,20,3,30,10,2`** (lệnh nhóm vận hành đang dùng với EC600U) để chuyển sang CMUX (3GPP 27.010). Ý nghĩa tham số theo 27.007 §5.7:
+
+     | Tham số | Giá trị | Ý nghĩa |
+     |---|---|---|
+     | mode | 0 | Basic mode |
+     | subset | 0 | Chỉ dùng frame UIH |
+     | port_speed | 5 | 115200 baud, khớp với UART3 |
+     | N1 | 2048 | Kích thước trường thông tin tối đa của một frame |
+     | T1 | 20 | Timer chờ ACK 200 ms |
+     | N2 | 3 | Gửi lại tối đa 3 lần |
+     | T2 | 30 | Timer phản hồi của kênh điều khiển 300 ms |
+     | T3 | 10 | Timer phản hồi đánh thức 10 s |
+     | k | 2 | Cửa sổ, chỉ dùng ở advanced mode, basic mode bỏ qua |
+
+     Hệ quả cho bộ demux:
+     - Hỗ trợ **trường độ dài 2 byte**, cần khi trường thông tin dài hơn 127 byte.
+     - Buffer frame mỗi DLC ≥ 2048 + 6 byte, tức 2 KB 64 B trong AXI. Một gói PPP (MRU 1500) nằm gọn trong một frame.
+     - Mở DLC0, rồi DLC1 và DLC2 bằng SABM, chờ UA trong khoảng T1, gửi lại tối đa N2 lần.
+     - Đóng mux bằng lệnh CLD.
 - **Kênh CMUX:**
   - DLC1 cho PPP: dữ liệu đi vào `pppos_input_tcpip`.
   - DLC2 cho AT: `AT+CSQ` và `AT+QNWINFO` mỗi 20 s.
@@ -526,7 +544,7 @@ Logic trạng thái và cài đặt viết trong `boot/install.c` bằng C thu�
 - **Cài đặt của bootloader:** flash giả lập, cắt điện ở **mọi** bước ghi của BACKUP, WRITE và VERIFY, cùng các trường hợp boot thử và rollback. Trạng thái cuối luôn boot được.
 - **Đỉnh arena:** payload kích thước tối đa của từng cấu hình (đường cây nguyên khối), và mô hình Edge 100 điểm với tên và formula dài nhất (đường theo node). Bộ cấp phát có đếm, giả lập kích thước node cJSON trên 32-bit. Đỉnh phải ≤ 64 KB.
 - Outbox MQTT: gửi lại, hết hạn, giới hạn kích thước, `bufferOffline`.
-- `cmux`: mã hóa và giải mã frame, FCS, frame bị cắt.
+- `cmux`: mã hóa và giải mã frame, FCS, frame bị cắt, frame có trường độ dài 1 byte và 2 byte (kể cả trường thông tin đúng 2048 byte), mở DLC bằng SABM/UA kèm hết thời gian T1 và gửi lại N2 lần, đóng bằng CLD.
 - Byte của gói CONNECT cho MQTT 3.1 và 3.1.1.
 
 ### 12.2 Bench HIL (`test/bench`)

@@ -6,7 +6,7 @@
 #include <string.h>
 #include "cfgmodel.h"
 
-static const cfg_env_t ENV = {.uart_count = 1, .do_count = 2, .di_count = 1, .ai_count = 1};
+static const cfg_env_t ENV = {.uart_count = 2, .do_count = 2, .di_count = 2, .ai_count = 2};
 static int failures;
 
 #define CHECK(cond, ...)                                  \
@@ -45,7 +45,7 @@ static void test_defaults_validate(void)
 {
     const char *names[16];
     size_t n = cfg_names(&ENV, names, 16);
-    CHECK(n == 11, "expected 11 configs with one UART, got %zu", n);
+    CHECK(n == 12, "expected 12 configs with two UARTs, got %zu", n);
     for (size_t i = 0; i < n; i++) {
         cJSON *d = cfg_default(&ENV, names[i]);
         CHECK(d, "default for %s does not parse", names[i]);
@@ -55,10 +55,10 @@ static void test_defaults_validate(void)
         cJSON_Delete(v);
         cJSON_Delete(d);
     }
-    CHECK(!cfg_known(&ENV, "port2"), "port2 must not exist with one UART");
-    cfg_env_t two = ENV;
-    two.uart_count = 2;
-    CHECK(cfg_known(&two, "port2"), "port2 must exist with two UARTs");
+    CHECK(cfg_known(&ENV, "port2"), "port2 must exist with two UARTs");
+    cfg_env_t one = ENV;
+    one.uart_count = 1;
+    CHECK(!cfg_known(&one, "port2"), "port2 must not exist with one UART");
 }
 
 static void test_coercion_and_unknown_keys(void)
@@ -77,12 +77,12 @@ static void test_ranges(void)
 {
     bad("port1", "{\"baudRate\":300}", "baudRate must be 600 to 230400");
     bad("port1", "{\"workMode\":1.5}", "workMode must be 0 to 4");
-    bad("system", "{\"websocketTarget\":3}", "websocketTarget must be 0 to 2");
+    bad("system", "{\"websocketTarget\":4}", "websocketTarget must be 0 to 3");
     bad("system", "{\"password\":\"\"}", "cannot be empty");
     bad("system", "{\"idleRestart\":30}", "Idle restart must be 0 (off) or 60");
     bad("port1", "{\"parity\":3}", "parity must be 0 to 2");
     bad("io", "{\"timer0Output\":2}", "timer0Output must be 0 to 1");
-    bad("edgeReport", "{\"channel\":2}", "channel must be 0 to 1");
+    bad("edgeReport", "{\"channel\":3}", "channel must be 0 to 2");
     bad("mqtt", "{\"host\":5}", "host must be text");
     bad("network", "{\"apnAuth\":4}", "apnAuth must be 0 to 3");
     bad("port1", "{\"flowControl\":1}", "not available on RS485");
@@ -161,7 +161,7 @@ static void test_lists(void)
                        "{\"name\":\"b\",\"ioPoint\":\"DO1\"}]}]", "Point name \"DO1\" is used twice");
     bad("edgeDevices", "[{\"name\":\"bad name\"}]", "not valid");
     bad("edgeDevices", "[{\"name\":\"a\",\"source\":\"cloud\"}]", "unsupported value");
-    bad("edgeDevices", "[{\"name\":\"a\",\"uart\":2}]", "uart must be 1 to 1");
+    bad("edgeDevices", "[{\"name\":\"a\",\"uart\":3}]", "uart must be 1 to 2");
     bad("edgeLinkage", "[{},{},{},{},{},{},{},{},{},{},{}]", "Too many");
 }
 
@@ -203,8 +203,85 @@ static void test_edge_strict(void)
     cJSON_Delete(in);
 }
 
+/** Values that exist only because this board has two ports. */
+static void test_two_port_values(void)
+{
+    cJSON *o = ok("system", "{\"websocketTarget\":3}");
+    CHECK(o && cJSON_GetNumberValue(cJSON_GetObjectItem(o, "websocketTarget")) == 3, "LOG target is 3 with two UARTs");
+    cJSON_Delete(o);
+    o = ok("edgeReport", "{\"channel\":2}");
+    CHECK(o && cJSON_GetNumberValue(cJSON_GetObjectItem(o, "channel")) == 2, "report channel 2 = UART2 socket");
+    cJSON_Delete(o);
+    o = ok("edgeDevices", "[{\"name\":\"m2\",\"uart\":2}]");
+    CHECK(o && cJSON_GetNumberValue(cJSON_GetObjectItem(cJSON_GetArrayItem(o, 0), "uart")) == 2, "device on UART2");
+    cJSON_Delete(o);
+}
+
+/** STM32 board: the keys this firmware dropped, and the 100-point Edge limit. */
+static void test_stm32_scope(void)
+{
+    cJSON *p = ok("port2", "{\"rfc2217\":1,\"tls\":1,\"workMode\":1}");
+    if (p) {
+        CHECK(!cJSON_GetObjectItem(p, "rfc2217"), "rfc2217 must be dropped");
+        CHECK(cJSON_GetNumberValue(cJSON_GetObjectItem(p, "tls")) == 1, "TLS must be kept on port2");
+        cJSON_Delete(p);
+    }
+    cJSON *s = ok("system", "{\"telnet\":1,\"telnetPort\":23}");
+    if (s) {
+        CHECK(!cJSON_GetObjectItem(s, "telnet"), "telnet must be dropped");
+        CHECK(!cJSON_GetObjectItem(s, "telnetPort"), "telnetPort must be dropped");
+        cJSON_Delete(s);
+    }
+    cJSON *d = cfg_default(&ENV, "port1");
+    CHECK(d && !cJSON_GetObjectItem(d, "rfc2217"), "port default must not carry rfc2217");
+    cJSON_Delete(d);
+    d = cfg_default(&ENV, "system");
+    CHECK(d && !cJSON_GetObjectItem(d, "telnet") && !cJSON_GetObjectItem(d, "telnetPort"), "system default must not carry telnet");
+    cJSON_Delete(d);
+
+    // Copies stored by older firmware still load: the dropped keys disappear, valid ones are kept.
+    cJSON *old = cJSON_Parse("{\"telnet\":1,\"telnetPort\":2323,\"hostname\":\"gw\"}");
+    char err[160] = "";
+    cJSON *ld = cfg_load(&ENV, "system", old, err, sizeof err);
+    CHECK(ld && !cJSON_GetObjectItem(ld, "telnet") && !cJSON_GetObjectItem(ld, "telnetPort") &&
+              strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(ld, "hostname")), "gw") == 0,
+          "stored system with telnet must load without it: %s", err);
+    cJSON_Delete(ld);
+    cJSON_Delete(old);
+    old = cJSON_Parse("{\"rfc2217\":1,\"baudRate\":9600,\"tls\":1}");
+    err[0] = 0;
+    ld = cfg_load(&ENV, "port1", old, err, sizeof err);
+    CHECK(ld && !cJSON_GetObjectItem(ld, "rfc2217") && cJSON_GetNumberValue(cJSON_GetObjectItem(ld, "baudRate")) == 9600 &&
+              cJSON_GetNumberValue(cJSON_GetObjectItem(ld, "tls")) == 1,
+          "stored port1 with rfc2217 must load without it and keep the rest: %s", err);
+    cJSON_Delete(ld);
+    cJSON_Delete(old);
+
+    // Both analog and digital inputs exist on this board.
+    cJSON *io = ok("edgeDevices", "[{\"name\":\"io\",\"source\":\"io\",\"nodes\":[{\"ioPoint\":\"AI2\"},{\"ioPoint\":\"DI2\"}]}]");
+    cJSON_Delete(io);
+    bad("edgeDevices", "[{\"name\":\"io\",\"source\":\"io\",\"nodes\":[{\"ioPoint\":\"AI3\"}]}]", "IO channel \"AI3\" does not exist");
+
+    // 100 points pass, 101 fail with the user-facing message.
+    for (int total = 100; total <= 101; total++) {
+        char json[16384];
+        size_t o = (size_t)snprintf(json, sizeof json, "[{\"name\":\"m\",\"nodes\":[");
+        for (int i = 0; i < total; i++)
+            o += (size_t)snprintf(json + o, sizeof json - o, "%s{\"name\":\"p%d\",\"reg\":%d}", i ? "," : "", i, i);
+        snprintf(json + o, sizeof json - o, "]}]");
+        if (total == 100) {
+            cJSON *e = ok("edgeDevices", json);
+            cJSON_Delete(e);
+        } else {
+            bad("edgeDevices", json, "At most 100 points across all devices.");
+        }
+    }
+}
+
 int main(void)
 {
+    test_stm32_scope();
+    test_two_port_values();
     test_edge_strict();
     test_defaults_validate();
     test_coercion_and_unknown_keys();

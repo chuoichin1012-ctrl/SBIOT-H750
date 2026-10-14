@@ -37,7 +37,7 @@ static const field_t network_fields[] = {
 // Mirrors src/pages/Port.tsx (serialDefs + socketDefs)
 static const field_t port_fields[] = {
     INT("baudRate", 600, 230400), INT("dataBits", 7, 8), INT("parity", 0, 2), INT("stopBits", 1, 2),
-    INT("flowControl", 0, 2), INT("packetLength", 0, 1460), INT("packetInterval", 0, 255), INT("rfc2217", 0, 1),
+    INT("flowControl", 0, 2), INT("packetLength", 0, 1460), INT("packetInterval", 0, 255),
     BOOL("serialHeartbeat"), INT("serialHeartbeatContent", 0, 4), INT("serialHeartbeatHex", 0, 1), STR("serialHeartbeatData", 40),
     INT("serialHeartbeatInterval", 1, 65535),
     INT("workMode", 0, 4), INT("socketMode", 0, 4), STR("remoteHost", 64), INT("remotePort", 1, 65535), INT("localPort", 0, 65535),
@@ -69,7 +69,7 @@ static const field_t topic_fields[] = {
 static const field_t system_fields[] = {
     STR("hostname", 16), INT("bufferOffline", 0, 1), INT("idleRestart", 0, 65535), INT("rs485CollisionAvoid", 0, 1),
     INT("rs485IdleTime", 0, 2500), STR("username", 16), STR("password", 16), INT("webPort", 1, 65535),
-    INT("telnet", 0, 1), INT("telnetPort", 1, 65535), INT("websocketPort", 1, 65535),
+    INT("websocketPort", 1, 65535),
     INT("websocketTarget", 0, 3), INT("ntp", 0, 1), STR("ntpServer", 128), INT("timezone", -12, 12),
 };
 
@@ -116,7 +116,7 @@ static const field_t linkage_fields[] = {
 };
 
 #define MAX_TOPICS 16
-#define MAX_NODES 300
+#define MAX_NODES 100
 #define MAX_ETH_SLAVES 5
 #define MAX_EVENTS 10
 
@@ -129,7 +129,7 @@ static const char DEF_NETWORK[] =
 
 static const char DEF_PORT[] =
     "{\"baudRate\":115200,\"dataBits\":8,\"parity\":0,\"stopBits\":1,\"flowControl\":0,\"packetLength\":0,\"packetInterval\":0,"
-    "\"rfc2217\":0,\"serialHeartbeat\":false,\"serialHeartbeatContent\":0,\"serialHeartbeatHex\":1,\"serialHeartbeatData\":\"\",\"serialHeartbeatInterval\":30,"
+    "\"serialHeartbeat\":false,\"serialHeartbeatContent\":0,\"serialHeartbeatHex\":1,\"serialHeartbeatData\":\"\",\"serialHeartbeatInterval\":30,"
     "\"workMode\":3,\"socketMode\":0,\"remoteHost\":\"192.168.0.201\",\"remotePort\":23,\"localPort\":0,\"udpAnyRemotePort\":0,"
     "\"listenPort\":23,\"maxClients\":8,\"clientLimitAction\":0,\"allowedClients\":\"\",\"httpHost\":\"\",\"httpPort\":80,\"httpLocalPort\":0,\"httpMethod\":0,"
     "\"httpPath\":\"/\",\"httpHeaders\":\"\",\"httpStripHeaders\":true,\"httpTimeout\":10,\"reconnectInterval\":5,\"shortConnectionTime\":10,"
@@ -144,7 +144,7 @@ static const char DEF_MQTT[] =
 
 static const char DEF_SYSTEM[] =
     "{\"hostname\":\"sbiot-gw\",\"bufferOffline\":0,\"idleRestart\":0,\"rs485CollisionAvoid\":0,\"rs485IdleTime\":10,\"username\":\"admin\","
-    "\"password\":\"admin\",\"webPort\":80,\"telnet\":0,\"telnetPort\":2323,\"websocketPort\":6432,"
+    "\"password\":\"admin\",\"webPort\":80,\"websocketPort\":6432,"
     "\"websocketTarget\":0,\"ntp\":1,\"ntpServer\":\"pool.ntp.org\",\"timezone\":7}";
 
 #define DEF_TIMER(n)                                                                                      \
@@ -520,7 +520,7 @@ static cJSON *slaves(const cfg_env_t *env, const cJSON *in, bool strict, char *e
         cJSON_ArrayForEach(n, nodes_in)
         {
             if (++total > MAX_NODES) {
-                fail(err, errlen, "At most 300 points across all devices.", NULL, NULL);
+                fail(err, errlen, "At most 100 points across all devices.", NULL, NULL);
                 goto bad;
             }
             cJSON *o = object(env, "edgeDevices", node_fields, N(node_fields), n, node_base, err, errlen);

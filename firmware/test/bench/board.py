@@ -7,7 +7,6 @@ import base64
 import os
 import subprocess
 import threading
-import time
 
 COM = os.environ.get('SBIOT_COM', 'COM4')
 CLI = os.environ.get('CUBEPROG_CLI',
@@ -16,7 +15,9 @@ CLI = os.environ.get('CUBEPROG_CLI',
 # Two flat arrays for the timed sends: PowerShell unrolls a one-element array of pairs.
 _PS = r'''
 $p = New-Object System.IO.Ports.SerialPort '%(port)s', 115200
-$p.Open(); $w = [Diagnostics.Stopwatch]::StartNew(); $buf = ''
+$p.Open(); Start-Sleep -Milliseconds 50; $p.DiscardInBuffer()   # drop what the VCP buffered while the port was closed
+$w = [Diagnostics.Stopwatch]::StartNew(); $buf = ''
+[Console]::Out.WriteLine('0|__ready__'); [Console]::Out.Flush()
 $at = @(%(at)s); $tx = @(%(tx)s); $i = 0
 while ($w.ElapsedMilliseconds -lt %(ms)d) {
   if ($i -lt $at.Count -and $w.ElapsedMilliseconds -ge $at[$i]) { $p.Write($tx[$i]); $i++ }
@@ -40,12 +41,13 @@ def listen(seconds, sends=(), during=None):
     enc = base64.b64encode(script.encode('utf-16-le')).decode()
     proc = subprocess.Popen(['powershell.exe', '-NoProfile', '-EncodedCommand', enc], cwd='/mnt/c',
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-    if during:
-        time.sleep(1.5)  # PowerShell needs about a second to open the port
-        threading.Thread(target=during).start()
     lines = []
     for raw in proc.stdout:
         ms, sep, line = raw.rstrip('\n').partition('|')
+        if line == '__ready__':  # the port is open and drained: only now may during() act on the board
+            if during:
+                threading.Thread(target=during).start()
+            continue
         if sep and ms.isdigit():
             lines.append((int(ms), line))
     proc.wait()

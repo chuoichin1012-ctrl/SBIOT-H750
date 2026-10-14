@@ -238,6 +238,12 @@ static double bound_max(const cfg_env_t *env, const char *cfg, const field_t *f)
     return f->max;
 }
 
+/** cJSON_ReplaceItemInObjectCaseSensitive that frees `item` when it cannot be placed (no key, or no memory). */
+static void put_field(cJSON *dst, const char *key, cJSON *item)
+{
+    if (!cJSON_ReplaceItemInObjectCaseSensitive(dst, key, item)) cJSON_Delete(item);
+}
+
 /** Reads one field from `src` into `dst` with type coercion. Returns false on a type/range error. */
 static bool take(const cfg_env_t *env, const char *cfg, const field_t *f, const cJSON *src, cJSON *dst, char *err,
                  size_t errlen)
@@ -253,7 +259,7 @@ static bool take(const cfg_env_t *env, const char *cfg, const field_t *f, const 
         else if (cJSON_IsNumber(v)) b = v->valuedouble != 0;
         else if (cJSON_IsString(v)) b = strcmp(v->valuestring, "1") == 0 || strcmp(v->valuestring, "true") == 0;
         else return fail(err, errlen, "%s must be true or false.", f->key, NULL), false;
-        cJSON_ReplaceItemInObjectCaseSensitive(dst, f->key, cJSON_CreateBool(b));
+        put_field(dst, f->key, cJSON_CreateBool(b));
         return true;
     }
     case F_INT:
@@ -269,19 +275,19 @@ static bool take(const cfg_env_t *env, const char *cfg, const field_t *f, const 
             snprintf(range, sizeof range, f->type == F_INT ? "%.0f to %.0f" : "%g to %g", f->min, max);
             return fail(err, errlen, "%s must be %s.", f->key, range), false;
         }
-        cJSON_ReplaceItemInObjectCaseSensitive(dst, f->key, cJSON_CreateNumber(d));
+        put_field(dst, f->key, cJSON_CreateNumber(d));
         return true;
     }
     case F_STR:
         if (!cJSON_IsString(v)) return fail(err, errlen, "%s must be text.", f->key, NULL), false;
         if (strlen(v->valuestring) > (size_t)f->max) return fail(err, errlen, "%s is too long.", f->key, NULL), false;
-        cJSON_ReplaceItemInObjectCaseSensitive(dst, f->key, cJSON_CreateString(v->valuestring));
+        put_field(dst, f->key, cJSON_CreateString(v->valuestring));
         return true;
     case F_ENUM:
         if (cJSON_IsString(v)) {
             for (const char *const *c = f->choices; *c; c++) {
                 if (strcmp(*c, v->valuestring) == 0) {
-                    cJSON_ReplaceItemInObjectCaseSensitive(dst, f->key, cJSON_CreateString(v->valuestring));
+                    put_field(dst, f->key, cJSON_CreateString(v->valuestring));
                     return true;
                 }
             }
@@ -299,7 +305,10 @@ static cJSON *object(const cfg_env_t *env, const char *cfg, const field_t *field
     cJSON *out = cJSON_CreateObject();
     for (size_t i = 0; i < n; i++) {
         const cJSON *b = cJSON_GetObjectItemCaseSensitive(base, fields[i].key);
-        if (b) cJSON_AddItemToObject(out, fields[i].key, cJSON_Duplicate(b, true));
+        if (b) {
+            cJSON *copy = cJSON_Duplicate(b, true);
+            if (!cJSON_AddItemToObject(out, fields[i].key, copy)) cJSON_Delete(copy);  // the key copy failed
+        }
         if (!take(env, cfg, &fields[i], in, out, err, errlen)) {
             cJSON_Delete(out);
             return NULL;
@@ -331,7 +340,7 @@ static cJSON *list(const cfg_env_t *env, const char *cfg, const field_t *fields,
     const cJSON *it;
     cJSON_ArrayForEach(it, in)
     {
-        cJSON *o = object(env, cfg, fields, n, it, base, err, errlen);
+        cJSON *o = out ? object(env, cfg, fields, n, it, base, err, errlen) : NULL;  // out is NULL only without memory
         if (!o) {
             cJSON_Delete(out);
             out = NULL;
@@ -629,4 +638,34 @@ cJSON *cfg_validate(const cfg_env_t *env, const char *name, const cJSON *in, con
 cJSON *cfg_load(const cfg_env_t *env, const char *name, const cJSON *in, char *err, size_t errlen)
 {
     return validate(env, name, in, NULL, false, err, errlen);
+}
+
+// ---- Text in, text out ----------------------------------------------------------------
+// The STM32 has no PSRAM: a whole Edge model as a cJSON tree does not fit (spec §9.2). These
+// functions keep the same rules and messages as the tree-based code above, which stays the
+// reference: test/host/test_edge_text.c checks the two against each other byte for byte.
+
+#include "jsonscan.h"
+
+static const char NOT_JSON[] = "The request body is not valid JSON.";
+
+__attribute__((weak)) unsigned json_alloc_failures(void) { return 0; }
+
+cfg_result_t cfg_validate_text(const cfg_env_t *env, const char *name, const char *text, size_t len,
+                               const cJSON *current, char *out, size_t out_size, char *err, size_t errlen)
+{
+    js_span_t root;
+    if (!js_parse_root(text, len, &root)) return fail(err, errlen, NOT_JSON, NULL, NULL), CFG_INVALID;
+    unsigned failures = json_alloc_failures();
+    cJSON *in = cJSON_ParseWithLength(root.p, root.n);
+    if (!in) return fail(err, errlen, "Out of memory.", NULL, NULL), CFG_NO_MEMORY;  // the scanner accepted it
+    char why[160] = "";
+    cJSON *doc = cfg_validate(env, name, in, current, why, sizeof why);
+    cJSON_Delete(in);  // before printing: the peak is the input or the output, not both
+    bool fits = doc && cJSON_PrintPreallocated(doc, out, (int)out_size, false) && strlen(out) <= CFG_SMALL_MAX;
+    cJSON_Delete(doc);
+    if (json_alloc_failures() != failures) return fail(err, errlen, "Out of memory.", NULL, NULL), CFG_NO_MEMORY;
+    if (!doc) return fail(err, errlen, "%s", why, NULL), CFG_INVALID;
+    if (!fits) return fail(err, errlen, "These settings are too large.", NULL, NULL), CFG_TOO_LARGE;
+    return CFG_OK;
 }

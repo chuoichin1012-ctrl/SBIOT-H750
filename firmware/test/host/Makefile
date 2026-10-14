@@ -5,14 +5,16 @@ INC := -I../../components/cfgmodel/include -I../../components/proto/include -I..
 # UBSan findings stop the test (-fno-sanitize-recover), so a NULL dereference can never pass unnoticed.
 CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all $(INC)
 BUILD := build
-CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c
+CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c ../../components/proto/jsonscan.c
 ARENA := ../../components/arena/arena.c $(TLSF)/tlsf.c
 
-all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena
+all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_oom
 	$(BUILD)/test_cfgmodel
 	$(BUILD)/test_proto
 	$(BUILD)/test_jsonscan
 	$(BUILD)/test_arena
+	$(BUILD)/test_text_small
+	$(BUILD)/test_oom
 
 $(BUILD)/test_cfgmodel: test_cfgmodel.c $(CFG) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
@@ -27,6 +29,14 @@ $(BUILD)/test_jsonscan: test_jsonscan.c ../../components/proto/jsonscan.c
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/test_arena: test_arena.c $(ARENA) $(CJSON)/cJSON.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) $^ -lm -o $@
+
+$(BUILD)/test_text_small: test_text_small.c $(CFG) $(ARENA) $(CJSON)/cJSON.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) $^ -lm -o $@
+
+$(BUILD)/test_oom: test_oom.c $(CFG) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $^ -lm -o $@
 

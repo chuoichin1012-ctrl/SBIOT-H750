@@ -158,7 +158,7 @@ Với checkpoint cuối, chỉ **chép và tính hash** đúng số byte thuộc
 | Backup SRAM | 4 KB | Bản ghi HardFault (§11.4). Handoff block 64 B giữa bootloader và app (§11.2) | |
 
 **Cách tính ngân sách:**
-- Các buffer lớn đều cấp phát tĩnh trong section của vùng tương ứng. Ngân sách tĩnh được kiểm bằng **file map của linker**: tổng của mỗi section không vượt dung lượng vùng.
+- Các buffer lớn đều cấp phát tĩnh trong section của vùng tương ứng, **trừ** các khoản được ghi rõ là cấp từ heap trong bảng trên: TLS, Mongoose, buffer report, buffer mạng coreMQTT. Ngân sách tĩnh được kiểm bằng **file map của linker**: tổng của mỗi section không vượt dung lượng vùng.
 - Chỉ AXI có heap. Các vùng D2 và SRAM4 chỉ chứa pool và buffer tĩnh, nên với các vùng này cái cần đo là **mức chiếm dụng** của pool (ví dụ pbuf, outbox, ring), không phải heap.
 - Các con số trên là ngân sách dự kiến, được đo lại trên bench (§12.3).
 
@@ -452,7 +452,7 @@ Quy tắc riêng của bản STM32:
   | Thao tác | Yêu cầu của tài liệu | Firmware dùng |
   |---|---|---|
   | Bật nguồn: giữ PWRKEY (LTE_PWR = 1 qua Q1) | ≥ 2 s | **2,5 s** |
-  | Tắt nguồn bằng PWRKEY | ≥ 3 s | **3,5 s**. Chỉ dùng khi `AT+QPOWD=1` không được |
+  | Tắt nguồn bằng PWRKEY | ≥ 3 s | **Không dùng.** Firmware không bao giờ nhấn PWRKEY ≥ 3 s, vì khi không biết module đang bật hay tắt, thao tác này có thể tắt một module đang chạy |
   | Xung `RESET_N` (LTE_RESET = 1 qua Q2) | ≥ 100 ms | **200 ms** |
   | Chờ UART sẵn sàng sau khi bật hoặc reset | Tài liệu không nêu một con số cố định cho MAIN_UART | Thử `AT` mỗi 500 ms, **deadline 15 s** kể từ lúc nhả PWRKEY hoặc RESET_N. Đo thời gian thật trên bench, rồi đặt deadline bằng 2 lần giá trị đo, nhưng không dưới 10 s |
   | **Tắt xong** | §3.8.2 và hình 16: thời gian tắt phụ thuộc việc rời mạng | Tắt xong **chỉ** được công nhận khi nhận được URC `POWERED DOWN` sau `AT+QPOWD=1` (theo *EC600U AT Commands Manual* đúng phiên bản firmware module đang dùng). Deadline 60 s. Board không nối chân `STATUS`, nên **UART im lặng không bao giờ được coi là đã tắt** |
@@ -460,9 +460,19 @@ Quy tắc riêng của bản STM32:
   Không kết luận "modem hỏng" chỉ vì modem không phản hồi ngay sau xung nguồn.
 - **Khởi động:**
   1. Thử `AT` trong 3 s, vì sau khi gateway restart modem thường vẫn đang bật.
-  2. Không có phản hồi thì **kích `RESET_N` trước** (200 ms), rồi chờ UART sẵn sàng. Lý do: PWRKEY là phím bật/tắt đảo trạng thái, nên nhấn PWRKEY vào một module đang bật mà UART bị treo sẽ **tắt** module. `RESET_N` thì khởi động lại module nếu nó đang bật, và vô hại nếu nó đang tắt.
-  3. Vẫn không phản hồi sau deadline thì coi module đang tắt: nhấn PWRKEY 2,5 s, rồi chờ UART sẵn sàng.
-  4. Vẫn không phản hồi thì ghi log `MODEM NOT RESPONDING`, chờ 60 s rồi lặp lại từ bước 2.
+  2. Không có phản hồi: trạng thái là **không xác định**, tức module đang tắt, hoặc đang bật nhưng không trả lời. Kích **`RESET_N`** 200 ms, rồi chờ UART sẵn sàng. Module đang bật thì khởi động lại; đang tắt thì xung này vô hại.
+  3. Vẫn không phản hồi: trạng thái **vẫn là không xác định** (không suy ra là đã tắt). Nhấn **PWRKEY 2,5 s**, rồi chờ UART sẵn sàng. Độ dài 2,5 s nằm giữa ngưỡng bật (≥ 2 s) và ngưỡng tắt (≥ 3 s) của tài liệu, nên module đang tắt thì bật lên, còn module đang bật thì không bị tắt. **Bench phải xác nhận** rằng xung 2,5 s không làm tắt một module đang bật.
+  4. Vẫn không phản hồi: ghi log `MODEM NOT RESPONDING`, chờ 60 s rồi lặp lại từ bước 2. Không bao giờ dùng xung ≥ 3 s.
+
+  Các trạng thái của module mà firmware theo dõi:
+
+  | Trạng thái | Khi nào |
+  |---|---|
+  | `ON` | AT phản hồi |
+  | `OFF` (đã xác nhận) | Nhận URC `POWERED DOWN` sau `AT+QPOWD=1` |
+  | `UNKNOWN` | Mọi trường hợp khác, kể cả UART im lặng, và kể cả lúc gateway vừa cấp nguồn |
+
+  Từ `OFF` thì bật lại bằng PWRKEY 2,5 s, không cần `RESET_N`.
   5. Khi AT đã phản hồi: đồng bộ AT, đọc IMEI, ICCID và phiên bản firmware của module (`AT+QGMR`, ghi vào log).
   6. Gửi **`AT+CMUX=0,0,5,2048,20,3,30,10,2`** (lệnh nhóm vận hành đang dùng với EC600U) để chuyển sang CMUX (3GPP 27.010). Ý nghĩa tham số theo 27.007 §5.7:
 
@@ -484,7 +494,7 @@ Quy tắc riêng của bản STM32:
      - **PPP là luồng byte, không gói vào từng frame.** Sau khi escape (RFC 1662 §4.2), một gói PPP có thể dài gần gấp đôi, nên luồng PPP đi ra được cắt thành các frame UIH ≤ N1 trên DLC1. Chiều nhận ghép payload UIH lại thành luồng byte. Không giả định một frame chứa đúng một gói PPP.
      - Mở DLC0, rồi DLC1 và DLC2 bằng SABM, chờ UA trong khoảng T1, gửi lại tối đa N2 lần.
      - Đóng mux bằng lệnh CLD.
-- **Tắt có chủ đích** (trước khi restart gateway, và khi `network.priority` = 0): gửi `AT+QPOWD=1` rồi chờ `POWERED DOWN` theo bảng trên. Hết deadline mà chưa nhận được thì **không** nhấn PWRKEY (vì không biết module đang ở trạng thái nào), chỉ ghi log. Lần khởi động sau đi theo các bước ở trên.
+- **Tắt có chủ đích** (trước khi restart gateway, và khi `network.priority` = 0): gửi `AT+QPOWD=1` rồi chờ `POWERED DOWN` theo bảng trên. Hết deadline mà chưa nhận được thì trạng thái là `UNKNOWN`. Firmware **không** nhấn PWRKEY, chỉ ghi log. Lần khởi động sau đi theo các bước ở trên, bắt đầu từ `UNKNOWN`.
 - **Kênh CMUX:**
   - DLC0: kênh điều khiển.
   - DLC1 cho PPP: dữ liệu đi vào `pppos_input_tcpip`.
@@ -511,8 +521,9 @@ Quy tắc riêng của bản STM32:
   - RX dùng DMA vòng 4 KB với ngắt HT, TC và IDLE, do `cmux_rx` (prio 25) rút ra (§6.1). Ở 115200 baud, 4 KB tương đương khoảng 350 ms dữ liệu.
   - **Khi `pppos_input_tcpip` trả lỗi** (`ERR_MEM`): thử lại tối đa 3 lần, mỗi lần cách 1 ms. Ở 115200 baud, 1 ms là khoảng 12 byte, nên ring vẫn dư. Hết 3 lần thì bỏ đoạn dữ liệu đó và tăng `ppp_in_drop`. PPP tự phục hồi qua FCS và cơ chế gửi lại của TCP.
   - Khi đang FCoff, hoặc MSC báo dừng DLC1, dữ liệu PPP đi ra được giữ trong hàng đợi gửi của DLC1, tối đa 4 KB.
-  - Callback xuất của PPPoS (`pppos_output_cb_fn`) **trả về số byte đã nhận** (`u32_t`). Hàng đợi không còn đủ chỗ cho cả đoạn thì callback nhận 0 byte và trả 0. Không nhận một phần, để không ghi nửa frame PPP vào hàng đợi.
-  - lwIP coi số byte khác độ dài yêu cầu là `ERR_IF` và bỏ frame PPP đó. Firmware đếm `ppp_out_drop`. TCP tự gửi lại. Không có cơ chế `ERR_MEM` nào được hứa ở đây.
+  - Callback xuất của PPPoS (`pppos_output_cb_fn`) **trả về số byte đã nhận** (`u32_t`). Mỗi lần gọi, callback nhận toàn bộ đoạn được giao, hoặc nếu hàng đợi không đủ chỗ thì nhận 0 byte và trả 0.
+  - **Một frame PPP có thể đi qua nhiều lần gọi callback** (`pppos_output_append()` xả buffer khi đầy, rồi `pppos_output_last()`). Nếu một lần gọi sau bị từ chối, các đoạn trước đó đã nằm trong hàng đợi. Frame PPP sẽ bị cụt trên đường truyền, và phía modem phát hiện qua FCS rồi tái đồng bộ ở cờ `0x7E` kế tiếp.
+  - lwIP coi số byte khác độ dài yêu cầu là `ERR_IF` và bỏ phần còn lại của frame. Firmware đếm `ppp_out_drop`. TCP tự gửi lại. Không có cơ chế `ERR_MEM` nào được hứa ở đây.
   - Tràn ring được đếm thành `overrun`, và PPP tự phục hồi bằng cơ chế của nó (FCS, gửi lại TCP).
   - **Cần chứng minh bằng tải liên tục** trên bench: tải xuống HTTPS lớn trong lúc DLC2 vẫn đọc tín hiệu. Số `overrun` phải bằng 0.
 - **Phục hồi:** PPP không có địa chỉ quá 2 phút thì gửi `AT+CFUN=1,1` qua DLC2. Không phản hồi AT thì vào `RECOVER`.
@@ -827,57 +838,55 @@ Header 1 KB đặt ở đầu image:
 - **Không bản ghi nào hợp lệ** (lần đầu sau khi nạp qua SWD, hoặc cả hai đều hỏng):
   - image QSPI hợp lệ: coi như `CONFIRMED`, ghi bản ghi mới;
   - image QSPI hỏng và backup hợp lệ: chuyển sang `RESTORE`;
-  - cả hai đều hỏng: vào chế độ cứu hộ.
+  - cả hai đều hỏng: theo hàng 8 hoặc 9 của bảng quyết định, tùy staging còn hợp lệ hay không.
 
 **Các trạng thái:**
 
 | Trạng thái | Bootloader làm gì | Chuyển sang |
 |---|---|---|
-| `CONFIRMED` | Kiểm SHA-256 của image QSPI | Hợp lệ: nhảy vào app. Hỏng: `RESTORE` nếu backup hợp lệ, ngược lại vào cứu hộ |
+| `CONFIRMED` | Kiểm SHA-256 của image QSPI | Hợp lệ: nhảy vào app. Hỏng: `RESTORE(0)` nếu backup hợp lệ; ngược lại theo hàng 8 hoặc 9 của bảng quyết định |
 | `PENDING` (app ghi khi staging đã đầy đủ) | **Kiểm header, kích thước và SHA của staging trước khi xóa bất cứ thứ gì** | Hợp lệ: `BACKUP(0)`, hoặc thẳng `WRITE(0)` nếu image QSPI hiện tại hỏng (khi đó giữ backup cũ). Hỏng: `CONFIRMED`, kèm lý do |
 | `BACKUP(off)` | Chép QSPI → backup từ checkpoint `off` | Xong: **kiểm SHA của backup** khớp header của image đang chạy, rồi `WRITE(0)`. Không khớp: làm lại `BACKUP(0)` một lần, lần hai vẫn sai thì `CONFIRMED` (hủy cài) |
 | `WRITE(off)` | Chép staging → QSPI từ checkpoint `off` | Xong: `VERIFY` |
-| `VERIFY` | SHA của QSPI so với header của staging | Khớp: `TRIAL(0)`. Không khớp: làm lại `WRITE(0)` một lần, lần hai vẫn sai thì `RESTORE(0)` |
+| `VERIFY` | SHA của QSPI so với header của staging | Khớp: `TRIAL(0)`. Không khớp: `verify_fail + 1`, làm lại `WRITE(0)`. Cạn lượt thử: theo hàng 7 và 8 của bảng quyết định |
 | `TRIAL(n)` | `n + 1`, ghi bản ghi, rồi nhảy vào app | `n + 1 > 3`: `RESTORE(0)`. App xác nhận: `CONFIRMED`. App yêu cầu rollback: `RESTORE(0)` |
-| `RESTORE(off)` | Ở `off = 0`: **kiểm SHA của backup trước khi xóa QSPI**. Rồi chép backup → QSPI từ `off`. **Backup là nguồn không đổi** của trạng thái này: không bao giờ chép vào backup khi đang `RESTORE` | Xong và SHA của QSPI khớp: `CONFIRMED`. **Xong mà SHA không khớp:** `verify_fail + 1`, làm lại `RESTORE(0)`. `verify_fail` ≥ 2: cứu hộ. Backup hỏng ngay từ đầu: nếu image QSPI còn hợp lệ thì chạy nó (`CONFIRMED`, ghi lý do), nếu không thì vào cứu hộ |
+| `RESTORE(off)` | Ở `off = 0`: **kiểm SHA của backup trước khi xóa QSPI**. Rồi chép backup → QSPI từ `off`. **Backup là nguồn không đổi** của trạng thái này: không bao giờ chép vào backup khi đang `RESTORE` | Xong và SHA của QSPI khớp: `CONFIRMED`. **Xong mà SHA không khớp:** `verify_fail + 1`, làm lại `RESTORE(0)`. Cạn lượt thử: theo hàng 8 của bảng quyết định. Backup hỏng ngay từ đầu: nếu image QSPI còn hợp lệ thì chạy nó (`CONFIRMED`, ghi lý do); nếu không thì theo hàng 8 (còn staging hợp lệ) hoặc hàng 9 |
 
 **Quy tắc chung:**
 - **Kiểm image trước mọi lần nhảy**, kể cả ở `CONFIRMED` và `TRIAL`, không có ngoại lệ. Phải đạt cả: magic, CRC32 của header, mã phần cứng, `size` ≤ slot, SHA-256 của phần thân, MSP và reset vector (§11.1).
   - Ở `TRIAL`, kiểm thất bại thì chuyển `RESTORE(0)`, không bao giờ nhảy vào image hỏng.
-- **Bộ đếm số lần thử được lưu qua reset:**
-  - Trước khi bắt đầu một checkpoint, bootloader ghi bản ghi với `attempts + 1`.
-  - Xong checkpoint thì ghi `offset + 1, attempts = 0`.
-  - Vì vậy một lần treo hay reset giữa chừng đã được đếm trước khi nó xảy ra.
-  - `attempts` > 3 tại cùng một checkpoint:
-
-    | Pha | Hành động |
-    |---|---|
-    | `BACKUP` | Hủy cài: `CONFIRMED`. Image đang chạy còn nguyên, vì BACKUP chỉ đọc QSPI |
-    | `WRITE` | Chuyển **`RESTORE(0)`** nếu bản sao header của backup trong bản ghi hợp lệ, vì SHA của backup đã được kiểm khi BACKUP xong. Không có backup hợp lệ thì vào cứu hộ |
-    | `RESTORE` | Cứu hộ: phục hồi đã cạn lượt thử. Đây là dấu hiệu lỗi phần cứng flash |
-
-- **Cứu hộ chỉ xảy ra trong hai trường hợp**, và gate kiểm thử ở §12.1 dùng đúng hai trường hợp này:
-  1. không còn image hợp lệ nào, QSPI lẫn backup;
-  2. `RESTORE` đã cạn lượt thử (`attempts` > 3 hoặc `verify_fail` ≥ 2). Khi đó có thể backup vẫn đúng SHA, nhưng flash đích không ghi được.
-- **Deadline của thao tác flash chia làm hai loại, không chồng nhau:**
-
-  | Loại | Hết deadline thì làm gì |
-  |---|---|
-  | Thao tác chép dữ liệu trong `BACKUP`, `WRITE`, `RESTORE` (xóa, ghi page, đọc lại) | **Ngừng kick**, SGM706 reset board. `attempts` đã được ghi trước checkpoint nên lần thử này đã được đếm |
-  | Ghi **bản ghi trạng thái** | **Không** ngừng kick. Tăng `rec_fail` trong *handoff block* (64 B ở cuối backup SRAM, có magic và CRC, còn nguyên qua reset khi board vẫn có nguồn). Rồi rẽ nhánh như dưới |
-
-- **Ghi bản ghi trạng thái thất bại:**
-  - image QSPI hợp lệ, và **không** ở giữa `WRITE` hoặc `RESTORE`: nhảy vào app ở chế độ `degraded`. Cờ `degraded` được truyền qua handoff block, không cần ghi được SPI4. App ghi cảnh báo vào log và **từ chối OTA** (409);
-  - ở giữa `WRITE` hoặc `RESTORE` (QSPI đang dở): reset và thử lại. `rec_fail` ≥ 3 thì vào cứu hộ;
-  - image QSPI không hợp lệ: cứu hộ.
 - Mỗi checkpoint 64 KB gồm: xóa các sector 4 KB của đích (16 sector, riêng checkpoint cuối làm tròn theo §5.2), ghi theo page, đọc lại so sánh với nguồn, rồi ghi `offset + 1`.
   - Mất điện giữa chừng thì lần boot sau làm lại đúng checkpoint đó.
   - Nguồn chép không bao giờ bị đụng tới: staging trong `WRITE`, QSPI trong `BACKUP`, backup trong `RESTORE`.
-- **Watchdog:** bootloader kick WDI trong mọi vòng lặp, nhưng mỗi thao tác flash có **deadline** bằng 2 lần thời gian tối đa trong datasheet GD25Q32E (xóa sector, ghi page, ghi thanh ghi trạng thái).
-  - Hết deadline thì **ngừng kick**, để SGM706 reset board.
-  - Lần boot sau làm lại checkpoint đang dở. Số lần thử được đếm bằng `attempts`, theo quy tắc ở trên.
-  - Như vậy watchdog không thể bị "nuôi" vô hạn khi flash bị kẹt.
-- **Chế độ cứu hộ:** LED WORK nháy nhanh, chỉ nạp lại được qua SWD.
+- **Bộ đếm số lần thử, lưu trong bản ghi trạng thái:**
+  - Trước khi bắt đầu một checkpoint, bootloader ghi bản ghi với `attempts + 1`.
+  - Xong checkpoint thì ghi `offset + 1, attempts = 0`.
+  - Vì vậy một lần treo hay reset giữa chừng đã được đếm trước khi nó xảy ra.
+  - Bộ đếm này **không phân biệt** mất nguồn với lỗi flash. Vì vậy cạn lượt thử không bị coi là lỗi phần cứng, mà dẫn tới chế độ cứu hộ có **tự thử lại** (bên dưới).
+- **Handoff block:** 64 B ở cuối backup SRAM, có magic và CRC, còn nguyên qua reset khi board vẫn có nguồn.
+  - Magic hoặc CRC sai (lần cấp nguồn đầu tiên) thì khởi tạo lại về 0.
+  - Gồm `rec_fail` (số lần liên tiếp không ghi được bản ghi trạng thái), cờ `degraded` cho app, và lý do của lần boot.
+  - `rec_fail` về 0 ngay khi ghi bản ghi thành công.
+
+**Bảng quyết định duy nhất.** Các hàng loại trừ nhau, xét từ trên xuống, dừng ở hàng đầu tiên khớp:
+
+| # | Điều kiện | Hành động |
+|---|---|---|
+| 1 | Thao tác chép dữ liệu của `BACKUP`, `WRITE` hoặc `RESTORE` (xóa, ghi page, đọc lại) quá deadline (2 lần giá trị tối đa trong datasheet GD25Q32E) | **Ngừng kick**, SGM706 reset board. Lần thử đã được đếm trong `attempts` |
+| 2 | Ghi **bản ghi trạng thái** thất bại (quá deadline, hoặc đọc lại không khớp) | **Không** ngừng kick. `rec_fail + 1` trong handoff block, rồi xét hàng 3–5 |
+| 3 | Hàng 2, QSPI **chưa bị đụng tới** (trạng thái `CONFIRMED`, `TRIAL`, `PENDING` hoặc `BACKUP`), và image QSPI hợp lệ | Nhảy vào app với `degraded` = 1. Không đổi trạng thái, nên cài đặt đang chờ được hoãn lại. App ghi cảnh báo vào log và **từ chối OTA** (409). Ở `TRIAL` thì `trial` không tăng được: app vẫn chạy, nhưng không xác nhận được, vì xác nhận cũng phải ghi bản ghi |
+| 4 | Hàng 2, QSPI **đang dở** (`WRITE` hoặc `RESTORE`), `rec_fail` < 3 | Reset và thử lại |
+| 5 | Hàng 2, QSPI đang dở, `rec_fail` ≥ 3 | **Phục hồi không có checkpoint:** chép toàn bộ từ nguồn hợp lệ (backup trước, không có thì staging) sang QSPI, chỉ theo dõi tiến độ trong RAM, kiểm SHA, rồi nhảy vào app với `degraded` = 1. Lần boot sau, nếu vẫn không ghi được bản ghi, thì lặp lại hàng này |
+| 6 | `BACKUP`: `attempts` > 3 | Hủy cài: `CONFIRMED`. Image đang chạy còn nguyên, vì BACKUP chỉ đọc QSPI |
+| 7 | `WRITE`: `attempts` > 3 hoặc `verify_fail` ≥ 2, và backup hợp lệ (header trong bản ghi, SHA đã kiểm khi BACKUP xong) | `RESTORE(0)` |
+| 8 | `WRITE` cạn lượt thử và **không** có backup hợp lệ, hoặc `RESTORE`: `attempts` > 3 hoặc `verify_fail` ≥ 2 | **Cứu hộ có thử lại** |
+| 9 | Không có image QSPI hợp lệ, không có backup hợp lệ, và không có staging hợp lệ | **Cứu hộ dừng hẳn** |
+
+**Hai chế độ cứu hộ:**
+- **Cứu hộ có thử lại:** LED WORK nháy nhanh, vẫn kick WDI. Cứ 60 s lại đặt `attempts` = 0, `verify_fail` = 0 và thử phục hồi QSPI từ nguồn hợp lệ: backup trước, không có thì staging. Thành công thì về `CONFIRMED` (từ backup) hoặc `TRIAL(0)` (từ staging). Như vậy một chuỗi mất nguồn hay lỗi tạm thời không giữ board ở cứu hộ mãi.
+- **Cứu hộ dừng hẳn:** LED WORK nháy nhanh, vẫn kick WDI, chỉ nạp lại được qua SWD. Chỉ vào chế độ này khi không còn nguồn hợp lệ nào để phục hồi.
+
+Gate kiểm thử ở §12.1 dùng đúng bảng này: mỗi hàng có ít nhất một ca fault injection.
 
 **Trình tự mỗi lần boot:**
 1. **Kick WDI.**
@@ -943,12 +952,16 @@ Logic trạng thái và cài đặt viết trong `boot/install.c` bằng C thu�
 • **RESTORE xong mà SHA sai**;
 • **`attempts` vượt 3** ở từng pha;
 • **image hỏng khi đang `TRIAL`**: phải không nhảy vào;
-• **SPI4 lỗi khi ghi bản ghi**: chạy `degraded` qua handoff block khi QSPI hợp lệ; reset và thử lại khi đang dở `WRITE`/`RESTORE`;
-• **`WRITE` hết lượt thử**: phải chuyển `RESTORE`, không vào cứu hộ khi backup còn hợp lệ;
+• **SPI4 lỗi khi ghi bản ghi** (hàng 2–5);
+• **`WRITE` hết lượt thử** khi có và khi không có backup (hàng 7, 8);
 • cắt điện đúng lúc ghi `attempts`.
- Điều kiện đạt: lần nào cũng kết thúc ở một image hợp lệ. Cứu hộ chỉ được phép trong hai trường hợp ở §11.2: không còn image hợp lệ nào, hoặc `RESTORE` đã cạn lượt thử do flash ghi không được (giả lập lỗi flash) |
+ **Mỗi hàng 1–9 của bảng quyết định ở §11.2 có ít nhất một ca.** Điều kiện đạt:
+• lần nào cũng kết thúc ở một image hợp lệ;
+• hoặc ở *cứu hộ có thử lại* (hàng 8), và **tự thoát** về một image hợp lệ trong lần thử lại kế tiếp sau khi ngừng giả lập lỗi;
+• hoặc ở *cứu hộ dừng hẳn*, chỉ khi không còn nguồn hợp lệ nào (hàng 9).
+Thêm các ca: `rec_fail` tăng dần tới 3 trong lúc `WRITE` (hàng 4 rồi 5); handoff block có CRC sai lúc cấp nguồn |
 | MQTT | Adapter transport (đọc một phần, AGAIN, EOF, lỗi). Outbox: mất kết nối ở từng bước QoS 1/2, Session Present 0 và 1 (3.1.1), **3.1 với `cleanSession` 0 và 1** (bản vá đặt `sessionPresent`), clean session, hết hạn chỉ áp dụng cho `QUEUED`, giới hạn 64 KB, `bufferOffline`, đăng ký lại subscribe. Phiên mới: tin đang dở quay về `QUEUED` với packet id mới. Byte của gói CONNECT 3.1 và 3.1.1 |
-| CMUX | Mã hóa và giải mã frame, FCS, frame bị cắt, trường độ dài 1 và 2 byte (kể cả đúng 2048 byte), tái đồng bộ sau rác, SABM/UA kèm T1 và N2, DM/DISC, CLD. **FCoff/FCon dừng và tiếp mọi DLC dữ liệu, còn DLC0 vẫn gửi và nhận được** (kiểm response và FCon trong lúc FCoff). **MSC dừng và tiếp đúng một DLC**, có trả response, Test và NSC. **Hàng đợi TX đầy:** callback PPPoS trả 0 byte, frame bị bỏ và đếm `ppp_out_drop`. **Luồng PPP có nhiều `0x7D`/`0x7E`** (sau escape dài gần gấp đôi) bị cắt thành nhiều frame ≤ N1 rồi ghép lại đúng. `pppos_input_tcpip` trả `ERR_MEM`: thử lại 3 lần rồi bỏ và đếm |
+| CMUX | Mã hóa và giải mã frame, FCS, frame bị cắt, trường độ dài 1 và 2 byte (kể cả đúng 2048 byte), tái đồng bộ sau rác, SABM/UA kèm T1 và N2, DM/DISC, CLD. **FCoff/FCon dừng và tiếp mọi DLC dữ liệu, còn DLC0 vẫn gửi và nhận được** (kiểm response và FCon trong lúc FCoff). **MSC dừng và tiếp đúng một DLC**, có trả response, Test và NSC. **Hàng đợi TX đầy**, kể cả khi đầy ở lần gọi callback thứ hai trở đi của cùng một frame: callback trả 0, đếm `ppp_out_drop`, phía nhận (PPP giả lập) bỏ frame cụt nhờ FCS, và frame kế tiếp vẫn được nhận đúng. **Luồng PPP có nhiều `0x7D`/`0x7E`** (sau escape dài gần gấp đôi) bị cắt thành nhiều frame ≤ N1 rồi ghép lại đúng. `pppos_input_tcpip` trả `ERR_MEM`: thử lại 3 lần rồi bỏ và đếm |
 | ADC (logic C thuần) | Bàn giao hai nửa buffer: đọc đúng nửa đã đầy; `seq` đổi trong lúc cộng thì bỏ cửa sổ và đếm `adc_late`; chưa có cửa sổ đầu tiên thì không công bố giá trị; lỗi thì cả hai kênh failed; trình tự phục hồi; đổi mã sang mA kèm hiệu chuẩn hai điểm; factory record thiếu hoặc CRC sai thì dùng hệ số danh định |
 | Cấu hình nhỏ | Hai nhóm: (a) mọi cấu hình được chấp nhận đều qua vòng `POST → GET → POST` và cho ra đúng cùng văn bản; (b) cấu hình có văn bản chuẩn hóa > 10.240 byte (ví dụ chuỗi toàn U+0001, escape thành `\u0001`) phải nhận 413 và cấu hình đã lưu không đổi. Tương tự với `edgeDevices` ở mức 49.152 byte |
 | Cắt frame RTU | Logic t1.5/t3.5 viết dưới dạng C thuần, đầu vào là chuỗi dấu thời gian của từng byte: khoảng hở < t1.5, trong [t1.5, t3.5), và ≥ t3.5. Baud > 19200 dùng giá trị cố định |

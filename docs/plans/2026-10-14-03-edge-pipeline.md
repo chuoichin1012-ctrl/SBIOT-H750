@@ -1272,9 +1272,10 @@ Expected: the `test_text_small` link fails with `undefined reference to 'cfg_val
 
 - [ ] **Step 3: Stop the tree-based code from dropping or leaking items when an allocation fails**
 
-These edits change no success path. They free an item that cannot be placed, and skip work on a list that could not be allocated:
+These edits change no success path. They free an item that cannot be placed, and skip work on a list that could not be allocated. Run from the repository root:
 
-```python
+```bash
+python3 - <<'EOF'
 p = 'stm32/firmware/components/cfgmodel/cfgmodel.c'
 s = open(p).read()
 def R(a, b, count=1):
@@ -1297,9 +1298,10 @@ R('        if (b) cJSON_AddItemToObject(out, fields[i].key, cJSON_Duplicate(b, t
 R('        cJSON *o = object(env, cfg, fields, n, it, base, err, errlen);\n        if (!o) {\n            cJSON_Delete(out);',
   '        cJSON *o = out ? object(env, cfg, fields, n, it, base, err, errlen) : NULL;  // out is NULL only without memory\n        if (!o) {\n            cJSON_Delete(out);')
 open(p, 'w').write(s)
+EOF
 ```
 
-Run it: `python3 - < /dev/stdin`, or save it as a file and run it from the repository root. Then run `make -C stm32/firmware/test/host build/test_cfgmodel && stm32/firmware/test/host/build/test_cfgmodel`.
+Then run `make -C stm32/firmware/test/host build/test_cfgmodel && stm32/firmware/test/host/build/test_cfgmodel`.
 Expected: `cfgmodel: all checks passed`.
 
 - [ ] **Step 4: Implement `cfg_validate_text`**
@@ -2262,7 +2264,7 @@ In the spec, make these edits:
      Với tối đa 64 thiết bị và 100 điểm, các tên được so sánh tuyến tính bằng `strcmp`, không cần hash.
    ```
 
-2. **§9.4, the JSON domain.** Directly after the line `**Validate theo đúng thứ tự của \`cfgmodel.c\`**` paragraph's table and its bullet list (that is, just before the line that starts with `**Ghi:**`), add:
+2. **§9.4, the JSON domain.** Just before the line that starts with `**Ghi:**`, add:
 
    ```
    **Miền JSON được chấp nhận:** JSON theo RFC 8259: UTF-8 hợp lệ, escape surrogate chỉ đi theo cặp (như cJSON yêu cầu), lồng sâu tối đa 32 cấp (`JS_MAX_DEPTH`, để đệ quy nằm gọn trong stack của task `web`). Ngoài miền này thì trả 400 `The request body is not valid JSON.`. Bản ESP32 chấp nhận một số dạng cJSON vẫn đọc được (như `01` hay rác ở cuối), nhưng bản STM32 thì không. Phép so sánh tương đương giữa hai đường xử lý chỉ áp dụng trong miền này.

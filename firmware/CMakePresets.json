@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "h750",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/h750",
+      "toolchainFile": "${sourceDir}/cmake/arm-none-eabi.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "boot", "configurePreset": "h750", "targets": ["boot"] },
+    { "name": "app", "configurePreset": "h750", "targets": ["app"] }
+  ]
+}

@@ -26,7 +26,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "boot.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -70,7 +70,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  boot_early();
   /* USER CODE END 1 */
 
   /* MPU Configuration--------------------------------------------------------*/
@@ -98,7 +98,7 @@ int main(void)
   MX_QUADSPI_Init();
   MX_UART7_Init();
   /* USER CODE BEGIN 2 */
-
+  boot_main();
   /* USER CODE END 2 */
 
   /* Infinite loop */

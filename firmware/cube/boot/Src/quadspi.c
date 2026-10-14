@@ -21,7 +21,7 @@
 #include "quadspi.h"
 
 /* USER CODE BEGIN 0 */
-
+#include "qspi_flash.h"
 /* USER CODE END 0 */
 
 QSPI_HandleTypeDef hqspi;
@@ -112,7 +112,7 @@ void HAL_QSPI_MspInit(QSPI_HandleTypeDef* qspiHandle)
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /* USER CODE BEGIN QUADSPI_MspInit 1 */
-
+  qf_errata_timing();  // ES0392 §2.7.4, after reset
   /* USER CODE END QUADSPI_MspInit 1 */
   }
 }

@@ -875,9 +875,9 @@ Header 1 KB đặt ở đầu image:
 | 1 | Không có `Vq`, `Vb` lẫn `Vs` | **Cứu hộ dừng hẳn.** Hàng này xét **trước mọi nhánh phục hồi**, nên các hàng sau luôn có ít nhất một nguồn hợp lệ |
 | 2 | Thao tác chép dữ liệu (xóa, ghi page, đọc lại) quá deadline, tức 2 lần giá trị tối đa trong datasheet GD25Q32E, ở **bất kỳ** đường chép nào: có checkpoint (state machine, hàng 10) hoặc theo dõi tiến độ trong RAM (hàng 6) | **Ngừng kick**, SGM706 reset board. Lần thử đã được đếm **trước** khi bắt đầu: bằng `attempts` trong bản ghi (đường có checkpoint), hoặc bằng `ram_fail` trong handoff block (đường RAM) |
 | 3 | Ghi **bản ghi trạng thái** thất bại (quá deadline, hoặc đọc lại không khớp) | **Không** ngừng kick. `rec_fail + 1` trong handoff block, rồi xét hàng 4–6 |
-| 4 | Hàng 3, QSPI **chưa bị đụng tới** (trạng thái `CONFIRMED`, `TRIAL`, `PENDING` hoặc `BACKUP`), và có `Vq` | Nhảy vào app với `degraded` = 1. Không đổi trạng thái, nên cài đặt đang chờ được hoãn lại. App ghi cảnh báo vào log và **từ chối OTA** (409). Ở `TRIAL` thì `trial` không tăng được: app vẫn chạy, nhưng không xác nhận được, vì xác nhận cũng phải ghi bản ghi |
-| 5 | Hàng 3, QSPI **đang dở** (`WRITE` hoặc `RESTORE`), `rec_fail` < 3 | Reset và thử lại |
-| 6 | Hàng 3, QSPI đang dở, `rec_fail` ≥ 3 | **Phục hồi theo dõi tiến độ trong RAM**, xem bên dưới |
+| 4 | Hàng 3, và có `Vq`, **ở bất kỳ trạng thái nào**, kể cả `WRITE` hoặc `RESTORE` (ví dụ đã ghi xong checkpoint cuối nhưng cập nhật bản ghi thất bại) | **Không xóa QSPI.** Nhảy vào app với `degraded` = 1. Không đổi trạng thái, nên cài đặt đang chờ được hoãn lại. App ghi cảnh báo vào log và **từ chối OTA** (409). Ở `TRIAL` thì `trial` không tăng được: app vẫn chạy, nhưng không xác nhận được, vì xác nhận cũng phải ghi bản ghi |
+| 5 | Hàng 3, **không** có `Vq`, `rec_fail` < 3 | Reset và thử lại |
+| 6 | Hàng 3, **không** có `Vq`, `rec_fail` ≥ 3 | **Phục hồi theo dõi tiến độ trong RAM**, xem bên dưới. Vì không có `Vq`, hàng 1 bảo đảm còn `Vb` hoặc `Vs` |
 | 7 | `BACKUP`: `attempts` > 3 | Hủy cài: `CONFIRMED`. Image đang chạy còn nguyên, vì BACKUP chỉ đọc QSPI |
 | 8 | `WRITE`: `attempts` > 3 hoặc `verify_fail` ≥ 2, và có `Vb` | `RESTORE(0)` |
 | 9 | `WRITE` cạn lượt thử và không có `Vb`; hoặc `RESTORE`: `attempts` > 3 hoặc `verify_fail` ≥ 2 | **Cứu hộ có thử lại**. Theo hàng 1, chắc chắn còn ít nhất một nguồn |
@@ -886,7 +886,7 @@ Header 1 KB đặt ở đầu image:
 **Phục hồi theo dõi tiến độ trong RAM** (hàng 6). Đây là đường dành cho lúc SPI4 không ghi được bản ghi trạng thái, nên mọi bộ đếm đều nằm trong handoff block:
 1. `ram_fail + 1` trong handoff block, **trước khi** làm gì khác.
 2. `ram_fail` > 3: **cứu hộ có thử lại**.
-3. Chọn nguồn: `Vb` trước, không có thì `Vs`. Hàng 1 bảo đảm có ít nhất một trong hai, vì QSPI đang dở nên không có `Vq`.
+3. Chọn nguồn: `Vb` trước, không có thì `Vs`. Hàng 6 chỉ được chọn khi không có `Vq`, nên hàng 1 bảo đảm có ít nhất một trong hai. Đường này **không bao giờ** xóa một image QSPI hợp lệ.
 4. **Kiểm nguồn** (header, kích thước, SHA) **trước khi** xóa QSPI. Nguồn hỏng thì loại nó khỏi danh sách rồi quay lại bước 3. Hết nguồn thì **cứu hộ dừng hẳn**.
 5. Chép toàn bộ, mỗi thao tác đều có deadline. Quá deadline thì theo hàng 2: lần thử này đã được đếm ở bước 1.
 6. Kiểm image QSPI theo đúng các điều kiện trước khi nhảy (§11.1):
@@ -981,6 +981,7 @@ Logic trạng thái và cài đặt viết trong `boot/install.c` bằng C thu�
 
 Thêm các ca:
 • `rec_fail` tăng dần tới 3 trong lúc `WRITE` (hàng 5 rồi 6);
+• **ghi xong image nhưng cập nhật bản ghi thất bại**, ở cả `WRITE` lẫn `RESTORE`, kể cả khi **chỉ QSPI còn hợp lệ** (backup và staging đều hỏng): phải nhảy vào app ở `degraded` (hàng 4), không được xóa QSPI và không được dừng hẳn;
 • **`WRITE` cạn lượt thử trong khi QSPI, backup và staging đều hỏng**: phải dừng hẳn (hàng 1), không được thử lại;
 • **đường RAM (hàng 6)**: quá deadline khi chép, SHA của đích sai, nguồn hỏng phát hiện ở bước 4, mất nguồn giữa chừng, `ram_fail` vượt 3;
 • handoff block có CRC sai lúc cấp nguồn |

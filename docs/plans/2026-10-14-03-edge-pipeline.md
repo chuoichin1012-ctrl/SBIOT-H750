@@ -2309,7 +2309,8 @@ sed -i 's/if (js_key_is(k, "nodes", true)) return v;/if (js_key_is(k, "nodes", f
 make -C $H build/test_edge_text >/dev/null && (cd $H && ./build/test_edge_text | tail -1); git checkout $C
 sed -i 's/if (k != i \&\& unit_of(\&m->dev\[k\]) == unit)/if (k > i \&\& unit_of(\&m->dev[k]) == unit)/' $C
 make -C $H build/test_edge_text >/dev/null && (cd $H && ./build/test_edge_text | tail -1); git checkout $C
-sed -i 's/if (!out_put(\&out, s, n) \&\& out.r == CFG_ABORTED) goto aborted;/(void)out_put(\&out, s, n);/' $C
+# keeps the goto (an unused label would not compile under -Werror) but never takes it
+sed -i 's/if (!out_put(\&out, s, n) \&\& out.r == CFG_ABORTED) goto aborted;/if (!out_put(\&out, s, n) \&\& out.r == CFG_ABORTED \&\& 0) goto aborted;/' $C
 make -C $H build/test_edge_text >/dev/null && (cd $H && ./build/test_edge_text | tail -1); git checkout $C
 python3 -c "import sys; p=sys.argv[1]; s=open(p).read(); a='            cJSON_Delete(in);\n            if (!NO_MEMORY_YET()) goto done;\n            if (!o) goto bad;'; assert s.count(a)==1; open(p,'w').write(s.replace(a,'            cJSON_Delete(in);\n            if (!o) goto bad;'))" $C
 make -C $H build/test_oom >/dev/null && (cd $H && ./build/test_oom 2>&1 | grep -m1 -E 'runtime error|FAILED|passed'); git checkout $C

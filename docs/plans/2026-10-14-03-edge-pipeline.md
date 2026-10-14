@@ -19,11 +19,11 @@
 
 **Tech Stack:** C11, gcc with ASan/UBSan, GNU make, cJSON 1.7.19, TLSF (mattconte/tlsf at `deff9ab509341f264addbd3c8ada533678591905`, BSD).
 
-**Spec:** `stm32/docs/specs/2026-10-14-stm32-firmware-design.md` (§5.5, §9.2–9.4, §10.1, §12.1). **Roadmap:** `stm32/docs/plans/2026-10-14-00-roadmap.md`, row 03. **Review:** `stm32/docs/review/codex-gpt-6-astra-plan03-2026-10-14.md` (round 1, NOT APPROVED). Every finding is addressed here.
+**Spec:** `stm32/docs/specs/2026-10-14-stm32-firmware-design.md` (§5.5, §9.2–9.4, §10.1, §12.1). **Roadmap:** `stm32/docs/plans/2026-10-14-00-roadmap.md`, row 03. **Review:** `stm32/docs/review/codex-gpt-6-astra-plan03-2026-10-14.md` (round 1, NOT APPROVED) and `…-plan03-r2-…` (round 2, APPROVED WITH CONDITIONS). Every finding and both conditions are addressed here.
 
 ## Global Constraints
 
-- Arena: **64 KB** static region, TLSF, recreated for each scope. **Peak ≤ 60 KB**, measured inside a real 64 KB pool on the 64-bit host, which uses more memory than the 32-bit target (§9.3, §12.1).
+- Arena: **64 KB** static region, TLSF, recreated for each scope. **Total need ≤ 60 KB**, proved by running every maximal and boundary case in a pool of **61 440 bytes in total** (TLSF control block and fragmentation included) without running out of memory. This runs on the 64-bit host, which needs more than the 32-bit target. The live-block peak is printed for information (§9.3, §12.1).
 - Limits in bytes: `CFG_SMALL_MAX 10240`, `CFG_EDGE_MAX 49152`, `CFG_SMALL_BUF (CFG_SMALL_MAX + 6)`. Messages are exactly:
   - `These settings are too large.` (413)
   - `The Edge model is too large.` (413)
@@ -41,7 +41,7 @@
 1. **An allocation fails anywhere** inside either entry point. The result is `CFG_NO_MEMORY` with `Out of memory.`: no crash, no leak, no partial `CFG_OK`. Pinned in Tasks 3–4, `test_oom` (each of about 1 800 allocations failed once).
 2. **Normalised text of exactly 10 239 / 10 240 / 10 241 bytes.** The first two are accepted, the last is 413. Pinned in Task 3, `test_exact_limit`.
 3. **A device with a 40 KB unknown member** is accepted without parsing it (arena peak < 20 KB), and **a full arena** gives `CFG_NO_MEMORY`. Pinned in Task 4, `test_memory_edges`.
-4. **cJSON's key rules and Unicode.** `"nodes"` is matched in any case, the first duplicate key wins, keys are compared after decoding escapes (`\u006D`), a key ends at a decoded NUL, `nodes` given as an object is walked by member, and non-ASCII values and names are handled. All must equal the tree path. Lone surrogates and malformed UTF-8 are not valid JSON. Pinned in Task 2, `test_validity`, and Task 4, `test_cases`.
+4. **cJSON's key rules and Unicode.** `"nodes"` is matched in any case, the first duplicate key wins, keys are compared after decoding escapes (`\u006D`), a key ends at a decoded NUL, `nodes` given as an object is walked by member, and non-ASCII values and names are handled. All must equal the tree path. Lone surrogates and malformed UTF-8 are not valid JSON, **even inside a member the parser would skip**, and then nothing is emitted. Pinned in Task 2, `test_validity`, and Task 4, `test_cases` and `test_bad_text_in_skipped_member`.
 5. **The store refuses its third write while a schema error comes later.** The result is `CFG_ABORTED` with no further emit calls. Pinned in Task 4, `test_abort`.
 
 ---
@@ -899,8 +899,10 @@ Create `stm32/firmware/test/host/test_text_small.c`:
 
 ```c
 // cfg_validate_text: the round trip, the 10 240-byte limit and the arena peak for the configs
-// other than edgeDevices (spec §9.3). Every call runs inside a real 64 KB arena scope, as on
-// the target: make -C stm32/firmware/test/host
+// other than edgeDevices (spec §9.3). Every call runs inside a real arena scope, as on the
+// target, over a pool of only 60 KB in total: TLSF's control block and any fragmentation must
+// fit too, so "no out-of-memory here" proves the whole need is at most 60 KB (on the 64-bit
+// host, which needs more than the 32-bit target): make -C stm32/firmware/test/host
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -919,9 +921,9 @@ static int failures;
         }                                               \
     } while (0)
 
-static _Alignas(8) char region[64 * 1024];
+static _Alignas(8) char region[60 * 1024];  // the gate: 61 440 bytes in total
 static arena_t s_arena;
-static size_t s_worst;  // highest arena peak seen in this run
+static size_t s_worst;  // highest live-block peak seen in this run (TLSF overhead not included)
 static char s_out[CFG_SMALL_BUF], s_err[200];
 
 /** cfg_validate_text inside one arena scope, the way the web task calls it. */
@@ -930,7 +932,7 @@ static cfg_result_t run(const char *name, const char *text, const cJSON *current
     arena_begin(&s_arena);
     cfg_result_t r = cfg_validate_text(&ENV, name, text, strlen(text), current, s_out, sizeof s_out, s_err, sizeof s_err);
     if (s_arena.peak > s_worst) s_worst = s_arena.peak;
-    CHECK(s_arena.peak <= 60 * 1024, "%s: arena peak %zu bytes (limit 60 KB)", name, s_arena.peak);
+    CHECK(r != CFG_NO_MEMORY, "%s: out of memory in a 60 KB pool (%s)", name, s_err);
     arena_end(&s_arena);
     return r;
 }
@@ -1127,7 +1129,7 @@ int main(void)
     test_exact_limit();
     test_largest_each();
     test_round_trip_and_errors();
-    printf("  worst arena peak: %zu bytes\n", s_worst);
+    printf("  worst live-block peak: %zu bytes, all within a 61 440-byte pool\n", s_worst);
     printf(failures ? "%d FAILED\n" : "text_small: all tests passed\n", failures);
     return failures != 0;
 }
@@ -1345,7 +1347,7 @@ cfg_result_t cfg_validate_text(const cfg_env_t *env, const char *name, const cha
 
 Run: `make -C stm32/firmware/test/host`
 Expected:
-- `  worst arena peak:` followed by a number ≤ 61440 (about 41 800);
+- `  worst live-block peak: 41832 bytes, all within a 61 440-byte pool` (the number may vary slightly);
 - `text_small: all tests passed`;
 - `oom` lists `port1`, `mqttPublish` and `port1 schema error` with their allocation counts (about 298 / 114 / 142), then `oom: all tests passed`;
 - every earlier suite still passes. ASan reports no leak.
@@ -1615,7 +1617,7 @@ static void test_random(void)
 
 // ---- Limits and the arena -------------------------------------------------------------
 
-static _Alignas(8) char region[64 * 1024];
+static _Alignas(8) char region[60 * 1024];  // the gate: 61 440 bytes in total, TLSF overhead included
 static arena_t s_arena;
 
 /** The largest model this firmware accepts: 64 devices, 100 points, every text field at its limit. */
@@ -1653,8 +1655,7 @@ static void test_limits(void)
     arena_end(&s_arena);
     CHECK(r == CFG_OK, "largest model rejected (%d: %s)", r, err);
     CHECK(out.n <= CFG_EDGE_MAX, "largest model normalises to %zu bytes", out.n);
-    CHECK(peak <= 60 * 1024, "arena peak %zu bytes for the largest model (limit 60 KB)", peak);
-    printf("  largest Edge model: %zu bytes in, %zu bytes out, arena peak %zu bytes\n", strlen(b), out.n, peak);
+    printf("  largest Edge model: %zu bytes in, %zu bytes out, live-block peak %zu bytes in a 61 440-byte pool\n", strlen(b), out.n, peak);
 
     // The normalised text over the limit: 413, and nothing is valid to keep.
     out.n = 0;
@@ -1702,6 +1703,21 @@ static bool refuse_third(void *ctx, const char *s, size_t n)
     return ++s_calls < 3;
 }
 
+/** Malformed text inside a member the parser would skip is still malformed JSON: nothing is emitted. */
+static void test_bad_text_in_skipped_member(void)
+{
+    const char *bad[] = {"[{\"name\":\"a\",\"junk\":\"\\uD800\"}]", "[{\"name\":\"a\",\"junk\":[\"\\uDC00x\"]}]",
+                         "[{\"name\":\"a\",\"junk\":\"\xc0\x80\"}]", "[{\"name\":\"a\",\"nodes\":[{\"junk\":\"\xed\xa0\x80\"}]}]",
+                         "[{\"name\":\"a\",\"\\uD800\":1}]"};
+    for (size_t i = 0; i < sizeof bad / sizeof *bad; i++) {
+        char err[200];
+        s_calls = 0;
+        cfg_result_t r = cfg_edge_text(&ENV, bad[i], strlen(bad[i]), true, CFG_EDGE_MAX, refuse_third, NULL, err, sizeof err);
+        CHECK(r == CFG_INVALID && strcmp(err, "The request body is not valid JSON.") == 0, "bad text %zu: %d %s", i, r, err);
+        CHECK(s_calls == 0, "bad text %zu: emit called %d times", i, s_calls);
+    }
+}
+
 static void test_abort(void)
 {
     char err[200];
@@ -1723,6 +1739,7 @@ int main(void)
     json_alloc_install();
     test_limits();
     test_abort();
+    test_bad_text_in_skipped_member();
     test_memory_edges();
     if (failures) printf("%d FAILED (%d payloads compared)\n", failures, compared);
     else printf("edge_text: all tests passed (%d payloads compared)\n", compared);
@@ -2249,7 +2266,7 @@ done:
 
 Run: `make -C stm32/firmware/test/host`
 Expected:
-- `  largest Edge model: 37904 bytes in, 37904 bytes out, arena peak` followed by a number ≤ 61440 (about 15 700);
+- `  largest Edge model: 37904 bytes in, 37904 bytes out, live-block peak 15752 bytes in a 61 440-byte pool`;
 - `edge_text: all tests passed (8090 payloads compared)`;
 - `oom` adds `edgeDevices (valid)` (about 886 allocations) and `edgeDevices (schema error)` (about 378), then `oom: all tests passed`;
 - every suite passes, with no ASan or UBSan report.
@@ -2311,6 +2328,6 @@ Nothing to commit: the mutants are reverted.
 ## Plan 03 done when
 
 - `make -C stm32/firmware/test/host` passes all seven suites, with no ASan or UBSan report.
-- The arena peaks printed by the tests are ≤ 61 440 bytes.
+- No case runs out of memory in the 61 440-byte pools of `text_small` and `edge_text`.
 - `edge_text` compares 8 090 payloads without a difference, and all four mutants in Task 4 Step 6 are caught.
 - `python3 stm32/firmware/tools/check_schema.py` still prints `consistent`.

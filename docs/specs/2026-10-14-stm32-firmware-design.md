@@ -136,20 +136,25 @@ Mọi vùng đều **căn theo 64 KB**, nên một lệnh xóa block không bao 
 | 0x100000 | 64 KB | Trạng thái boot: hai bản ghi, mỗi bản một sector 4 KB riêng (§11.2). Phần còn lại để dự trữ |
 | 0x110000 | 1.472 KB (0x170000, 23 × 64 KB) | Slot staging |
 | 0x280000 | 1.472 KB | Slot backup |
-| 0x3F0000 | 64 KB | Dự trữ |
+| 0x3F0000 | 64 KB | Factory record (hiệu chuẩn AI, §6.6): hai sector 4 KB, mỗi sector một bản sao kèm CRC. Ghi bằng công cụ sản xuất. Factory reset không xóa. Phần còn lại để dự trữ |
 
-Cùng một cách xóa và ghi cho mọi thao tác trên slot: **checkpoint** tính theo đơn vị logic 64 KB, **xóa** theo sector 4 KB, **ghi** theo page 256 B. Đơn vị cuối cùng chỉ xử lý đúng phần thuộc image, không vượt quá cuối slot.
+Mọi thao tác trên slot dùng cùng một cách chia:
+- **checkpoint** theo đơn vị logic 64 KB;
+- **xóa** theo sector 4 KB;
+- **ghi** theo page 256 B.
+
+Với checkpoint cuối, chỉ **chép và tính hash** đúng số byte thuộc image. Phần **xóa** thì làm tròn lên thành số sector 4 KB nguyên (⌈byte còn lại / 4 KB⌉), vì không thể xóa dở một sector. Cách làm tròn này không bao giờ vượt quá cuối slot, vì slot dài đúng 23 × 64 KB.
 
 ### 5.3 RAM
 
 | Vùng | Dung lượng | Nội dung | Quy tắc |
 |---|---|---|---|
 | ITCM | 64 KB | Code nóng chép từ QSPI lúc khởi động: kernel FreeRTOS, các ISR (ETH, USART, DMA, TIM), `memcpy`/`memset`, lõi bignum của mbedTLS | Section `.itcm_text` |
-| DTCM | 128 KB | MSP 4 KB, `.data`/`.bss` nhỏ, stack tĩnh của mọi task **trừ** `web` và `edge_tcpN` (khoảng 84 KB) | ETH và DMA1/2 không truy cập được vùng này. §5.4 bảo đảm không DMA nào đọc hay ghi trực tiếp ở đây |
-| AXI SRAM (D1) | 512 KB | Heap FreeRTOS (`heap_5`, **vùng heap duy nhất**) 256 KB: 3 phiên TLS, connection Mongoose, các cấp phát nhỏ lúc chạy (§5.5). **Arena JSON 64 KB** (§9.3). **Buffer văn bản Edge 48 KB** (§9.3). Mô hình Edge lúc chạy, cache giá trị và buffer report khoảng 30 KB. Cache văn bản cấu hình của `store` khoảng 20 KB. Stack của `web` và `edge_tcpN` khoảng 33 KB | Cacheable (write-back). Dư khoảng 60 KB |
+| DTCM | 128 KB | MSP 4 KB, `.data`/`.bss` nhỏ, stack tĩnh của mọi task **trừ** `web` và `edge_tcpN` (khoảng 95 KB theo §6.1, kể cả `init`, timer và `cmux_rx`), TCB. Tổng DTCM ≤ 120 KB, kiểm bằng file map của linker | ETH và DMA1/2 không truy cập được vùng này. §5.4 bảo đảm không DMA nào đọc hay ghi trực tiếp ở đây |
+| AXI SRAM (D1) | 512 KB | Heap FreeRTOS (`heap_5`, **vùng heap duy nhất**) 256 KB: 3 phiên TLS, connection Mongoose, các cấp phát nhỏ lúc chạy (§5.5). **Arena JSON 64 KB** (§9.3). **Buffer văn bản Edge 48 KB** (§9.3). Mô hình Edge lúc chạy và cache giá trị khoảng 20 KB. **Buffer report ≤ 26 KB** (§9.4). Cache văn bản cấu hình của `store` khoảng 20 KB. Stack của `web` và `edge_tcpN` khoảng 33 KB. Buffer mạng của coreMQTT 2 × 4 KB, lấy từ heap | Cacheable (write-back). Dư khoảng 45 KB |
 | SRAM1 (D2) | 128 KB | Descriptor, buffer RX và buffer TX của ETH, heap `MEM` của lwIP 64 KB, pool pbuf, ring DMA RX và buffer TX của USART1/2/3, buffer trung chuyển SPI4. Số lượng và kích thước chốt trong bảng pool lwIP (§5.6) | **Non-cacheable qua MPU.** Startup bật clock SRAM D2 trước khi khởi tạo `.data` |
 | SRAM2+3 (D2) | 160 KB | Ring serial → mạng 2 × 8 KB, `bufferOffline` 2 × 32 KB, outbox MQTT 64 KB. Còn 16 KB cho metadata và căn lề | Cacheable |
-| SRAM4 (D3) | 64 KB | Ring syslog 32 KB, ring của `mqtt_io` 2 × 12 KB, **buffer BDMA của ADC3** trong một region non-cacheable 1 KB riêng (§6.6). Còn khoảng 7 KB | Region 1 KB của ADC đặt non-cacheable qua MPU, phần còn lại cacheable |
+| SRAM4 (D3) | 64 KB | Ring syslog 32 KB, ring của `mqtt_io` 2 × 12 KB, **buffer BDMA của ADC3** (800 B) trong region non-cacheable 1 KB riêng ở 0x3800FC00 (§6.6). Còn khoảng 7 KB | Region 1 KB của ADC đặt non-cacheable qua MPU, phần còn lại cacheable |
 | Backup SRAM | 4 KB | Bản ghi HardFault (§11.4) | |
 
 **Cách tính ngân sách:**
@@ -159,7 +164,7 @@ Cùng một cách xóa và ghi cho mọi thao tác trên slot: **checkpoint** t�
 
 ### 5.4 DMA và cache
 
-Không có engine DMA nào đọc hay ghi trực tiếp vào buffer của bên gọi. Mỗi driver sở hữu buffer non-cacheable của riêng mình trong SRAM1 và tự chép dữ liệu vào hoặc ra:
+Không có engine DMA nào đọc hay ghi trực tiếp vào buffer của bên gọi. Mỗi driver sở hữu buffer non-cacheable của riêng mình, ở SRAM1, riêng ADC ở SRAM4, và tự chép dữ liệu vào hoặc ra:
 
 | Engine | Quy tắc |
 |---|---|
@@ -169,15 +174,15 @@ Không có engine DMA nào đọc hay ghi trực tiếp vào buffer của bên g
 | USART RX | Ring DMA non-cacheable, `serial_rx[n]` chép frame ra ngoài |
 | SPI4 (FAL) | Buffer trung chuyển non-cacheable 4 KB cho cả hai chiều. Buffer của FlashDB không bao giờ đi thẳng tới DMA |
 | QSPI | Chỉ bootloader ghi, ở chế độ indirect kèm polling, không dùng DMA |
-| ADC3 | **BDMA** (qua DMAMUX2, cơ chế duy nhất ADC3 dùng được) ghi vòng vào buffer trong region non-cacheable 1 KB của SRAM4 (§6.6) |
+| ADC3 | **BDMA** (DMAMUX2, request 17) ghi vòng vào buffer trong region non-cacheable 1 KB của SRAM4 (§6.6). ADC3 cũng có request trên DMAMUX1 (115, tới DMA1/2). Dùng BDMA là **lựa chọn thiết kế**, để ADC không chiếm stream của DMA1/2 và không chiếm SRAM1 |
 
 **Quy tắc chung cho mọi buffer DMA:**
 - Căn lề 32 byte.
 - Có `__DMB()` trước khi trao descriptor hoặc buffer cho DMA, và sau khi lấy lại.
-- **Dùng ETH, DMA1 và DMA2 cho mọi thứ, trừ ADC3.** ADC3 chỉ có BDMA.
+- **Engine dùng trong firmware:** ETH, DMA1, DMA2 và BDMA (chỉ cho ADC3). MDMA không dùng.
   - BDMA chỉ truy cập được SRAM4.
   - ETH không truy cập được SRAM4.
-  - Không engine nào truy cập được TCM.
+  - Không engine nào trong bốn engine trên truy cập được TCM. MDMA thì truy cập được, nhưng không dùng.
 
 Nhờ quy tắc này, stack và buffer trong DTCM hay AXI đều an toàn với DMA.
 
@@ -190,7 +195,7 @@ Nhờ quy tắc này, stack và buffer trong DTCM hay AXI đều an toàn với 
     - `calloc` kiểm tràn số khi nhân.
   - Bật `configUSE_NEWLIB_REENTRANT` để newlib an toàn khi chạy đa task.
   - `_sbrk` luôn trả lỗi, nên không cấp phát nào lọt ra ngoài heap.
-  - Heap và các hook được khởi tạo trong `board_early()`, **trước mọi cấp phát**.
+  - Heap và các hook được khởi tạo trong `board_early()` (§6.3), **trước mọi cấp phát**.
   - Kiểm bằng symbol map: chỉ có một bản `malloc` trong binary, và không có tham chiếu nào tới `_sbrk_r` thật.
 - **mbedTLS** dùng `MBEDTLS_PLATFORM_MEMORY` trỏ về wrapper trên. **Mongoose** cũng vậy. **coreMQTT** không tự cấp phát.
 - **cJSON:** hook toàn cục `json_malloc`/`json_free` định tuyến **theo chủ sở hữu**.
@@ -201,7 +206,8 @@ Nhờ quy tắc này, stack và buffer trong DTCM hay AXI đều an toàn với 
 |---|---|---|
 | `cfgmodel` (validate khi lưu và khi boot) | callback của `web`, `init` | Arena |
 | `webapi` (`api.c`, `server.c`: parse request, dựng response) | callback của `web` | Arena, mỗi callback một phạm vi |
-| `edgecore` (biên dịch template), nạp mô hình Edge | `init` | Arena. **Dữ liệu sống lâu hơn phạm vi phải được chép ra heap** (§9.3) |
+| Nạp mô hình Edge | `init` | Arena. **Dữ liệu sống lâu hơn phạm vi phải được chép ra heap** (§9.3) |
+| `edgecore` (biên dịch template report) | `init` | **Heap**, vì template sống suốt thời gian chạy (§9.3) |
 | `store_get` cho các dịch vụ đọc cấu hình lúc khởi động | `init` | Arena, mỗi dịch vụ một phạm vi |
 | `rwprot` (truy vấn JSON tối đa 5 điểm), IO control | `mqtt`, `bridge[n]` | Heap (nhỏ, giải phóng ngay) |
 | `iomgr` (JSON của IO) | `web`, `io` | Theo task gọi |
@@ -243,10 +249,11 @@ Thang ưu tiên của FreeRTOS là 0–31 (`configMAX_PRIORITIES` = 32). `n` là
 | `wdog` | 1 | 2 KB | 31 (cao nhất) | Kick WDI và nháy LED WORK mỗi 200 ms (SGM706: timeout tối thiểu 1,0 s). Giám sát `init` và `TRIAL` (§11.4). Nằm trên `tcpip` và `eth_rx`, để một trận broadcast trên LAN nhà máy không gây vòng reset |
 | `tcpip` | 1 | 4 KB | 24 | lwIP, SNTP, nhận dữ liệu PPPoS |
 | `eth_rx` | 1 | 2 KB | 22 | Semaphore từ ISR của ETH, đưa pbuf vào lwIP |
-| `serial_rx[n]` | 2 | 3 KB | 12 | Chủ đọc duy nhất của cổng: cắt frame, giao cho transaction hoặc subscriber |
+| `serial_rx[n]` | 2 | 3 KB | 26 | Chủ đọc duy nhất của cổng: cắt frame, giao cho transaction hoặc subscriber. Mỗi lần thức dậy chỉ làm một lượng việc có giới hạn rồi block chờ ISR |
+| `cmux_rx` | 1 | 2 KB | 25 | Rút ring DMA của UART3, ráp frame CMUX, đưa dữ liệu DLC1 vào `pppos_input_tcpip`, đưa dữ liệu DLC2 cho `lte`. Có giới hạn việc mỗi lượt, block chờ ISR |
 | `restart` | khi cần | 3 KB | 10 | Chạy các shutdown handler rồi reset |
 | `bridge[n]` | 2 | 6 KB | 8 | Socket của cổng theo chế độ làm việc, TLS, Modbus gateway, polling, heartbeat, registration |
-| `io` | 1 | 3 KB | 6 | DI (10 ms). AI: mỗi 500 ms tính trung bình từ buffer BDMA (§6.6), không có ngắt theo từng mẫu. DO/74HC573, 6 timer, `keepOutputs` |
+| `io` | 1 | 3 KB | 6 | DI (10 ms). AI: khi có notify HT/TC (mỗi 100 ms) thì cộng một nửa buffer BDMA, và chạy phục hồi khi ADC lỗi (§6.6). DO/74HC573, 6 timer, `keepOutputs` |
 | `edge_ctl` | 1 | 4 KB | 6 | Điểm IO và điểm ảo, linkage mỗi 10 ms. Không chờ I/O |
 | `mqtt` | 1 | 6 KB | 5 | Chủ duy nhất của coreMQTT: connect, `MQTT_ProcessLoop`, outbox, gửi lại, `reconnectIfSilent` |
 | `mqtt_io` | 1 | 4 KB | 5 | Hai chiều: subscribe → serial, serial → outbox |
@@ -264,14 +271,15 @@ Ngoài bảng trên còn có:
 - task `init` (6 KB, prio 7), tự xóa sau khi khởi động xong;
 - task timer của FreeRTOS (2 KB, prio 30). Callback của nó chỉ được gửi notify.
 
-**Điều ưu tiên bảo đảm và không bảo đảm:**
-- **Cắt frame UART không phụ thuộc lịch chạy task.** Byte được DMA đưa vào ring. Khoảng lặng do Receiver Timeout và timer phát hiện trong ISR (§6.5). `tcpip` và `eth_rx` có ưu tiên cao hơn `serial_rx`, nên chỉ làm chậm việc *giao* frame chứ không làm mất byte hay cắt sai frame.
-  - Ring RX được tính đủ cho 50 ms ở 230400 baud (khoảng 1,2 KB, làm tròn lên 2 KB).
-  - Mỗi lượt, `eth_rx` xử lý tối đa 8 frame rồi nhường CPU.
-  - Bench đo độ trễ giao frame và đếm số lần tràn ring.
+**Điều ưu tiên bảo đảm:**
+- **Không mất byte serial do tải mạng.** Các task rút ring DMA (`serial_rx[n]` 26 và `cmux_rx` 25) có ưu tiên **cao hơn** `tcpip` (24) và `eth_rx` (22). Chúng chỉ làm lượng việc có giới hạn (chép frame, chuyển tiếp) rồi block chờ ISR, nên không gây đói các task khác.
+  - Khoảng lặng do Receiver Timeout và timer phát hiện trong ISR (§6.5).
+  - Ring RX của USART1/2 là 2 KB, đủ cho khoảng 90 ms ở 230400 baud. Ring của UART3 là 4 KB, đủ cho khoảng 350 ms ở 115200 baud.
+  - Tràn ring được đếm thành `overrun`.
+  - **Tiêu chí trên bench:** 0 lần overrun trên UART1 (230400 baud, liên tục) và UART3 (PPP tải liên tục), trong lúc LAN bị bơm broadcast 90 Mbit/s.
+- **ETH không làm đói các task thấp hơn.** Mỗi lần thức dậy, `eth_rx` xử lý tối đa 8 frame. Nếu vẫn còn descriptor chờ, nó `vTaskDelay(1)`. Đây là block thật, nên các task thấp hơn được chạy, kể cả khi LAN bị flood. Bench kiểm: Web UI vẫn trả lời và `wdiMaxGapMs` < 400 ms khi LAN bị flood.
 - Request từ mạng tới được bus trước lần poll Edge kế tiếp, vì `bridge` (8) cao hơn `edge_bus` (5).
 - IO và linkage (6) chạy trên tầng polling (5).
-- `lte` (5) không xử lý byte UART3. Byte đi qua DMA, frame CMUX được ráp trong `lte` (§7.2), nên ưu tiên của `lte` chỉ ảnh hưởng độ trễ.
 
 ### 6.2 Bootloader và app chia nhau việc khởi tạo
 
@@ -296,7 +304,7 @@ Code trên QSPI không được cấu hình lại chính đường đang dùng �
   1. bật clock SRAM D2/D3;
   2. đặt VTOR = 0x90000400;
   3. chép `.data`, xóa `.bss`, chép `.itcm_text` và `.dtcm_data`;
-  4. lập MPU (region QSPI giống hệt bootloader, SRAM1 non-cacheable, chặn truy cập địa chỉ 0);
+  4. lập MPU (region QSPI giống hệt bootloader, SRAM1 non-cacheable, region ADC 1 KB ở 0x3800FC00 non-cacheable và XN, chặn truy cập địa chỉ 0). Đây là **lần duy nhất** cấu hình MPU, và nó xong trước khi bất kỳ DMA nào được bật;
   5. bật I-cache và D-cache;
   6. `SystemCoreClockUpdate()`;
   7. `main()`.
@@ -306,7 +314,7 @@ Code trên QSPI không được cấu hình lại chính đường đang dùng �
 ### 6.3 Thứ tự khởi động của app
 
 1. `main()`, chưa chạy scheduler:
-   - `board_early()`: MPU, cache, chép ITCM, đưa GPIO về trạng thái an toàn, kick WDI;
+   - `board_early()`: khởi tạo heap và các hook cấp phát, đưa GPIO về trạng thái an toàn, kick WDI. MPU, cache và ITCM **đã** được `Reset_Handler` làm (§6.2), không làm lại ở đây;
    - tạo task `wdog` và task `init`;
    - `vTaskStartScheduler()`.
 2. Từ lúc này `wdog` kick độc lập. **Driver SPI4 nhường CPU (`vTaskDelay(1)`) trong lúc chờ flash bận**, nên ngay cả lần format FlashDB đầu tiên (xóa khoảng 1 MB, mất vài giây) cũng không làm lỡ nhịp WDI.
@@ -374,20 +382,60 @@ Quy tắc riêng của bản STM32:
 
 ### 6.6 Driver ADC (AI1, AI2)
 
-**Mục tiêu:** CPU gần như không phải làm gì khi lấy mẫu, và số đọc ổn định với 4–20 mA trong môi trường nhà máy.
+**Mục tiêu:**
+- CPU gần như không phải làm gì khi lấy mẫu.
+- Mỗi giá trị AI được tính trên một cửa sổ dữ liệu nhất quán.
+- Số đọc đạt các tiêu chí định lượng ở cuối mục.
+
+**Cấu hình** (RM0433 Rev 8 §25, DS12556 Rev 8, AN5354):
 
 | Thành phần | Cấu hình |
 |---|---|
-| ADC | **ADC3** kênh INP0 (PC2_C, AI1) và INP1 (PC3_C, AI2), single-ended, độ phân giải 16 bit. Nhóm regular quét 2 kênh. Thời gian lấy mẫu 64,5 cycle (nguồn là ngõ ra op-amp LM2904, trở kháng thấp). Kernel clock lấy từ PLL2P hoặc PLL3R, trong giới hạn của datasheet, kèm cấu hình `BOOST` tương ứng |
-| Hiệu chuẩn | Gọi `HAL_ADCEx_Calibration_Start(ADC_CALIB_OFFSET_LINEARITY)` một lần lúc khởi tạo, trước khi bật ADC |
-| **Oversampling phần cứng** | Regular oversampling, tỷ lệ **×16**, dịch phải 4 bit, nên kết quả vẫn là 16 bit. Chế độ *triggered*: một trigger làm ADC chạy liền 16 lần chuyển đổi cho mỗi kênh. Thời gian chuyển đổi cụ thể phụ thuộc kernel clock đã chọn |
-| Trigger | Một timer phần cứng **1 kHz** làm trigger ngoài (chọn timer nằm trong bảng trigger của ADC3 trong CubeMX). Nhịp lấy mẫu cố định, không phụ thuộc lịch chạy task |
-| **DMA** | **BDMA** (DMAMUX2), circular, half-word, `DMNGT` = circular DMA. Đích là `uint16_t adc_buf[100][2]` (400 B), tức **100 ms** dữ liệu. Không bật ngắt HT/TC, chỉ bật ngắt lỗi |
-| Bộ nhớ | `adc_buf` nằm trong region MPU non-cacheable 1 KB, căn 1 KB, ở cuối SRAM4. Không cần thao tác cache |
-| Xử lý (task `io`, mỗi 500 ms) | Chép `adc_buf`, rồi tính trung bình 100 mẫu của từng kênh. Một cửa sổ 100 ms chứa đúng 5 chu kỳ 50 Hz và 6 chu kỳ 60 Hz, nên triệt được nhiễu điện lưới. Đổi sang dòng: `I[mA] = (code / 65535 × 3,0 V) / 0,499 / 0,120 kΩ`, rồi áp hệ số khuếch đại và offset hiệu chuẩn của từng kênh (đo trên bench). Ví dụ 20 mA tương ứng 1,198 V ở ADC, mã khoảng 26.160. Edge nhận giá trị bằng µA như bản ESP32 |
-| Lỗi (F18) | Overrun của ADC (`OVR`) hoặc lỗi truyền BDMA: điểm AI tương ứng bị đánh dấu failed, Modbus trả exception 4 như bản ESP32, và driver khởi động lại ADC cùng BDMA. Sau khi khởi động lại, AI chỉ báo giá trị khi đã có lại đủ một cửa sổ 100 ms |
+| ADC | **ADC3** kênh INP0 (PC2_C, AI1) và INP1 (PC3_C, AI2). Single-ended, 16 bit. Nhóm regular gồm 2 rank: rank 1 là INP0, rank 2 là INP1 |
+| Clock | **Clock analog 10 MHz, `BOOST` = `01`** (cho ≤ 12,5 MHz). Clock lấy từ PLL2P qua bộ chia của ADC. Đường PLL/prescaler cụ thể ghi trong `.ioc` và trong `board/clock.md`. Không dùng clock cao hơn: AN5354 bảng 12 nêu 19 MHz cho chất lượng 16 bit với LQFP100 |
+| Sampling | 64,5 cycle. Một trigger tốn khoảng `2 × 16 × (64,5 + 8,5) / 10 MHz` ≈ 234 µs, nhỏ hơn chu kỳ 1 ms. Ngõ vào ADC nối thẳng ngõ ra LM2904, có tụ 5 pF. Độ settling được **chứng minh bằng bench** (bài kiểm chuyển kênh bên dưới), không chỉ dựa vào lập luận về trở kháng. Nếu không đạt thì tăng lên 387,5 cycle; chu kỳ 1 ms vẫn đủ chỗ |
+| Hiệu chuẩn của ADC | Sau khi bật regulator của ADC và trước khi bật ADC: `HAL_ADCEx_Calibration_Start(&hadc3, ADC_CALIB_OFFSET_LINEARITY, ADC_SINGLE_ENDED)`, **kiểm mã trả về**. Lỗi thì AI ở trạng thái failed. Đường khởi động lại khi lỗi (bên dưới) không vào deep-power-down, nên hệ số hiệu chuẩn được giữ. Lần nào ADC rời deep-power-down thì phải hiệu chuẩn lại |
+| **Oversampling phần cứng** | `ROVSE` = 1, `OVSR` = 15 (tỷ lệ ×16), `OVSS` = 4 (dịch phải 4 bit), **`TROVS` = 0**: một trigger chạy đủ 16 lần tích lũy, tức `ADC_TRIGGEREDMODE_SINGLE_TRIGGER` trong HAL. `CONT` = 0, `DISCEN` = 0, `LSHIFT` = 0. Giá trị lớn nhất là 16 × 65535 >> 4 = 65535, nên dữ liệu vẫn là 16 bit |
+| Trigger | **TIM6_TRGO** (`EXTSEL` = 13), TRGO lấy từ update event, chạy 1 kHz, kích cạnh lên. TIM2 dành cho `now_us()` |
+| **DMA** | **BDMA** (DMAMUX2 request 17), circular. Peripheral không tăng địa chỉ, memory tăng. Dữ liệu half-word ở cả hai phía. ADC đặt `DMNGT` = `0b11` (circular DMA) |
+| Buffer | `uint16_t adc_buf[2][100][2]`: **hai nửa**, mỗi nửa 100 cặp mẫu = 100 ms, tổng 800 B. Nằm trong region MPU 0x3800FC00–0x3800FFFF: Normal, non-cacheable, XN, được giữ riêng trong linker script. Region này cấu hình trong `Reset_Handler`, trước khi bật DMA (§6.2) |
+| Ngắt | **HT và TC của BDMA**, mỗi 100 ms một ngắt, không có ngắt theo từng mẫu. Thêm ngắt lỗi của BDMA và `OVR` của ADC |
 
-CPU tốn công cho AI chỉ khoảng 200 phép cộng mỗi 500 ms. Không có ngắt nào theo từng mẫu.
+**Bàn giao buffer, để mỗi cửa sổ là một snapshot nhất quán:**
+- ISR của HT hoặc TC ghi `ready_half` (0 hoặc 1) và tăng `seq`, rồi notify task `io`. Nửa vừa đầy thuộc về CPU trong 100 ms kế tiếp. Trong thời gian đó BDMA đang ghi nửa kia.
+- Task `io` (prio 6) cộng 100 mẫu của nửa `ready_half` vào bộ tích lũy kiểu `uint32_t` cho từng kênh. Sau khi cộng, nếu `seq` đã đổi thì nửa đó có thể đã bị ghi đè: bỏ kết quả và tăng `adc_late`. Cộng 200 giá trị mất cỡ micro giây, còn hạn chót là 100 ms.
+- Giá trị AI được công bố là trung bình của **cửa sổ 100 ms gần nhất đã hoàn chỉnh**, cập nhật mỗi 100 ms. Vòng 500 ms của `io` chỉ đọc giá trị này. Cửa sổ 100 ms chứa đúng 5 chu kỳ 50 Hz và 6 chu kỳ 60 Hz, nên đó là các điểm triệt lý tưởng. Mức triệt thực tế chịu ảnh hưởng của độ lệch tần số lưới và jitter, và được đo trên bench.
+
+**Đổi sang dòng điện:** `I[mA] = (mean × 3,0) / (65535 × 0,499 × 0,120)`, tính bằng `float`.
+- Hệ số 0,499 = 49,9 kΩ / 100 kΩ, shunt 120 Ω, VREF 3,0 V. Ví dụ 20 mA tương ứng 1,1976 V, mã khoảng 26.162.
+- Sau đó áp **hiệu chuẩn hai điểm của từng kênh** (gain và offset, đo ở 4 mA và 20 mA).
+  - Hệ số hiệu chuẩn nằm trong một *factory record* ở SPI4 0x3F0000, vùng dự trữ ở §5.2. Record có hai bản sao kèm CRC.
+  - Record được nạp bằng công cụ sản xuất qua SWD. Factory reset không xóa nó.
+  - Chưa có record thì dùng hệ số danh định, và `/api/status` báo `aiCalibrated: false`.
+- Edge nhận giá trị bằng µA như bản ESP32.
+
+**Lỗi và phục hồi (F18):**
+- `OVR`, lỗi truyền BDMA hoặc hiệu chuẩn lỗi thì **cả AI1 lẫn AI2** bị đánh dấu failed, vì hai kênh dùng chung một scan và một ring. Modbus trả exception 4 như bản ESP32.
+- Trình tự phục hồi, chạy trong `io` theo notify từ ISR:
+  1. dừng TIM6;
+  2. dừng ADC (`ADSTP`) và BDMA;
+  3. xóa cờ `OVR` và các cờ lỗi của BDMA;
+  4. nạp lại địa chỉ, bộ đếm và thứ tự rank;
+  5. bật BDMA, rồi ADC (`ADSTART`);
+  6. bật TIM6 **sau cùng**.
+- **Chỉ công bố lại giá trị khi đã có đủ 100 cặp mẫu mới**, tức một nửa đầy, cả sau phục hồi lẫn lúc khởi động đầu tiên.
+
+**Tiêu chí nghiệm thu trên bench** (§12.2), áp dụng cho từng kênh sau khi hiệu chuẩn hai điểm, ở 25 °C:
+
+| Hạng mục | Tiêu chí |
+|---|---|
+| Sai số tại 4, 8, 12, 16 và 20 mA | ≤ ±0,05 mA (khoảng 0,3 % của dải 16 mA; thiết bị tham chiếu ghi 1 % FSR) |
+| Độ dao động (độ lệch chuẩn trong 60 s, nguồn dòng ổn định) | ≤ 0,005 mA |
+| Nhiễu 50 Hz và 60 Hz, biên độ 1 mA p-p chồng lên 12 mA | Số đọc lệch ≤ 0,05 mA so với khi không có nhiễu |
+| Ảnh hưởng chéo khi chuyển kênh | Đổi AI1 giữa 4 và 20 mA thì AI2 (giữ 12 mA) lệch ≤ 0,01 mA, và ngược lại |
+| Độ trễ | Bậc thang 4 → 20 mA hiện lên `/api/io` trong ≤ 700 ms |
+| Phục hồi | Sau một lỗi được gây ra có chủ đích (`OVR` hoặc dừng BDMA), giá trị được công bố lại trong ≤ 300 ms. Không có giá trị nào được công bố trong lúc phục hồi |
+| Tải CPU | Không có ngắt nào theo từng mẫu: số ngắt ADC/BDMA ≤ 10 mỗi giây |
 
 ## 7. Mạng
 
@@ -399,14 +447,15 @@ CPU tốn công cho AI chỉ khoảng 200 phép cộng mỗi 500 ms. Không có 
 
 ### 7.2 LTE EC600U
 
-- **Timing của EC600U** lấy theo *Quectel EC600U Hardware Design V1.3* §3.7–3.9, **không** dùng timing của EC800 trong bản ESP32 (xung PWRKEY 700 ms ở `modem.c:47`):
+- **Timing của EC600U** lấy theo *Quectel EC600U系列 QuecOpen 硬件设计手册 V1.3* (bản trên developer.quectel.com, 2024-09), mục 3.7–3.8. **Không** dùng timing của EC800 trong bản ESP32 (xung PWRKEY 700 ms ở `modem.c:47`). Mốc thời gian tính từ cạnh GPIO của MCU. Qua transistor, độ trễ không đáng kể so với các giá trị dưới đây.
 
-  | Thao tác | Giá trị |
-  |---|---|
-  | Bật nguồn | Giữ PWRKEY ở mức kích hoạt **≥ 2 s** (LTE_PWR = 1 qua Q1). Mặc định của firmware: 2,5 s |
-  | Chờ UART sẵn sàng sau khi bật hoặc reset | Lấy từ §3.7 khi viết driver. Firmware thử `AT` mỗi 500 ms cho tới hết khoảng thời gian đó, cộng thêm 50 % dự phòng |
-  | Tắt nguồn | Ưu tiên `AT+QPOWD=1`. Chỉ dùng PWRKEY để tắt khi AT không phản hồi |
-  | Xung `RESET_N` | Độ dài theo §3.9 (LTE_RESET = 1 qua Q2) |
+  | Thao tác | Yêu cầu của tài liệu | Firmware dùng |
+  |---|---|---|
+  | Bật nguồn: giữ PWRKEY (LTE_PWR = 1 qua Q1) | ≥ 2 s | **2,5 s** |
+  | Tắt nguồn bằng PWRKEY | ≥ 3 s | **3,5 s**. Chỉ dùng khi `AT+QPOWD=1` không được |
+  | Xung `RESET_N` (LTE_RESET = 1 qua Q2) | ≥ 100 ms | **200 ms** |
+  | Chờ UART sẵn sàng sau khi bật hoặc reset | Tài liệu không nêu một con số cố định cho MAIN_UART | Thử `AT` mỗi 500 ms, **deadline 15 s** kể từ lúc nhả PWRKEY hoặc RESET_N. Đo thời gian thật trên bench, rồi đặt deadline bằng 2 lần giá trị đo, nhưng không dưới 10 s |
+  | Sau khi tắt nguồn, chờ trước khi bật lại | Theo mục 3.7 | **2 s** kể từ khi AT không còn phản hồi. Board không nối chân `STATUS` |
 
   Không kết luận "modem hỏng" chỉ vì modem không phản hồi ngay sau xung nguồn.
 - **Khởi động:**
@@ -429,7 +478,8 @@ CPU tốn công cho AI chỉ khoảng 200 phép cộng mỗi 500 ms. Không có 
 
      Hệ quả cho bộ demux:
      - Hỗ trợ **trường độ dài 2 byte**, cần khi trường thông tin dài hơn 127 byte.
-     - Buffer frame mỗi DLC ≥ 2048 + 6 byte, tức 2 KB 64 B trong AXI. Một gói PPP (MRU 1500) nằm gọn trong một frame.
+     - Buffer frame mỗi DLC ≥ 2048 + 7 byte. Overhead gồm 2 cờ, address, control, 2 byte độ dài và FCS. Cấp 2112 B trong AXI.
+     - **PPP là luồng byte, không gói vào từng frame.** Sau khi escape (RFC 1662 §4.2), một gói PPP có thể dài gần gấp đôi, nên luồng PPP đi ra được cắt thành các frame UIH ≤ N1 trên DLC1. Chiều nhận ghép payload UIH lại thành luồng byte. Không giả định một frame chứa đúng một gói PPP.
      - Mở DLC0, rồi DLC1 và DLC2 bằng SABM, chờ UA trong khoảng T1, gửi lại tối đa N2 lần.
      - Đóng mux bằng lệnh CLD.
 - **Kênh CMUX:**
@@ -446,14 +496,18 @@ CPU tốn công cho AI chỉ khoảng 200 phép cộng mỗi 500 ms. Không có 
   | `OPEN_*` | Hết T1 (200 ms) | Gửi lại SABM, tối đa N2 = 3 lần. Quá N2 → `RECOVER` |
   | `OPEN_DLC` | Đã nhận UA của DLC1 và DLC2 | → `RUNNING`: bắt đầu PPP trên DLC1, gửi AT trên DLC2 |
   | `RUNNING` | Nhận DM hoặc DISC | Kênh tương ứng đóng → `RECOVER` |
-  | `RUNNING` | Nhận MSC hoặc FCon/FCoff trên DLC0 | Bật hoặc tắt việc gửi trên DLC tương ứng (flow control) |
+  | `RUNNING` | Nhận **FCoff** hoặc **FCon** trên DLC0 | Dừng hoặc tiếp tục gửi trên **toàn bộ mux**, mọi DLC (27.010 §5.4.6.3.5–6). Trả lời bằng response tương ứng |
+  | `RUNNING` | Nhận **MSC** trên DLC0 | Đọc bit FC trong tín hiệu V.24 để dừng hoặc tiếp tục gửi trên **đúng DLC** được nêu. Trả lời bằng MSC response |
+  | `RUNNING` | Nhận Test command hoặc lệnh không hỗ trợ | Trả Test response, hoặc NSC (Non Supported Command) |
   | `RUNNING` | Không nhận được frame nào từ modem trong 60 s, và `AT` trên DLC2 không phản hồi | → `RECOVER` |
   | `RECOVER` | | Gửi CLD (đóng mux), chờ 1 s, kích `RESET_N`, quay về `AT` |
 
   Frame lỗi (FCS sai, sai cờ `0xF9`) bị bỏ, kèm bộ đếm. Bộ ráp frame **tái đồng bộ** ở cờ `0xF9` tiếp theo.
 - **Dự phòng PPP thẳng:** dùng khi `AT+CMUX` bị từ chối. Thông tin tín hiệu khi đó chỉ được đọc trước khi PPP lên, giống bản ESP32. Muốn gửi AT để phục hồi thì phải thoát data mode bằng `+++` (im lặng 1 s trước và sau) rồi `ATH`. Không thoát được thì kích `RESET_N`.
 - **Đường truyền UART3:** 115200 baud, không có RTS/CTS.
-  - RX dùng DMA vòng 4 KB với ngắt HT, TC và IDLE. Ở 115200 baud, 4 KB tương đương khoảng 350 ms dữ liệu liên tục. Đó là thời gian tối đa `lte` được phép không lấy dữ liệu ra.
+  - RX dùng DMA vòng 4 KB với ngắt HT, TC và IDLE, do `cmux_rx` (prio 25) rút ra (§6.1). Ở 115200 baud, 4 KB tương đương khoảng 350 ms dữ liệu.
+  - **Khi `pppos_input_tcpip` trả lỗi** (`ERR_MEM`): thử lại tối đa 3 lần, mỗi lần cách 1 ms. Ở 115200 baud, 1 ms là khoảng 12 byte, nên ring vẫn dư. Hết 3 lần thì bỏ đoạn dữ liệu đó và tăng `ppp_in_drop`. PPP tự phục hồi qua FCS và cơ chế gửi lại của TCP.
+  - Khi đang FCoff, dữ liệu PPP đi ra được giữ trong hàng đợi gửi của DLC1, tối đa 4 KB. Đầy thì báo `ERR_MEM` ngược lên lwIP.
   - Tràn ring được đếm thành `overrun`, và PPP tự phục hồi bằng cơ chế của nó (FCS, gửi lại TCP).
   - **Cần chứng minh bằng tải liên tục** trên bench: tải xuống HTTPS lớn trong lúc DLC2 vẫn đọc tín hiệu. Số `overrun` phải bằng 0.
 - **Phục hồi:** PPP không có địa chỉ quá 2 phút thì gửi `AT+CFUN=1,1` qua DLC2. Không phản hồi AT thì vào `RECOVER`.
@@ -503,7 +557,7 @@ CPU tốn công cho AI chỉ khoảng 200 phép cộng mỗi 500 ms. Không có 
   | Lỗi | −1 |
 
   Ghi một phần thì trả số byte đã ghi. Có host test cho mọi trường hợp: đọc một phần, AGAIN, EOF.
-- **Vá MQTT 3.1:** CONNECT dùng protocol name `MQIsdp`, level 3. Bản vá nằm ở `third_party/patches/coremqtt-mqtt31.patch`. Host test kiểm từng byte, gồm cả Remaining Length. Bench kiểm CONNACK, Client ID, reconnect và QoS 1/2 với mosquitto ở chế độ 3.1.
+- **Vá MQTT 3.1:** CONNECT dùng protocol name `MQIsdp`, level 3. Bản vá nằm ở `third_party/patches/coremqtt-mqtt31.patch`. Host test kiểm từng byte, gồm cả Remaining Length. Bench kiểm với mosquitto ở cả 3.1 và 3.1.1: CONNACK, Client ID, **ngắt kết nối ở từng pha QoS 1/2** (trước PUBACK, trước PUBREC, sau PUBREL trước PUBCOMP) khi `cleanSession` = 0 và = 1, kiểm không mất và không nhân đôi tin QoS 2.
 - **Outbox** (`services/mqtt_outbox.c`, đặt trong SRAM2+3), mỗi tin có một trạng thái:
 
   | Trạng thái | Ý nghĩa | Chuyển tiếp |
@@ -514,8 +568,18 @@ CPU tốn công cho AI chỉ khoảng 200 phép cộng mỗi 500 ms. Không có 
   | `WAIT_PUBCOMP` | Đã gửi PUBREL | PUBCOMP → xóa, giải phóng packet id |
 
   - **Gửi lại chỉ diễn ra khi kết nối lại** (MQTT 3.1.1 §4.4), không theo chu kỳ:
-    - **Session Present = 1:** gửi lại PUBLISH của các tin `WAIT_PUBACK` và `WAIT_PUBREC` với cờ DUP, và gửi lại PUBREL của các tin `WAIT_PUBCOMP`. Giữ nguyên packet id.
-    - **Clean session, hoặc Session Present = 0:** các tin đang dở quay về `QUEUED` với packet id mới, rồi đăng ký lại toàn bộ subscribe.
+    - **"Phiên được giữ"** được xác định khác nhau theo phiên bản:
+      - **3.1.1:** theo cờ Session Present trong CONNACK.
+      - **3.1:** CONNACK của 3.1 không có cờ này (byte đó là reserved), nên coi là phiên được giữ **khi và chỉ khi `cleanSession` = 0**.
+
+      Bản vá coreMQTT (`coremqtt-mqtt31.patch`) đặt `sessionPresent` theo đúng quy tắc này trước khi `MQTT_Connect()` chạy `handleSessionResumption`.
+    - **Ai giữ trạng thái gì:**
+      - coreMQTT giữ bảng packet id và trạng thái QoS, qua `MQTT_InitStatefulQoS` với mảng 16 phần tử cho mỗi chiều. Nó tự gửi lại **PUBREL** khi phiên được giữ.
+      - Outbox giữ payload. Outbox tự gửi lại **PUBLISH**: `MQTT_Publish` với `dup = true` và đúng packet id cũ.
+      - Hai bên đồng bộ qua callback sự kiện của coreMQTT (PUBACK, PUBREC, PUBCOMP).
+    - **Phiên được giữ:** gửi lại PUBLISH của các tin `WAIT_PUBACK` và `WAIT_PUBREC` với DUP và packet id cũ. PUBREL của các tin `WAIT_PUBCOMP` do coreMQTT gửi lại.
+    - **Phiên mới** (clean session, hoặc 3.1.1 trả Session Present = 0): các tin đang dở quay về `QUEUED`, cấp packet id mới, và trạng thái QoS của coreMQTT được xóa.
+    - **Luôn đăng ký lại toàn bộ subscribe** sau mỗi lần kết nối, ở cả hai trường hợp. SUBSCRIBE lặp lại là vô hại.
   - `retryInterval` vẫn chỉ là **khoảng thời gian giữa hai lần thử kết nối lại**, như ESP32.
   - **Hết hạn sau 1 giờ chỉ áp dụng cho tin `QUEUED`.** Tin đang ở giữa giao dịch QoS không bao giờ bị hết hạn, vì packet id của nó vẫn đang được sử dụng.
   - Tổng dung lượng giới hạn 64 KB. Đầy thì bỏ tin mới và ghi cảnh báo.
@@ -575,10 +639,10 @@ Có hai vùng tĩnh riêng trong AXI, vì chúng có vòng đời khác nhau.
 - Dùng khi nạp văn bản chuẩn hóa lúc boot.
 - Tại mỗi thời điểm chỉ có **một chủ sở hữu**: một connection, hoặc task `init`.
   - Một `POST edgeDevices` thứ hai đến trong lúc buffer đang bận thì nhận ngay 503 `{ "error": "Another Edge save is in progress." }`.
-  - Buffer được giải phóng khi request xong, khi connection đóng, hoặc sau timeout 15 s không có dữ liệu.
+  - Buffer được giải phóng khi request xong, khi connection đóng, hoặc khi body hết thời gian chờ (quy tắc chung ở §10.1).
 
 **Các cấu hình nhỏ** (port, mqtt*, system, io, edgeReport, edgeLinkage):
-- body ≤ 6 KB, nằm sẵn trong `c->recv`;
+- body ≤ **10 KB**, nằm sẵn trong `c->recv`. **Văn bản chuẩn hóa cũng phải ≤ 10 KB**, kiểm trước khi ghi; vượt quá thì trả 413 `{ "error": "These settings are too large." }`. Nhờ vậy cái gì `GET` trả về đều `POST` lại được. Host test tính văn bản chuẩn hóa lớn nhất của từng cấu hình theo schema: mọi chuỗi dài tối đa và toàn ký tự phải escape (ví dụ `mqttPublish` có `identifier` toàn `\\`), rồi kiểm ≤ 10 KB và kiểm vòng `POST → GET → POST`;
 - toàn bộ parse, validate và in ra chạy trong một phạm vi arena.
 - Ước tính `mqttPublish` 16 topic đầy đủ (khoảng 4 KB văn bản) có đỉnh khoảng 46 KB, lấy theo tỷ lệ cây/văn bản khoảng 5,7 đã đo. Host test chốt con số thật.
 
@@ -643,6 +707,13 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
 4. Biên dịch template report, cấp từ heap.
 5. Giải phóng buffer văn bản Edge.
 
+**Buffer report:**
+- Kích thước tính bằng `edge_tmpl_size()` của mã ESP32 (`edgecore.c:407`): mỗi slot giá trị được dành 242 B, cho trường hợp xấu nhất là một chuỗi đã escape. Vì vậy kích thước phụ thuộc **số slot** của template, không phụ thuộc số điểm.
+- Giới hạn là **26 KB**, tức khoảng 100 slot với template 2 KB. Buffer cấp từ heap lúc boot, và ngân sách AXI ở §5.3 đã tính khoản này.
+- Template cần nhiều hơn thì lúc boot Edge báo trạng thái `TEMPLATE TOO LARGE` và tắt report, cùng cách bản ESP32 xử lý khi thiếu bộ nhớ cho report (`edge_rt.c:880`).
+- Lúc lưu `edgeReport`, `web` biên dịch thử template với tên điểm của mô hình Edge đang chạy, và trả 4xx `{ "error": "The report template needs too many values for this gateway." }` nếu vượt giới hạn. Nếu tên không khớp với mô hình đang chạy (ví dụ vừa lưu `edgeDevices` nhưng chưa restart), lần kiểm lúc boot là lần quyết định.
+- Cấu hình cực đại này (100 slot) có mặt trong kịch bản đo bộ nhớ (§12.3).
+
 **Ràng buộc kiểm thử:** với mọi payload trong bộ test, kể cả payload có nhiều lỗi, thứ tự thiết bị và node bị đảo, hay tên trùng hash, kết quả xử lý theo node phải **giống từng byte** với `cfg_validate` nguyên khối: cùng văn bản chuẩn hóa, cùng câu báo lỗi đầu tiên (§12.1).
 
 ## 10. Web, API và UI
@@ -654,13 +725,13 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
   - Với `/api/ota`, `/api/cert` và `POST edgeDevices`: xử lý ở `MG_EV_HTTP_HDRS`, tự đọc `c->recv` theo luồng.
     - Các endpoint này bắt buộc có `Content-Length`. Request dùng chunked thì trả 411.
     - Giới hạn áp lên số byte thực nhận: OTA ≤ kích thước slot, chứng chỉ ≤ 12 KB, Edge ≤ 48 KB.
-  - Các endpoint khác: giới hạn body 6 KB (§9.3), vượt quá thì trả 413. `MG_MAX_RECV_SIZE` đặt ở mức tương ứng.
+  - Các endpoint khác: giới hạn body 10 KB (§9.3), vượt quá thì trả 413. `MG_MAX_RECV_SIZE` đặt ở mức tương ứng.
 - **Giữ hành vi của bản ESP32:**
   - UI gzip nhúng trong firmware, phục vụ không cần xác thực, ETag là hash nội dung từng file (F23);
   - Basic auth cho `/api/*`, so sánh thời gian hằng định;
   - trả 401 **không kèm** `WWW-Authenticate`;
   - đổi login có hiệu lực ngay và đóng mọi client WebSocket;
-  - HTTP body hoặc OTA bỏ cuộc sau hai lần chờ 15 s không có dữ liệu.
+  - **Quy tắc timeout chung cho mọi body nhận theo luồng** (OTA, chứng chỉ, Edge): bỏ cuộc sau **hai** lần chờ 15 s liên tiếp không có byte nào, tức 30 s im lặng. Kết quả là 408 và giải phóng mọi buffer.
 - **WebSocket console** tại `/ws?auth=`:
   - kiểm login **trước** handshake, sai thì trả 401;
   - tối đa 4 client;
@@ -672,12 +743,12 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
 | Mục | Thay đổi |
 |---|---|
 | `GET /api/device` | `portmax` = 2. `io` = `{do: 2, di: 2, ai: 2, ao: 0}`. Model và phần cứng là `SBIOT-H750` |
-| `/api/config/port2` | Mới, cùng schema với `port1`. TLS có trên cả hai cổng |
+| `/api/config/port2` | Schema đã có từ ESP32 nhưng bị tắt theo phần cứng. Nay được **bật trên phần cứng STM32**. TLS có trên cả hai cổng |
 | `/api/cert?scope=` | Thêm `port2` |
 | `port<n>` | Bỏ `rfc2217` |
 | `system` | Bỏ `telnet`, `telnetPort` |
 | `edgeDevices` | Tối đa 100 điểm, 64 thiết bị. Body ≤ 48 KB, văn bản chuẩn hóa ≤ 48 KB. Lỗi 411, 413, 503 như §9.4 |
-| Các cấu hình khác | Body ≤ 6 KB (bản ESP32: 96 KB) |
+| Các cấu hình khác | Body và văn bản chuẩn hóa ≤ 10 KB (bản ESP32: body 96 KB) |
 | `POST /api/ota` | Thêm 409 khi đang ở `TRIAL` (§11.3) |
 | `GET /api/status` | Thêm trạng thái của port2. Thêm `wdiMaxGapMs`. Thêm `mem` gồm: <br>• heap AXI: còn trống hiện tại và thấp nhất; <br>• đỉnh arena; <br>• mức chiếm dụng cao nhất của các pool tĩnh (pbuf, netconn, ring, outbox, MessageBuffer) dưới dạng `{used, size}`; <br>• stack còn dư thấp nhất cùng tên task; <br>• các bộ đếm `overrun` và frame bị bỏ của từng UART |
 | Trạng thái MQTT | Bỏ `WAITING FOR CLOCK` |
@@ -731,6 +802,8 @@ Header 1 KB đặt ở đầu image:
   - `state`;
   - `offset` (checkpoint, tính theo đơn vị 64 KB);
   - `trial`;
+  - `attempts`: số lần đã **bắt đầu** checkpoint `offset` của trạng thái hiện tại mà chưa xong, kèm `verify_fail`: số lần VERIFY hoặc kiểm SHA sau RESTORE thất bại;
+  - `degraded`: lần boot trước không ghi được bản ghi trạng thái;
   - bản sao header của image trong staging và của image trong backup;
   - lý do lần chuyển trạng thái gần nhất;
   - **CRC32 ở cuối**, ghi sau cùng.
@@ -756,15 +829,25 @@ Header 1 KB đặt ở đầu image:
 | `WRITE(off)` | Chép staging → QSPI từ checkpoint `off` | Xong: `VERIFY` |
 | `VERIFY` | SHA của QSPI so với header của staging | Khớp: `TRIAL(0)`. Không khớp: làm lại `WRITE(0)` một lần, lần hai vẫn sai thì `RESTORE(0)` |
 | `TRIAL(n)` | `n + 1`, ghi bản ghi, rồi nhảy vào app | `n + 1 > 3`: `RESTORE(0)`. App xác nhận: `CONFIRMED`. App yêu cầu rollback: `RESTORE(0)` |
-| `RESTORE(off)` | Ở `off = 0`: **kiểm SHA của backup trước khi xóa QSPI**. Rồi chép backup → QSPI từ `off`. **Backup là nguồn không đổi** của trạng thái này: không bao giờ chép vào backup khi đang `RESTORE` | Xong và SHA khớp: `CONFIRMED`. Backup hỏng ngay từ đầu: nếu image QSPI còn hợp lệ thì chạy nó (`CONFIRMED`, ghi lý do), nếu không thì vào cứu hộ |
+| `RESTORE(off)` | Ở `off = 0`: **kiểm SHA của backup trước khi xóa QSPI**. Rồi chép backup → QSPI từ `off`. **Backup là nguồn không đổi** của trạng thái này: không bao giờ chép vào backup khi đang `RESTORE` | Xong và SHA của QSPI khớp: `CONFIRMED`. **Xong mà SHA không khớp:** `verify_fail + 1`, làm lại `RESTORE(0)`. `verify_fail` ≥ 2: cứu hộ. Backup hỏng ngay từ đầu: nếu image QSPI còn hợp lệ thì chạy nó (`CONFIRMED`, ghi lý do), nếu không thì vào cứu hộ |
 
 **Quy tắc chung:**
-- Mỗi checkpoint 64 KB gồm: xóa 16 sector 4 KB của đích, ghi theo page, đọc lại so sánh với nguồn, rồi ghi `offset + 1`.
+- **Kiểm image trước mọi lần nhảy**, kể cả ở `CONFIRMED` và `TRIAL`, không có ngoại lệ. Phải đạt cả: magic, CRC32 của header, mã phần cứng, `size` ≤ slot, SHA-256 của phần thân, MSP và reset vector (§11.1).
+  - Ở `TRIAL`, kiểm thất bại thì chuyển `RESTORE(0)`, không bao giờ nhảy vào image hỏng.
+- **Bộ đếm số lần thử được lưu qua reset:**
+  - Trước khi bắt đầu một checkpoint, bootloader ghi bản ghi với `attempts + 1`.
+  - Xong checkpoint thì ghi `offset + 1, attempts = 0`.
+  - Vì vậy một lần treo hay reset giữa chừng đã được đếm trước khi nó xảy ra.
+  - `attempts` > 3 tại cùng một checkpoint: với `BACKUP`, hủy cài (`CONFIRMED`, giữ image đang chạy); với `WRITE` và `RESTORE`, vào cứu hộ.
+- **SPI4 lỗi** (đọc lỗi hoặc quá deadline khi ghi bản ghi):
+  - nếu image QSPI hợp lệ: chạy nó ở chế độ `degraded`, không đổi trạng thái, app ghi cảnh báo vào log và **từ chối OTA** (409);
+  - nếu image QSPI không hợp lệ: cứu hộ.
+- Mỗi checkpoint 64 KB gồm: xóa các sector 4 KB của đích (16 sector, riêng checkpoint cuối làm tròn theo §5.2), ghi theo page, đọc lại so sánh với nguồn, rồi ghi `offset + 1`.
   - Mất điện giữa chừng thì lần boot sau làm lại đúng checkpoint đó.
   - Nguồn chép không bao giờ bị đụng tới: staging trong `WRITE`, QSPI trong `BACKUP`, backup trong `RESTORE`.
 - **Watchdog:** bootloader kick WDI trong mọi vòng lặp, nhưng mỗi thao tác flash có **deadline** bằng 2 lần thời gian tối đa trong datasheet GD25Q32E (xóa sector, ghi page, ghi thanh ghi trạng thái).
   - Hết deadline thì **ngừng kick**, để SGM706 reset board.
-  - Lần boot sau làm lại checkpoint đang dở. Thất bại 3 lần liên tiếp tại cùng một checkpoint thì vào cứu hộ.
+  - Lần boot sau làm lại checkpoint đang dở. Số lần thử được đếm bằng `attempts`, theo quy tắc ở trên.
   - Như vậy watchdog không thể bị "nuôi" vô hạn khi flash bị kẹt.
 - **Chế độ cứu hộ:** LED WORK nháy nhanh, chỉ nạp lại được qua SWD.
 
@@ -825,9 +908,20 @@ Logic trạng thái và cài đặt viết trong `boot/install.c` bằng C thu�
 | Tương đương Edge | Chạy các payload trong mock của UI và trong bộ test cũ (thu về ≤ 100 điểm), cộng thêm các payload đặc biệt: <br>• gửi ít trường nhưng văn bản chuẩn hóa lớn (sát 48 KB); <br>• nhiều lỗi cùng lúc, kiểm câu báo lỗi **đầu tiên**; <br>• thứ tự thiết bị và node bị đảo; <br>• tên khác nhau nhưng trùng hash; <br>• trùng ID với thiết bị không map, chồng thanh ghi với node không map. <br>Kết quả phải giống từng byte với `cfg_validate` nguyên khối |
 | Arena | Chạy đúng bộ TLSF trên vùng 64 KB, giả lập kích thước node cJSON 32-bit, tính cả phân mảnh. Kiểm: <br>• đỉnh của payload lớn nhất của **từng** cấu hình; <br>• đỉnh của mô hình Edge 100 điểm; <br>• arena bị poison ở `arena_end` để bắt truy cập sau khi phạm vi kết thúc (template report, chuỗi); <br>• hết bộ nhớ không bao giờ sinh ra cấu hình thiếu trường |
 | Store Edge | `POST` và `GET` chạy xen nhau (generation bị ghim), dọn generation cũ và bản ghi mồ côi sau mất điện ở từng bước commit, FlashDB dọn rác trong lúc `GET` |
-| Bootloader | NOR giả lập mô hình được **ghi dở**: một page hay một sector chỉ ghi hoặc xóa được một phần khi bị cắt điện. Cắt điện tại **mọi** thao tác ghi và xóa của: <br>• bản ghi trạng thái; <br>• mọi pha (BACKUP, WRITE, VERIFY, RESTORE); <br>• lúc tăng `trial`, lúc xác nhận. <br>Thêm các trường hợp: staging hỏng, backup hỏng, cả hai bản ghi hỏng, flash trắng, `seq` quay vòng, image ngắn nhất và dài nhất, lỗi flash (deadline), mất điện liên tiếp trong lúc `RESTORE`. Điều kiện đạt: lần nào cũng kết thúc ở một image hợp lệ, hoặc ở chế độ cứu hộ khi cả hai image thật sự hỏng |
-| MQTT | Adapter transport (đọc một phần, AGAIN, EOF, lỗi). Outbox: mất kết nối ở từng bước QoS 1/2, Session Present 0 và 1, clean session, hết hạn chỉ áp dụng cho `QUEUED`, giới hạn 64 KB, `bufferOffline`. Byte của gói CONNECT 3.1 và 3.1.1 |
-| CMUX | Mã hóa và giải mã frame, FCS, frame bị cắt, trường độ dài 1 và 2 byte (kể cả đúng 2048 byte), tái đồng bộ sau rác, SABM/UA kèm T1 và N2, DM/DISC, MSC/FCon/FCoff, CLD |
+| Bootloader | NOR giả lập mô hình được **ghi dở**: một page hay một sector chỉ ghi hoặc xóa được một phần khi bị cắt điện. Cắt điện tại **mọi** thao tác ghi và xóa của: <br>• bản ghi trạng thái; <br>• mọi pha (BACKUP, WRITE, VERIFY, RESTORE); <br>• lúc tăng `trial`, lúc xác nhận. <br>Thêm các trường hợp:
+• staging hỏng, backup hỏng, cả hai bản ghi hỏng, flash trắng, `seq` quay vòng;
+• image ngắn nhất và dài nhất;
+• lỗi flash (deadline), mất điện liên tiếp trong lúc `RESTORE`;
+• **RESTORE xong mà SHA sai**;
+• **`attempts` vượt 3** ở từng pha;
+• **image hỏng khi đang `TRIAL`**: phải không nhảy vào;
+• **SPI4 lỗi**: chạy `degraded`;
+• cắt điện đúng lúc ghi `attempts`.
+ Điều kiện đạt: lần nào cũng kết thúc ở một image hợp lệ, hoặc ở chế độ cứu hộ khi cả hai image thật sự hỏng |
+| MQTT | Adapter transport (đọc một phần, AGAIN, EOF, lỗi). Outbox: mất kết nối ở từng bước QoS 1/2, Session Present 0 và 1 (3.1.1), **3.1 với `cleanSession` 0 và 1** (bản vá đặt `sessionPresent`), clean session, hết hạn chỉ áp dụng cho `QUEUED`, giới hạn 64 KB, `bufferOffline`, đăng ký lại subscribe. Byte của gói CONNECT 3.1 và 3.1.1 |
+| CMUX | Mã hóa và giải mã frame, FCS, frame bị cắt, trường độ dài 1 và 2 byte (kể cả đúng 2048 byte), tái đồng bộ sau rác, SABM/UA kèm T1 và N2, DM/DISC, CLD. **FCoff/FCon dừng và tiếp toàn bộ mux; MSC dừng và tiếp đúng một DLC**, có trả response, Test và NSC. **Luồng PPP có nhiều `0x7D`/`0x7E`** (sau escape dài gần gấp đôi) bị cắt thành nhiều frame ≤ N1 rồi ghép lại đúng. `pppos_input_tcpip` trả `ERR_MEM`: thử lại 3 lần rồi bỏ và đếm |
+| ADC (logic C thuần) | Bàn giao hai nửa buffer: đọc đúng nửa đã đầy; `seq` đổi trong lúc cộng thì bỏ cửa sổ và đếm `adc_late`; chưa có cửa sổ đầu tiên thì không công bố giá trị; lỗi thì cả hai kênh failed; trình tự phục hồi; đổi mã sang mA kèm hiệu chuẩn hai điểm; factory record thiếu hoặc CRC sai thì dùng hệ số danh định |
+| Cấu hình nhỏ | Văn bản chuẩn hóa lớn nhất của từng cấu hình (chuỗi dài tối đa, toàn ký tự phải escape) ≤ 10 KB. Vòng `POST → GET → POST` cho ra cùng văn bản |
 | Cắt frame RTU | Logic t1.5/t3.5 viết dưới dạng C thuần, đầu vào là chuỗi dấu thời gian của từng byte: khoảng hở < t1.5, trong [t1.5, t3.5), và ≥ t3.5. Baud > 19200 dùng giá trị cố định |
 
 ### 12.2 Bench HIL (`test/bench`)
@@ -857,6 +951,9 @@ Logic trạng thái và cài đặt viết trong `boot/install.c` bằng C thu�
   - multicast;
   - `wdiMaxGapMs` trong lúc OTA, lúc FlashDB dọn rác và lúc format lần đầu;
   - **OTA bị cắt điện ngẫu nhiên 20 lần.** Đây là smoke test; phần fault injection có chủ đích nằm ở host test của bootloader.
+  - **Flood LAN:** bơm broadcast 90 Mbit/s trong lúc UART1 chạy liên tục ở 230400 baud và PPP đang tải. Điều kiện đạt: `overrun` = 0 trên UART1 và UART3, Web UI vẫn trả lời, `wdiMaxGapMs` < 400 ms (§6.1).
+  - **ADC:** mọi tiêu chí trong bảng nghiệm thu ở §6.6, kiểm bằng nguồn dòng chuẩn và bộ bơm nhiễu 50/60 Hz.
+  - **MQTT QoS:** ngắt kết nối ở từng pha QoS 1/2, với 3.1 và 3.1.1, `cleanSession` 0 và 1 (§8).
 
 ### 12.3 Kiểm bộ nhớ
 
@@ -864,7 +961,7 @@ Hai cổng không thể đồng thời vừa là TCP server vừa là TCP/TLS cl
 
 | Kịch bản | Cấu hình |
 |---|---|
-| A: nhiều kết nối | UART1 và UART2 đều là TCP server, mỗi cổng 16 client. MQTT có TLS. 4 client WebSocket. Edge 100 điểm, 5 thiết bị Modbus TCP |
+| A: nhiều kết nối | UART1 và UART2 đều là TCP server, mỗi cổng 16 client. MQTT có TLS. 4 client WebSocket. Edge 100 điểm, 5 thiết bị Modbus TCP, **template report 100 slot** (buffer 26 KB) |
 | B: nhiều TLS | UART1 là TCP client có TLS, UART2 là HTTPS client. MQTT có TLS, ba handshake chạy cùng lúc. Outbox đầy (broker tắt, `bufferOffline`). Một HTTP client tải chậm UI. FlashDB đang dọn rác |
 
 Bộ test đọc `/api/status.mem` sau mỗi kịch bản. Điều kiện đạt:
@@ -888,10 +985,10 @@ Ngoài ra, file map của linker phải cho thấy mỗi section nằm trong ng�
 | Mục | ESP32 (GW100) | STM32 (H750) |
 |---|---|---|
 | Cổng nối tiếp | 1 × RS485. Schema đã có sẵn `port2`, nhưng bị tắt theo phần cứng (`cfgmodel.c:178`) | UART1 (RS485 và RS232 song song) và UART2 (RS485), bật `port2` |
-| AI | 1, khoảng 12 bit hiệu dụng, đọc bằng phần mềm | 2, ADC3 16 bit, VREF 3,0 V. Oversampling ×16 bằng phần cứng, timer kích 1 kHz, BDMA vòng, trung bình 100 ms để triệt nhiễu 50 Hz và 60 Hz |
+| AI | 1, khoảng 12 bit hiệu dụng, đọc bằng phần mềm | 2, ADC3 16 bit, VREF 3,0 V. Oversampling ×16 bằng phần cứng, TIM6 kích 1 kHz, BDMA vòng với hai nửa, trung bình 100 ms, hiệu chuẩn hai điểm lấy từ factory record. Tiêu chí định lượng ở §6.6 |
 | TLS bridge | Chỉ UART1 | Cả hai cổng |
 | Edge | 300 điểm, body 96 KB | **100 điểm, 64 thiết bị, body và văn bản chuẩn hóa ≤ 48 KB** |
-| Body của các cấu hình khác | 96 KB | **6 KB** |
+| Body của các cấu hình khác | 96 KB | **10 KB**, kể cả văn bản chuẩn hóa |
 | `bufferOffline` | 64 KB | **32 KB mỗi cổng** |
 | Ring `mqtt_io` | 2 × 16 KB | **2 × 12 KB** |
 | Telnet, RFC 2217, PUSR VCOM | Có | **Bỏ** |
@@ -913,7 +1010,8 @@ Ngoài ra, file map của linker phải cho thấy mỗi section nằm trong ng�
 | Hiệu năng XIP (TLS handshake, Edge 10 ms) | Đưa code nóng vào ITCM. Đo thời gian handshake và độ trễ linkage trên bench |
 | Cache và DMA (ETH, USART, SPI4) | Quy tắc §5.4. Test bench có tải lớn |
 | Ngân sách RAM | File map của linker và `/api/status.mem` với hai kịch bản (§12.3). Nếu thiếu, giảm `MEM_SIZE` hoặc số client WebSocket trước khi đụng tới tính năng |
-| Timing của EC600U (thời gian chờ UART sẵn sàng, xung RESET_N) | Lấy từ EC600U Hardware Design V1.3 §3.7–3.9 khi viết driver, ghi vào bảng ở §7.2 |
+| Thời gian EC600U cần để UART sẵn sàng | Đo trên bench, rồi đặt deadline theo quy tắc ở §7.2 (mặc định 15 s) |
+| Độ chính xác ADC: settling ở 64,5 cycle, sai số, nhiễu | Bảng nghiệm thu ở §6.6. Không đạt settling thì tăng lên 387,5 cycle |
 | CMUX theo phiên bản firmware của EC600U | Ghi `AT+QGMR` vào log. Giữ đường dự phòng PPP thẳng |
 | UART3 không có RTS/CTS | DMA 4 KB với HT, TC, IDLE. Bench tải liên tục, `overrun` = 0 |
 | t1.5/t3.5 trên phần cứng | Logic analyzer và bộ phát RS485 có kiểm soát timing (§12.2) |

@@ -49,7 +49,7 @@ Prototype numbers on the board:
 ## Global Constraints
 
 - **Clocks** (bootloader, frozen):
-  - HSE 25 MHz crystal; PLL1 M=5 N=192 P=2 Q=4 R=2, giving SYSCLK 480 MHz;
+  - HSE 25 MHz crystal; PLL1 M=5 N=192 P=2 Q=6 R=2, giving SYSCLK 480 MHz and pll1_q_ck 160 MHz (QSPI);
   - VOS0, LDO supply, flash latency 4;
   - AHB ÷2 (240 MHz), APB1–4 ÷2 (120 MHz each);
   - QSPI kernel clock = pll1_q_ck 160 MHz (DIVQ1 = 6; ES0392 §2.7.6 wants an even division).
@@ -229,12 +229,15 @@ git commit -m "stm32 spec: IWDG1 as reset source (R20 not fitted), app owns PLL2
 The sources are the GitHub releases already cloned in `~/opt/st`. The step checks each checkout's tag and commit before copying.
 
 ```bash
+bash -euo pipefail <<'STEP'
 ST=~/opt/st
 for p in "stm32h7xx-hal-driver-v1.11.6 v1.11.6 a1996eed9172b59887bafaaa0ea1816ea14d48b5" \
          "cmsis-device-h7-v1.10.7 v1.10.7 8f922cdc7cc6de2344e75ddd657889f4ff761790" \
          "cmsis-core-v5.9.0_20250520 v5.9.0_20250520 b7487de1303e2eb77c402432e368691e9dcfb5f0" \
          "FreeRTOS-Kernel-V11.3.1 V11.3.1 3a22924e0a9ddbbc8b0758881c33b3422a5cc20d"; do
-  set -- $p; test "$(git -C $ST/$1 describe --tags) $(git -C $ST/$1 rev-parse HEAD)" = "$2 $3" && echo "pinned $1" || { echo "NOT PINNED: $1"; break; }
+  set -- $p
+  [ "$(git -C $ST/$1 describe --tags) $(git -C $ST/$1 rev-parse HEAD)" = "$2 $3" ] || { echo "NOT PINNED: $1"; exit 1; }
+  echo "pinned $1"
 done
 H=stm32/firmware/third_party/stm32cube_h7/Drivers
 mkdir -p $H/STM32H7xx_HAL_Driver $H/CMSIS/Include $H/CMSIS/Device/ST/STM32H7xx/Include $H/CMSIS/Device/ST/STM32H7xx/Source/Templates
@@ -251,9 +254,10 @@ cp -r $ST/FreeRTOS-Kernel-V11.3.1/include $R/
 cp -r $ST/FreeRTOS-Kernel-V11.3.1/portable/GCC/ARM_CM4F $R/portable/GCC/
 cp $ST/FreeRTOS-Kernel-V11.3.1/portable/MemMang/heap_5.c $R/portable/MemMang/
 grep -c "{0, 0, 0, 0, 1, 2, 3, 4, 1, 2, 3, 4, 6, 7, 8, 9}" $H/CMSIS/Device/ST/STM32H7xx/Source/Templates/system_stm32h7xx.c
+STEP
 ```
 
-Expected: four `pinned …` lines, then `1` (the fixed prescaler table, B3). On a `NOT PINNED` line, stop: the cache in `~/opt/st` is not the reviewed release.
+Expected: four `pinned …` lines, then `1` (the fixed prescaler table, B3). On a `NOT PINNED` line the step exits with an error before copying anything: the cache in `~/opt/st` is not the reviewed release.
 
 Create `stm32/firmware/third_party/stm32cube_h7/README.md`:
 
@@ -1115,7 +1119,7 @@ git commit -m "stm32 board: tick64 (now_us extension), crc32, bootloader jump ch
   - **Bootloader:** `void boot_early(void);`, `void boot_main(void);`.
   - **Build:** `build/h750/boot.elf` and `boot.bin`, from the CMake target `boot`.
   - **Flashing:** `tools/flash.sh boot|app|both|blank [BUILD_DIR]`.
-  - **Bench:** `board.listen(seconds, sends=(), during=None) -> [(ms, line)]`, `board.hard_reset()` and `board.openocd(commands) -> str` (needs Task 6's `tools/openocd/` files).
+  - **Bench:** `board.listen(seconds, sends=(), during=None) -> [(ms, line)]`, `board.hard_reset()` and `board.openocd(commands, boot_elf=None) -> str` (raises on an OpenOCD error; needs Task 6's `tools/openocd/` files).
   - **Boot log lines** later tasks parse: `SBIOT-H750 boot 0.2.0 rsr=XXXXXXXX sysclk=480000000`, `boot: qspi id c84016`, `boot: jump msp XXXXXXXX pc XXXXXXXX`, `boot: no valid app (msp …, reset …)`.
 
 - [ ] **Step 1: Toolchain file and presets**
@@ -1701,14 +1705,35 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OCD_DIR = os.path.normpath(os.path.join(HERE, '../../tools/openocd'))
 
 
-def openocd(commands):
+def symbol(elf, name):
+    """Address of `name` in `elf` (arm-none-eabi-nm on PATH)."""
+    out = subprocess.run(['arm-none-eabi-nm', elf], capture_output=True, text=True, check=True).stdout
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[2] == name:
+            return int(parts[0], 16)
+    raise RuntimeError('%s not in %s' % (name, elf))
+
+
+def openocd(commands, boot_elf=None):
     """Runs OpenOCD (Windows build) with tools/openocd/sbiot-h750.cfg and qspi_hostile.tcl, then the
-    given Tcl commands. Returns its output. The Windows paths are computed before changing to C:."""
+    given Tcl commands, and returns its output (OpenOCD's echo writes to stderr, so both streams).
+    With boot_elf, the Tcl variables ERRATA_FN (qf_errata_timing) and PARK (Default_Handler, used as
+    a return address with a hardware breakpoint) are set first. Raises when OpenOCD fails, so a Tcl
+    `error` in a hostile proc fails the test. The Windows paths are computed before changing to C:."""
     win = lambda path: subprocess.run(['wslpath', '-w', path], capture_output=True, text=True, check=True).stdout.strip()
+    pre = ''
+    if boot_elf:
+        pre = 'set ERRATA_FN 0x%08x; set PARK 0x%08x; ' % (symbol(boot_elf, 'qf_errata_timing'),
+                                                           symbol(boot_elf, 'Default_Handler'))
     args = [OPENOCD + '/bin/openocd.exe', '-s', win(OPENOCD + '/openocd/scripts'),
             '-f', win(OCD_DIR + '/sbiot-h750.cfg'), '-f', win(OCD_DIR + '/qspi_hostile.tcl'),
-            '-c', 'init; ' + commands + '; shutdown']
-    return subprocess.run(args, cwd='/mnt/c', capture_output=True, text=True).stdout
+            '-c', 'init; ' + pre + commands + '; shutdown']
+    r = subprocess.run(args, cwd='/mnt/c', capture_output=True, text=True)
+    out = r.stdout + r.stderr
+    if r.returncode != 0:
+        raise RuntimeError('openocd exit %d:\n%s' % (r.returncode, out[-2000:]))
+    return out
 
 
 if __name__ == '__main__':  # python3 board.py SECONDS: print what UART7 says after a reset
@@ -2798,12 +2823,21 @@ def main():
     app_bin = open(os.path.join(build, 'app.bin'), 'rb').read()
     if '--hostile' in sys.argv:
         # Review Focus 1: a reset while the flash is in continuous-read mode or busy erasing.
+        boot_elf = os.path.join(build, 'boot.elf')
         for proc, what in [('qspi_hostile_continuous', 'continuous-read mode'), ('qspi_hostile_erase', 'a running sector erase')]:
             for n in range(3):
                 out = []
-                b = boots(board.listen(5, during=lambda: out.append(board.openocd(proc))))
-                note = [l for l in ''.join(out).splitlines() if l.startswith('hostile:')]
-                check(len(b) == 1 and len(note) == 1, 'reset during %s %d: one complete boot (%s)' % (what, n + 1, note))
+
+                def run(proc=proc):  # runs in board.listen's thread: keep an error as text, never lose it
+                    try:
+                        out.append(board.openocd(proc, boot_elf))
+                    except Exception as e:  # noqa: BLE001
+                        out.append('ERROR %s' % e)
+
+                b = boots(board.listen(6, during=run))
+                note = [l.strip() for l in ''.join(out).splitlines() if l.strip().startswith(('hostile:', 'ERROR'))]
+                ok = len(b) == 1 and len(note) == 1 and note[0].startswith('hostile:')
+                check(ok, 'reset during %s %d: one complete boot (%s)' % (what, n + 1, note))
     elif '--cold' in sys.argv:
         print('power-cycle the board now (60 s)...', flush=True)
         b = boots(board.listen(60))
@@ -2877,10 +2911,50 @@ Create `stm32/firmware/tools/openocd/qspi_hostile.tcl`:
 
 ```tcl
 # Puts the running board's GD25Q32E into states a warm reset can meet, then resets the MCU with
-# SYSRESETREQ (Plan 02, Review Focus 1). Each proc halts the core, leaves memory-mapped mode with
-# ABORT, sends raw QUADSPI commands (bank 2 stays selected in CR) and ends with "reset run".
+# SYSRESETREQ (Plan 02, Review Focus 1). Each proc halts the core, leaves memory-mapped mode, sends
+# raw QUADSPI commands and ends with "reset run". Any failed check raises a Tcl error, which makes
+# OpenOCD exit non-zero (test/bench/board.py's openocd() then raises).
+# Needs ERRATA_FN (qf_errata_timing in boot.elf) and PARK (Default_Handler in boot.elf), set by openocd().
 set QSPI 0x52005000
-proc qspi_wait {} { global QSPI; while {[expr {[read_memory [expr {$QSPI + 0x08}] 32 1] & 0x20}]} {} }
+
+proc qspi_wait {} {
+    global QSPI
+    for {set i 0} {$i < 1000} {incr i} {
+        if {!([read_memory [expr {$QSPI + 0x08}] 32 1] & 0x20)} { return }
+    }
+    error "QUADSPI stays BUSY"
+}
+
+# Runs qf_errata_timing() on the MCU, in the bootloader's internal flash: the ES0392 §2.7.4
+# sequence needs its 127-kernel-clock window, which register writes over SWD cannot keep. The
+# function returns to PARK, where a hardware breakpoint halts the core again.
+proc run_errata_on_mcu {} {
+    global ERRATA_FN PARK
+    reg primask 1
+    reg xpsr 0x01000000
+    reg lr [expr {$PARK | 1}]
+    reg pc [expr {$ERRATA_FN & ~1}]
+    bp [expr {$PARK & ~1}] 2 hw
+    resume
+    wait_halt 1000
+    rbp [expr {$PARK & ~1}]
+    if {([lindex [reg pc] 2] & ~1) != ($PARK & ~1)} { error "qf_errata_timing did not return" }
+}
+
+# Halts, aborts memory-mapped mode, applies the workaround, then restores DCR and CR (bank 2, prescaler).
+proc qspi_leave_mapped {} {
+    global QSPI
+    halt
+    set cr [read_memory $QSPI 32 1]
+    set dcr [read_memory [expr {$QSPI + 0x04}] 32 1]
+    mmw $QSPI 0x2 0
+    qspi_wait
+    run_errata_on_mcu
+    mww [expr {$QSPI + 0x04}] $dcr
+    mww $QSPI $cr
+}
+
+# One indirect command; fails on TEF and when the transfer does not complete (TCF).
 proc qspi_cmd {ccr {ar ""} {dlr ""}} {
     global QSPI
     mww [expr {$QSPI + 0x0C}] 0x1B                       ;# FCR: clear the flags
@@ -2888,7 +2962,13 @@ proc qspi_cmd {ccr {ar ""} {dlr ""}} {
     mww [expr {$QSPI + 0x14}] $ccr                       ;# CCR: starts at once without an address phase
     if {$ar ne ""} { mww [expr {$QSPI + 0x18}] $ar }     ;# AR: starts the command
 }
-proc qspi_leave_mapped {} { global QSPI; halt; mmw $QSPI 0x2 0; qspi_wait }
+proc qspi_done {} {
+    global QSPI
+    qspi_wait
+    set sr [read_memory [expr {$QSPI + 0x08}] 32 1]
+    if {$sr & 0x1} { error [format "QUADSPI transfer error (SR %08x)" $sr] }
+    if {!($sr & 0x2)} { error [format "QUADSPI transfer not complete (SR %08x)" $sr] }
+}
 
 # EBh with M7-0 = A0h (M5-4 = 10b): afterwards the flash takes the next clocks as an address.
 # CCR: indirect read (01), data 4 lines, 4 dummy, alternate 8 bit on 4 lines, address 24 bit on
@@ -2898,22 +2978,25 @@ proc qspi_hostile_continuous {} {
     qspi_leave_mapped
     mww [expr {$QSPI + 0x1C}] 0xA0                       ;# ABR
     qspi_cmd 0x0710EDEB 0x0 3
-    sleep 2
-    set d [read_memory [expr {$QSPI + 0x20}] 32 1]       ;# one 32-bit read pops the 4 bytes at 0x0 (header: FFh)
-    echo "hostile: continuous-read mode entered (read $d)"
+    set d [read_memory [expr {$QSPI + 0x20}] 32 1]       ;# one 32-bit read pops the 4 bytes at 0x0
+    qspi_done
+    if {$d != 0xffffffff} { error [format "EBh read %08x, expected the erased header" $d] }
+    echo [format "hostile: continuous-read mode entered (read %08x)" $d]
     reset run
 }
 
 # WREN, then sector erase 20h of the spare block 0x3E0000 (tSE 45-300 ms): the reset lands while
-# the flash is busy. SR1 is read back to show WIP = 1.
+# the flash is busy. SR1 must show WIP before the reset.
 proc qspi_hostile_erase {} {
     global QSPI
     qspi_leave_mapped
-    qspi_cmd 0x00000106; qspi_wait                       ;# 06h
-    qspi_cmd 0x00002520 0x003E0000; qspi_wait            ;# 20h, address on 1 line
-    qspi_cmd 0x05000105 "" 0; sleep 1                    ;# 05h: read SR1, 1 byte
+    qspi_cmd 0x00000106; qspi_done                       ;# 06h
+    qspi_cmd 0x00002520 0x003E0000; qspi_done            ;# 20h, address on 1 line
+    qspi_cmd 0x05000105 "" 0                             ;# 05h: read SR1, 1 byte
     set sr1 [read_memory [expr {$QSPI + 0x20}] 8 1]
-    echo "hostile: sector erase running (SR1 $sr1)"
+    qspi_done
+    if {!($sr1 & 0x1)} { error [format "sector erase not running (SR1 %02x)" $sr1] }
+    echo [format "hostile: sector erase running (SR1 %02x)" $sr1]
     reset run
 }
 ```
@@ -2926,7 +3009,7 @@ First check that halting the running app for 5 s causes no reset (IWDG1 is froze
 python3 - <<'EOF'
 import sys; sys.path.insert(0, 'stm32/firmware/test/bench'); import board
 out = board.openocd('halt; sleep 5000; resume; sleep 300; echo "rsr=[read_memory 0x58024530 32 1]"')
-print([l for l in out.splitlines() if l.startswith('rsr=')])
+print([l.strip() for l in out.splitlines() if l.strip().startswith('rsr=')])
 for ms, l in board.listen(2.5, sends=[(1.5, 'i')]): print(l)
 EOF
 ```
@@ -2941,8 +3024,8 @@ Then the hostile resets:
 
 Run: `python3 stm32/firmware/test/bench/boot_check.py stm32/firmware/build/h750 --hostile`
 Expected:
-- three `ok   reset during continuous-read mode N: one complete boot (['hostile: continuous-read mode entered (read 0xffffffff)'])` lines;
-- three `ok   reset during a running sector erase N: one complete boot (['hostile: sector erase running (SR1 0x03)'])` lines, where SR1 0x03 means WIP and WEL are set;
+- three `ok   reset during continuous-read mode N: one complete boot (['hostile: continuous-read mode entered (read ffffffff)'])` lines;
+- three `ok   reset during a running sector erase N: one complete boot (['hostile: sector erase running (SR1 03)'])` lines, where SR1 03 means WIP and WEL are set;
 - `bench: ok`.
 
 If the continuous-read case fails while the erase case passes, the 10-clock exit of `qf_init` is the suspect.

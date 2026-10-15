@@ -70,6 +70,75 @@ def listen(seconds, sends=(), during=None, during_timeout=120):
     return lines
 
 
+# The bench OTA upload (app console 'u', app/bench_ota.h): the image goes in 4 KB blocks, each one
+# only after the app acknowledged the one before, then the port stays open to see the reboot.
+_PS_UPLOAD = r"""
+$img = [IO.File]::ReadAllBytes('%(file)s')
+$p = New-Object System.IO.Ports.SerialPort '%(port)s', 115200
+$p.Open(); Start-Sleep -Milliseconds 50; $p.DiscardInBuffer()
+$w = [Diagnostics.Stopwatch]::StartNew(); $buf = ''; $sent = 0; $state = 'wait-ready'; $end = %(ms)d
+$p.Write([byte[]][char[]]'%(cmd)s', 0, 1); $p.Write([BitConverter]::GetBytes([uint32]$img.Length), 0, 4)
+while ($w.ElapsedMilliseconds -lt $end) {
+  $buf += $p.ReadExisting()
+  while (($n = $buf.IndexOf("`n")) -ge 0) {
+    $line = $buf.Substring(0, $n).TrimEnd("`r"); $buf = $buf.Substring($n + 1)
+    [Console]::Out.WriteLine([string]$w.ElapsedMilliseconds + '|' + $line)
+    $go = ($state -eq 'wait-ready' -and $line -match '^ota: ready \d+ 0$') -or ($state -eq 'sending' -and $line -match '^ota: \d+$')
+    if ($line -match '^ota: (done|timeout|no length)' -or ($line -match '^ota: ready' -and -not $go)) { $state = 'after' }
+    if (%(stop)s -and $line -match '^ota: done') { $end = $w.ElapsedMilliseconds }
+    if ($go -and $sent -lt $img.Length -and $sent -lt %(limit)d) {
+      $k = [Math]::Min(4096, $img.Length - $sent); $p.Write($img, $sent, $k); $sent += $k; $state = 'sending'
+    }
+  }
+  Start-Sleep -Milliseconds 2
+}
+$p.Close()
+"""
+
+
+def upload(image, seconds, stop_at_done=False, reset=True, send=None):
+    """Streams the file `image` into staging through the app console and reads UART7 for `seconds`
+    in all (upload, reset, the bootloader's install, the new app), or only until "ota: done" with
+    stop_at_done (to reset the board in the middle of the install). reset=False uses console 'U'
+    (the app does not reset). send=N announces the whole file but sends only its first N bytes
+    (rounded up to a block): an upload cut off. Returns [(ms, line)]."""
+    stage = subprocess.run(['powershell.exe', '-NoProfile', '-Command', '$env:USERPROFILE'], cwd='/mnt/c',
+                           capture_output=True, text=True).stdout.strip()
+    win_dir = stage + r'\sbiot'
+    wsl_dir = subprocess.run(['wslpath', '-u', win_dir], capture_output=True, text=True).stdout.strip()
+    os.makedirs(wsl_dir, exist_ok=True)
+    name = 'upload_' + os.path.basename(image)
+    with open(image, 'rb') as src, open(os.path.join(wsl_dir, name), 'wb') as dst:
+        dst.write(src.read())
+    script = _PS_UPLOAD % {'port': COM, 'ms': int(seconds * 1000), 'file': win_dir + '\\' + name,
+                           'stop': '$true' if stop_at_done else '$false', 'cmd': 'u' if reset else 'U',
+                           'limit': send if send is not None else 1 << 30}
+    enc = base64.b64encode(script.encode('utf-16-le')).decode()
+    out = subprocess.run(['powershell.exe', '-NoProfile', '-EncodedCommand', enc], cwd='/mnt/c',
+                         capture_output=True, text=True).stdout
+    lines = []
+    for raw in out.splitlines():
+        ms, sep, line = raw.partition('|')
+        if sep and ms.isdigit():
+            lines.append((int(ms), line))
+    return lines
+
+
+def qspi_read32(addr, words):
+    """QSPI words at `addr` over SWD with the team's loader (CubeProgrammer, under reset): proves
+    what the flash really holds, independently of the firmware."""
+    loader = os.path.join(os.path.dirname(CLI), 'ExternalLoader', 'STM32H750VBT6_GD25Q32ESIG.stldr')
+    win = subprocess.run(['wslpath', '-w', loader], capture_output=True, text=True, check=True).stdout.strip()
+    out = subprocess.run([CLI, '-c', 'port=SWD', 'mode=UR', '-el', win, '-r32', '0x%08X' % addr, str(words * 4)],
+                         cwd='/mnt/c', capture_output=True, text=True).stdout
+    vals = []
+    for line in out.splitlines():
+        head, sep, rest = line.partition(' : ')
+        if sep and head.strip().lower().startswith('0x9'):
+            vals += [int(w, 16) for w in rest.split()]
+    return vals[:words]
+
+
 def hard_reset():
     """Pulses NRST through the ST-Link."""
     subprocess.run([CLI, '-c', 'port=SWD', 'mode=HOTPLUG', '-hardRst'], cwd='/mnt/c', capture_output=True, check=True)

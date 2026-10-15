@@ -1,11 +1,13 @@
 #!/bin/bash
-# Flashes over SWD with STM32CubeProgrammer (spec §12.4): boot.bin into internal flash, app.bin into
+# Flashes over SWD with STM32CubeProgrammer (spec §12.4): boot.bin into internal flash, app.img into
 # QSPI bank 2 through the board's external loader, then resets the board. Run from WSL.
 #   stm32/firmware/tools/flash.sh boot|app|both|blank [BUILD_DIR]
 #   stm32/firmware/tools/flash.sh bind KEY|dev [BUILD_DIR]
 # "blank" programs the first 4 KB of the QSPI slot to 0xFF (header and vector table erased).
 # "bind" reads the chip's UID and writes its anti-clone record, signed with the private KEY
 # (tools/provision.py), at QSPI 0x903F0000 (spec §11.5). Do it before RDP Level 1 is set.
+# Bench only: SBIOT_BIND_UID=<24 hex digits> signs for that UID instead, which makes the board look
+# like it carries a record copied from another chip (test/bench/ota_check.py, the clone case).
 set -euo pipefail
 usage() { echo "usage: flash.sh boot|app|both|blank [BUILD_DIR] | bind KEY|dev [BUILD_DIR]" >&2; exit 2; }
 what=${1:-}
@@ -50,10 +52,11 @@ case "$what" in boot|both)
     prog -c port=SWD mode=UR -w "$(wslpath -w "$stage/boot.bin")" 0x08000000 -v
     echo "flash: boot.bin ($(stat -c %s "$build/boot.bin") bytes) at 0x08000000 verified" ;;
 esac
-case "$what" in app|both) qspi "$build/app.bin" ;; esac
+case "$what" in app|both) qspi "$build/app.img" ;; esac
 if [ "$what" = bind ]; then
     "$CLI" -c port=SWD mode=UR -r32 0x1FF1E800 12 > "$build/uid.txt" 2>&1 || true
     uid=$(python3 "$tools/provision.py" uid "$build/uid.txt") || { tail -5 "$build/uid.txt"; echo "flash: cannot read the UID"; exit 1; }
+    uid=${SBIOT_BIND_UID:-$uid}
     python3 "$tools/provision.py" record "$key" "$uid" "$build/bind.bin"
     qspi "$build/bind.bin" 0x903F0000
     echo "flash: bound to UID $uid"

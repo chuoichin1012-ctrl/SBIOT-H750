@@ -27,13 +27,13 @@ COMMON = {
     'PC10': 'GPIO_Output', 'PE11': 'GPIO_Output', 'PD10': 'GPIO_Output', 'PD11': 'GPIO_Output',
     'PD14': 'GPIO_Output', 'PD15': 'GPIO_Output', 'PA5': 'GPIO_Output', 'PA4': 'GPIO_Output',
     'PD13': 'GPIO_Output', 'PE4': 'GPIO_Output', 'PA8': 'GPIO_Input', 'PB7': 'GPIO_Input', 'PB6': 'GPIO_Input',
+    'PE2': 'SPI4_SCK', 'PE5': 'SPI4_MISO', 'PE6': 'SPI4_MOSI',  # the bootloader's OTA flash since Plan 04b
 }
 APP_ONLY = {
     'PA9': 'USART1_TX', 'PA10': 'USART1_RX', 'PA12': 'USART1_DE',
     'PD5': 'USART2_TX', 'PD6': 'USART2_RX', 'PD4': 'USART2_DE', 'PD8': 'USART3_TX', 'PD9': 'USART3_RX',
     'PA1': 'ETH_REF_CLK', 'PA2': 'ETH_MDIO', 'PA7': 'ETH_CRS_DV', 'PC1': 'ETH_MDC', 'PC4': 'ETH_RXD0',
     'PC5': 'ETH_RXD1', 'PB11': 'ETH_TX_EN', 'PB12': 'ETH_TXD0', 'PB13': 'ETH_TXD1',
-    'PE2': 'SPI4_SCK', 'PE5': 'SPI4_MISO', 'PE6': 'SPI4_MOSI',
     'PC2_C': 'ADC3_INP0', 'PC3_C': 'ADC3_INP1',
 }
 # GPIO label and level after MX_GPIO_Init: the safe state of spec §11.2 step 2.

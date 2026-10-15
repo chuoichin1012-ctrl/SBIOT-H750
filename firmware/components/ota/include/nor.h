@@ -10,7 +10,7 @@
 
 enum {
     NOR_OK = 0,
-    NOR_TIMEOUT = -1,  // the device did not finish within its deadline
+    NOR_ETIMEOUT = -1,  // the device did not finish within its deadline
     NOR_EIO = -2,      // bus or controller error
 };
 

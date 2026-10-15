@@ -3,7 +3,7 @@
 
     python3 stm32/firmware/test/bench/boot_check.py BUILD_DIR [--cold]
 
-Needs the board flashed with BUILD_DIR's boot.bin and app.bin (tools/flash.sh both). With --cold it
+Needs the board flashed with BUILD_DIR's boot.bin and app.img (tools/flash.sh both). With --cold it
 waits up to 60 s for the user to power-cycle the board instead of running the warm-boot cases.
 Prints one line per check and "bench: ok"; exits 1 on any failure.
 """
@@ -55,7 +55,7 @@ def infos(lines):
 
 def main():
     build = sys.argv[1]
-    app_bin = open(os.path.join(build, 'app.bin'), 'rb').read()
+    app_bin = open(os.path.join(build, 'app.img'), 'rb').read()  # the image with its header
     if '--hostile' in sys.argv:
         # Review Focus 1: a reset while the flash is in continuous-read mode or busy erasing.
         boot_elf = os.path.join(build, 'boot.elf')
@@ -89,7 +89,7 @@ def main():
         check(len(i) == 1 and 199000 <= i[0][2] <= 201000, 'wdog kicks every 200 ms')
         crc = [l for _, l in lines if l.startswith('app: image crc32=')]
         want = 'app: image crc32=%08x len=%d' % (zlib.crc32(app_bin), len(app_bin))
-        check(len(crc) == 1 and crc[0].startswith(want), 'XIP image reads back as app.bin (%s)' % (crc[0] if crc else '-'))
+        check(len(crc) == 1 and crc[0].startswith(want), 'XIP image reads back as app.img (%s)' % (crc[0] if crc else '-'))
 
         resets = 10
         b = boots(board.listen(1.0 + resets, sends=[(0.5 + n, 'r') for n in range(resets)]))

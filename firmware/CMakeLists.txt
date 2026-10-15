@@ -21,7 +21,7 @@ set(STRICT -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Werror)
 
 # HAL modules per image: the ones CubeMX copies for each .ioc.
 set(HAL_COMMON cortex rcc rcc_ex flash flash_ex gpio hsem dma dma_ex mdma pwr pwr_ex exti i2c i2c_ex qspi uart uart_ex)
-set(HAL_BOOT ${HAL_COMMON} iwdg)
+set(HAL_BOOT ${HAL_COMMON} iwdg spi spi_ex)
 set(HAL_APP ${HAL_COMMON} adc adc_ex eth eth_ex spi spi_ex tim tim_ex)
 
 function(hal_sources out)
@@ -74,10 +74,15 @@ endif()
 string(REGEX REPLACE "(..)" "0x\\1," BIND_PUB_BYTES ${BIND_PUB_HEX})
 configure_file(components/ota/bind_key.h.in ${CMAKE_BINARY_DIR}/gen/bind_key.h @ONLY)
 
-set(BOOT_OWN boot/boot.c boot/qspi_flash.c boot/jumpcheck.c ${BOARD}/board_io.c)
-add_executable(boot ${BOOT_CUBE} ${CUBE}/boot/startup_stm32h750xx.s ${BOOT_HAL} ${BOOT_OWN})
+# OTA and anti-clone logic shared with the host tests (components/ota), and Monocypher's Ed25519 check.
+set(OTA ${CMAKE_SOURCE_DIR}/components/ota)
+set(MONO ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+set(OTA_BOOT ${OTA}/sha256.c ${OTA}/ota_image.c ${OTA}/bind.c)
+set(MONO_SRC ${MONO}/monocypher.c ${MONO}/monocypher-ed25519.c)
+set(BOOT_OWN boot/boot.c boot/qspi_flash.c boot/install.c ${BOARD}/board_io.c ${BOARD}/spi_nor.c ${BOARD}/crc32.c ${OTA_BOOT})
+add_executable(boot ${BOOT_CUBE} ${CUBE}/boot/startup_stm32h750xx.s ${BOOT_HAL} ${BOOT_OWN} ${MONO_SRC})
 image_includes(boot ${CUBE}/boot)
-target_include_directories(boot PRIVATE boot)
+target_include_directories(boot PRIVATE boot ${OTA}/include ${MONO} ${CMAKE_BINARY_DIR}/gen)
 set_source_files_properties(${BOOT_OWN} TARGET_DIRECTORY boot PROPERTIES COMPILE_OPTIONS "${STRICT}")
 target_compile_options(boot PRIVATE -Os)
 target_link_options(boot PRIVATE -T${CUBE}/boot/stm32h750vbtx_flash.ld -Wl,-Map=${CMAKE_BINARY_DIR}/boot.map)
@@ -87,7 +92,7 @@ bin_from_elf(boot)
 # ---- app: CubeMX init code for app.ioc (not the clock or QSPI parts), FreeRTOS, app/ ----
 hal_sources(APP_HAL ${HAL_APP})
 set(APP_CUBE
-  ${CUBE}/app/Src/main.c ${CUBE}/app/Src/gpio.c ${CUBE}/app/Src/tim.c ${CUBE}/app/Src/usart.c
+  ${CUBE}/app/Src/main.c ${CUBE}/app/Src/gpio.c ${CUBE}/app/Src/tim.c ${CUBE}/app/Src/usart.c ${CUBE}/app/Src/spi.c
   ${CUBE}/app/Src/memorymap.c ${CUBE}/app/Src/stm32h7xx_it.c ${CUBE}/app/Src/stm32h7xx_hal_msp.c
   ${SYSTEM_C}
   ${CUBE}/app/startup_stm32h750xx.s)  # vector table only: its weak Reset_Handler is replaced
@@ -95,12 +100,12 @@ set(APP_RTOS
   ${RTOS}/tasks.c ${RTOS}/queue.c ${RTOS}/list.c ${RTOS}/timers.c
   ${RTOS}/portable/GCC/ARM_CM4F/port.c)
 set(APP_OWN
-  app/startup_app.c app/mpu_app.c app/app_main.c app/hal_tick.c app/image_header.c
+  app/startup_app.c app/mpu_app.c app/app_main.c app/hal_tick.c app/image_header.c app/bench_ota.c
   ${BOARD}/board_io.c ${BOARD}/now_us.c ${BOARD}/tick64.c ${BOARD}/wdog.c ${BOARD}/blog.c ${BOARD}/crc32.c
-  ${BOARD}/syscalls.c)
-add_executable(app ${APP_CUBE} ${APP_HAL} ${APP_RTOS} ${APP_OWN})
+  ${BOARD}/syscalls.c ${BOARD}/spi_nor.c ${OTA}/sha256.c ${OTA}/ota_image.c ${OTA}/ota_app.c ${OTA}/bind.c)
+add_executable(app ${APP_CUBE} ${APP_HAL} ${APP_RTOS} ${APP_OWN} ${MONO_SRC})
 image_includes(app ${CUBE}/app)
-target_include_directories(app PRIVATE app ${RTOS}/include ${RTOS}/portable/GCC/ARM_CM4F)
+target_include_directories(app PRIVATE app ${RTOS}/include ${RTOS}/portable/GCC/ARM_CM4F ${OTA}/include ${MONO} ${CMAKE_BINARY_DIR}/gen)
 set_source_files_properties(${APP_OWN} TARGET_DIRECTORY app PROPERTIES COMPILE_OPTIONS "${STRICT}")
 # The copy loops of Reset_Handler must stay loops: memcpy/memset run from ITCM, which they fill.
 set_property(SOURCE app/startup_app.c TARGET_DIRECTORY app APPEND PROPERTY COMPILE_OPTIONS -fno-tree-loop-distribute-patterns)
@@ -108,3 +113,10 @@ target_compile_options(app PRIVATE -O2)
 target_link_options(app PRIVATE -T${CMAKE_SOURCE_DIR}/app/app.ld -Wl,-Map=${CMAKE_BINARY_DIR}/app.map)
 set_target_properties(app PROPERTIES LINK_DEPENDS ${CMAKE_SOURCE_DIR}/app/app.ld)
 bin_from_elf(app)
+# The app's version, once: compiled in, and written into the image header of app.img (spec §11.1).
+set(APP_VERSION 0.4.0 CACHE STRING "app version major.minor.patch")
+target_compile_definitions(app PRIVATE APP_VERSION="${APP_VERSION}")
+add_custom_command(TARGET app POST_BUILD
+  COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/mkimage.py --version ${APP_VERSION} ${CMAKE_BINARY_DIR}/app.bin
+          ${CMAKE_BINARY_DIR}/app.img
+  COMMENT "mkimage: app.img ${APP_VERSION}")

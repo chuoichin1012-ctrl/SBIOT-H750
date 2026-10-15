@@ -18,8 +18,11 @@ int ota_stage_begin(ota_stage_t *st, nor_t *spi, uint32_t total)
         return fail(st, OTA_ETOOBIG);
     if (total < IMG_HDR_SIZE + 8)
         return fail(st, OTA_EIMAGE);
-    // The image staged before is invalid from now on, whatever this upload becomes.
-    if (spi->erase_sector(spi, SPI_STAGING))
+    // The image staged before is invalid from now on, whatever this upload becomes. The magic is
+    // read back: GD25Q32E ignores an erase of a protected sector and reports nothing (§7.15).
+    static const uint8_t erased[sizeof IMG_MAGIC] = {0xFF, 0xFF, 0xFF, 0xFF};
+    uint8_t m[sizeof IMG_MAGIC];
+    if (spi->erase_sector(spi, SPI_STAGING) || spi->read(spi, SPI_STAGING, m, sizeof m) || memcmp(m, erased, sizeof m))
         return fail(st, OTA_EFLASH);
     st->erased = NOR_SECTOR;
     sha256_init(&st->sha);

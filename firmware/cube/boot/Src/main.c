@@ -21,6 +21,7 @@
 #include "iwdg.h"
 #include "memorymap.h"
 #include "quadspi.h"
+#include "spi.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -97,6 +98,7 @@ int main(void)
   MX_IWDG1_Init();
   MX_QUADSPI_Init();
   MX_UART7_Init();
+  MX_SPI4_Init();
   /* USER CODE BEGIN 2 */
   boot_main();
   /* USER CODE END 2 */

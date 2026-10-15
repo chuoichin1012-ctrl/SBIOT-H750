@@ -1,7 +1,10 @@
 // Plan 02 app (spec §6.1, §6.3): board_early, then the wdog and init tasks and the scheduler.
-// init reports the boot and then serves as the UART7 bench console: 'i' info, 'r' software reset,
-// 'w' stop the watchdog kicks, 'c' CRC-32 of the image. Later plans replace it.
+// init reports the boot, checks the anti-clone record (spec §11.5) and then serves as the UART7
+// bench console: 'i' info, 'r' software reset, 'w' stop the watchdog kicks, 'c' CRC-32 of the
+// image, 'o' the OTA images, 'u' upload an image into staging and reset ('U' without the reset).
+// Later plans replace it.
 #include "app_main.h"
+#include "bench_ota.h"
 #include <stdbool.h>
 #include <string.h>
 #include "FreeRTOS.h"
@@ -45,6 +48,12 @@ static void info(void)
 static void init_task(void *arg)
 {
     report_boot();
+    if (!app_bind_ok()) {  // spec §11.5: no service starts on a board this image is not bound to
+        blog("app: anti-clone record INVALID, nothing started\r\n");
+        for (;;)
+            vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    bench_ota_init();
     info();
     for (;;) {
         uint8_t c;
@@ -71,6 +80,13 @@ static void init_task(void *arg)
                  (unsigned long)(now_us() - t0));
             break;
         }
+        case 'o':
+            bench_ota_report();
+            break;
+        case 'u':
+        case 'U':
+            bench_ota_upload(c == 'u');
+            break;
         default:
             break;
         }

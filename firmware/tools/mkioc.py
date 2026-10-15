@@ -30,6 +30,10 @@ for p, s in [('PB2', 'QUADSPI_CLK'), ('PC11', 'QUADSPI_BK2_NCS'), ('PE7', 'QUADS
     pin(p, Mode='Single Bank 2', Signal=s)
 pin('PB3\\ (JTDO/TRACESWO)', Mode='Asynchronous', Signal='UART7_RX')
 pin('PB4\\ (NJTRST)', Mode='Asynchronous', Signal='UART7_TX')
+# SPI4 flash (staging, factory, FlashDB): the bootloader reads and writes it since Plan 04b.
+pin('PE2', Mode='Full_Duplex_Master', Signal='SPI4_SCK')
+pin('PE5', Mode='Full_Duplex_Master', Signal='SPI4_MISO')
+pin('PE6', Mode='Full_Duplex_Master', Signal='SPI4_MOSI')
 if not BOOT:
     pin('PA9', Mode='Asynchronous', Signal='USART1_TX')
     pin('PA10', Mode='Asynchronous', Signal='USART1_RX')
@@ -43,9 +47,6 @@ if not BOOT:
                  ('PC4', 'ETH_RXD0'), ('PC5', 'ETH_RXD1'), ('PB11', 'ETH_TX_EN'), ('PB12', 'ETH_TXD0'),
                  ('PB13', 'ETH_TXD1')]:
         pin(p, Mode='RMII', Signal=s)
-    pin('PE2', Mode='Full_Duplex_Master', Signal='SPI4_SCK')
-    pin('PE5', Mode='Full_Duplex_Master', Signal='SPI4_MISO')
-    pin('PE6', Mode='Full_Duplex_Master', Signal='SPI4_MOSI')
     pin('PC2_C', Mode='IN0-Single-Ended', Signal='ADC3_INP0')
     pin('PC3_C', Mode='IN1-Single-Ended', Signal='ADC3_INP1')
 
@@ -97,8 +98,8 @@ else:
     vps += [('VP_TIM2_VS_ClockSourceINT', 'Internal', 'TIM2_VS_ClockSourceINT'),
             ('VP_TIM6_VS_ClockSourceINT', 'Enable_Timer', 'TIM6_VS_ClockSourceINT')]
 
-ips = ['CORTEX_M7', 'DEBUG', 'MEMORYMAP', 'NVIC', 'QUADSPI', 'RCC', 'SYS', 'UART7']
-ips += ['IWDG1'] if BOOT else ['ADC3', 'ETH', 'SPI4', 'TIM2', 'TIM6', 'USART1', 'USART2', 'USART3']
+ips = ['CORTEX_M7', 'DEBUG', 'MEMORYMAP', 'NVIC', 'QUADSPI', 'RCC', 'SPI4', 'SYS', 'UART7']
+ips += ['IWDG1'] if BOOT else ['ADC3', 'ETH', 'TIM2', 'TIM6', 'USART1', 'USART2', 'USART3']
 ips.sort()
 
 L = []
@@ -147,16 +148,25 @@ rcc = dict(HSE_VALUE='25000000', PLLSourceVirtual='RCC_PLLSOURCE_HSE', SYSCLKSou
            # QSPI from pll1_q_ck 160 MHz, divided by 2: an even division keeps the 50 % duty cycle that
            # ES0392 §2.7.6 asks for (240 MHz HCLK / 3 would not).
            QSPICLockSelection='RCC_QSPICLKSOURCE_PLL',
-           USART234578CLockSelection='RCC_USART234578CLKSOURCE_D2PCLK1')
+           USART234578CLockSelection='RCC_USART234578CLKSOURCE_D2PCLK1', Spi45ClockSelection='RCC_SPI45CLKSOURCE_D2PCLK1')
 if not BOOT:
     rcc.update(DIVM2='5', DIVN2='80', DIVP2='20', DIVQ2='4', DIVR2='4', ADCCLockSelection='RCC_ADCCLKSOURCE_PLL2',
-               Spi45ClockSelection='RCC_SPI45CLKSOURCE_D2PCLK1', USART16CLockSelection='RCC_USART16CLKSOURCE_D2PCLK2')
+               USART16CLockSelection='RCC_USART16CLKSOURCE_D2PCLK2')
 ipp('RCC', rcc)
 # FlashSize 22 (8 MB) for a 4 MB part: ES0396 §2.4.4, a memory-mapped read of the last byte of the
 # FSIZE region returns 0 and a repeated read stalls the AXI bus. MPU region 1 still ends at 4 MB.
 ipp('QUADSPI', dict(ClockPrescaler='1', FlashSize='22', SampleShifting='QSPI_SAMPLE_SHIFTING_HALFCYCLE',
                     ChipSelectHighTime='QSPI_CS_HIGH_TIME_2_CYCLE', FifoThreshold='4', DualFlash='QSPI_DUALFLASH_DISABLE'))
 ipp('UART7', dict(BaudRate='115200', VirtualMode='VM_ASYNC'))
+# GD25Q32E on SPI4: mode 0, 8-bit frames (the CubeMX default is 4 bits), APB2 120 MHz / 4 = 30 MHz,
+# software chip select on PE4; SCK keeps its idle level between transfers. A receiving master
+# clocks on by itself: auto-suspend stops SCK while the RX FIFO is full, so an interrupt or a task
+# switch in the middle of a read cannot overrun it (seen on the bench: a read timed out in the app).
+ipp('SPI4', dict(VirtualType='VM_MASTER', Mode='SPI_MODE_MASTER', Direction='SPI_DIRECTION_2LINES',
+                 DataSize='SPI_DATASIZE_8BIT', BaudRatePrescaler='SPI_BAUDRATEPRESCALER_4',
+                 CalculateBaudRate='30.0 MBits/s', MasterKeepIOState='SPI_MASTER_KEEP_IO_STATE_ENABLE',
+                 MasterReceiverAutoSusp='SPI_MASTER_RX_AUTOSUSP_ENABLE'),
+    ['VirtualType', 'Mode', 'Direction'])
 if BOOT:
     # LSI 32 kHz / 32 = 1 kHz; 1600 ticks = 1.6 s nominal (1.5 to 1.74 s over the LSI range).
     ipp('IWDG1', dict(Prescaler='IWDG_PRESCALER_32', Reload='1600'))
@@ -193,14 +203,15 @@ def fl(entries):
 if BOOT:
     funcs = [(1, 'SystemClock_Config', 'RCC', 'false', 'false'), (2, 'MX_GPIO_Init', 'GPIO', 'false', 'true'),
              (3, 'MX_IWDG1_Init', 'IWDG1', 'false', 'true'), (4, 'MX_QUADSPI_Init', 'QUADSPI', 'false', 'true'),
-             (5, 'MX_UART7_Init', 'UART7', 'false', 'true'), (0, 'MX_CORTEX_M7_Init', 'CORTEX_M7', 'false', 'true')]
+             (5, 'MX_UART7_Init', 'UART7', 'false', 'true'), (6, 'MX_SPI4_Init', 'SPI4', 'false', 'true'),
+             (0, 'MX_CORTEX_M7_Init', 'CORTEX_M7', 'false', 'true')]
 else:
     # "true" in the 4th field = do not generate the call: the clocks and QSPI belong to the bootloader,
     # the MPU to Reset_Handler; the peripherals of later plans stay uncalled until those plans.
     funcs = [(1, 'SystemClock_Config', 'RCC', 'true', 'false'), (2, 'MX_GPIO_Init', 'GPIO', 'false', 'true'),
              (3, 'MX_TIM2_Init', 'TIM2', 'false', 'true'), (4, 'MX_UART7_Init', 'UART7', 'false', 'true'),
              (5, 'MX_QUADSPI_Init', 'QUADSPI', 'true', 'true'), (6, 'MX_ADC3_Init', 'ADC3', 'true', 'true'),
-             (7, 'MX_ETH_Init', 'ETH', 'true', 'true'), (8, 'MX_SPI4_Init', 'SPI4', 'true', 'true'),
+             (7, 'MX_ETH_Init', 'ETH', 'true', 'true'), (8, 'MX_SPI4_Init', 'SPI4', 'false', 'true'),
              (9, 'MX_TIM6_Init', 'TIM6', 'true', 'true'), (10, 'MX_USART1_UART_Init', 'USART1', 'true', 'true'),
              (11, 'MX_USART2_UART_Init', 'USART2', 'true', 'true'), (12, 'MX_USART3_UART_Init', 'USART3', 'true', 'true'),
              (0, 'MX_CORTEX_M7_Init', 'CORTEX_M7', 'true', 'true')]

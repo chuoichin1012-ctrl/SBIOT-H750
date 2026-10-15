@@ -2,6 +2,7 @@
 // it at 0x90000000 with Quad I/O Fast Read (EBh). Values from GD25Q32E Rev 1.3 §6, §7.11, §7.29, §8.6.
 #pragma once
 #include <stdint.h>
+#include "nor.h"
 #include "stm32h7xx_hal.h"
 
 #define QF_JEDEC_GD25Q32E 0xC84016u
@@ -20,3 +21,15 @@ void qf_errata_timing(void);
 int qf_init(QSPI_HandleTypeDef *h, qf_kick_fn kick);
 uint32_t qf_read_jedec(QSPI_HandleTypeDef *h);  // 0 on a bus error
 int qf_memory_mapped(QSPI_HandleTypeDef *h);
+
+// The flash as a nor_t in indirect mode (spec §11.2): EBh read with the memory-mapped settings,
+// 20h sector erase, 02h page program; deadlines twice the GD25Q32E Rev 1.3 §8.6 maxima. Use it
+// after qf_init and before qf_memory_mapped: the bootloader never leaves memory-mapped mode, so the
+// ES0392 §2.7.4 sequence on leaving it is never needed.
+typedef struct {
+    nor_t nor;  // first: a qf_nor_t * is a nor_t *
+    QSPI_HandleTypeDef *h;
+    qf_kick_fn kick;
+} qf_nor_t;
+
+void qf_nor_init(qf_nor_t *q, QSPI_HandleTypeDef *h, qf_kick_fn kick);

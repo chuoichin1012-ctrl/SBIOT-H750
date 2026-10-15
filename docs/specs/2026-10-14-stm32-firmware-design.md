@@ -288,10 +288,11 @@ Code trên QSPI không được cấu hình lại chính đường đang dùng �
   - bật bit **QE** của GD25Q32E nếu chưa bật (ghi vào thanh ghi trạng thái non-volatile, chỉ ghi khi bit đang tắt);
   - lệnh đọc Quad I/O Fast Read (`0xEB`): địa chỉ 4 dòng, byte M = `0xFF` trên 4 dòng (M5-4 ≠ 10, flash không bao giờ vào continuous read mode), rồi 4 dummy clock khi bit DC (SR3 bit 0) = 0, 8 khi DC = 1 (GD25Q32E Rev 1.3 §6, §7.11). DC không bao giờ được ghi;
   - kernel clock pll1_q_ck 160 MHz (DIVQ1 = 6), prescaler 1: 80 MHz với hệ số chia chẵn, duty 50 % (ES0392 Rev 15 §2.7.6: HCLK chia lẻ không giữ được duty 50 %, mà GD25Q32E cần tCLH, tCLL ≥ 45 %), dưới giới hạn 104 MHz khi DC = 0. Sample shift nửa chu kỳ, CS high 2 chu kỳ (tSHSL ≥ 20 ns). Các chân QSPI đặt tốc độ very high (với tốc độ low, mọi lệnh đọc đều timeout ở 80 MHz);
-  - **workaround ES0392 §2.7.4** ("QUADSPI internal timing criticality", áp dụng cho rev V): chuỗi thanh ghi của errata chạy sau mỗi lần reset (trong `HAL_QSPI_MspInit` của bootloader, khi kernel clock đã bật, ngắt tắt) và mỗi lần rời memory-mapped sang chế độ khác (Plan 04); lệnh disable cuối phải xong trong 127 kernel clock sau lần ghi CCR đầu tiên;
+  - **workaround ES0392 §2.7.4** ("QUADSPI internal timing criticality", áp dụng cho rev V): chuỗi thanh ghi của errata chạy sau mỗi lần reset (trong `HAL_QSPI_MspInit` của bootloader, khi kernel clock đã bật, ngắt tắt) và mỗi lần rời memory-mapped sang chế độ khác; lệnh disable cuối phải xong trong 127 kernel clock sau lần ghi CCR đầu tiên. Bootloader **không bao giờ rời memory-mapped**: mọi việc đọc, xóa, ghi QSPI (kiểm chống clone, cài, khôi phục, gieo) đều làm ở chế độ indirect, trước khi bật memory-mapped ngay trước lúc nhảy;
   - **FSIZE = 22 (8 MB) cho chip 4 MB**: theo ES0392 §2.7.5 (ES0396 §2.4.4), đọc memory-mapped byte cuối của vùng FSIZE luôn trả 0x00 và đọc lại làm treo bus AXI; region MPU 1 vẫn chỉ 4 MB nên phần dư không truy cập được;
   - trước khi cấu hình: 10 clock với IO0–IO3 ở mức 1 (lệnh `0xFF` 4 dòng cộng 32 bit alternate byte, không dùng pha địa chỉ vì địa chỉ ngoài FSIZE làm QUADSPI báo TEF) để thoát continuous read mode, rồi Reset Enable và Reset (`0x66`, `0x99`) và chờ 13 ms (tRST_E 12 ms), vì MCU có thể vừa reset trong lúc flash đang ở một chế độ khác;
-  - bật memory-mapped.
+  - bật memory-mapped, ngay trước khi nhảy.
+- SPI4 (GD25Q32E của staging, factory và FlashDB): master, mode 0, 8 bit, APB2 120 MHz ÷ 4 = 30 MHz, NSS bằng phần mềm (PE4), **auto-suspend khi nhận** (`MasterReceiverAutoSusp`). Thiếu auto-suspend thì một ngắt hay một lần chuyển task giữa lúc đọc làm tràn FIFO nhận, rồi lệnh đọc hết timeout; bench của Plan 04b đã gặp đúng trường hợp này trong app. App gọi lại `MX_SPI4_Init` với cùng thông số. SPI4 lỗi lúc boot thì không dừng: mọi lần đọc staging và factory thất bại, nên bootloader không cài, không gieo, không khôi phục gì, và vẫn chạy image QSPI hợp lệ.
 - Region MPU của QSPI (`MPU_Config` do CubeMX sinh từ `boot.ioc`): region 0 nền mặc định của CubeMX (4 GB, tắt sub-region 0, 1, 2, 7, nên 0x60000000–0xDFFFFFFF không truy cập được và không bị fetch suy đoán) và region 1 là cửa sổ QSPI 4 MB, chỉ đọc, cacheable, thực thi được.
 
 **Trạng thái bàn giao cho app** (bootloader bảo đảm, app kiểm bằng `assert` khi build debug): PLL1 đang chạy và là SYSCLK; QSPI ở memory-mapped; ngắt bị tắt (`PRIMASK`=1); SysTick tắt; mọi ngắt NVIC bị tắt và không còn ngắt chờ xử lý.
@@ -844,7 +845,7 @@ Nó **không tự cứu hộ**. Không có bản ghi trạng thái, không boot 
 Nguồn không bao giờ bị ghi. Mọi lần chờ flash đều có deadline, bằng 2 lần giá trị tối đa trong datasheet GD25Q32E (`nor.h`), và vẫn kick watchdog. Lỗi flash, quá deadline hay kiểm sai đều làm `copy` thất bại.
 
 **Trình tự quyết định mỗi lần boot** (`install_run`):
-1. **Reload được giữ liên tục 5 s** tính từ lúc bootloader bắt đầu: **khôi phục firmware gốc.** Trong lúc chờ, LED WORK sáng liên tục và bootloader vẫn kick.
+1. **Reload được giữ liên tục 5 s** kể từ lúc bootloader lấy mẫu nút (sau bước kiểm chống clone, §11.5): **khôi phục firmware gốc.** Trong lúc chờ, LED WORK nháy chậm (đảo mỗi 500 ms), còn khi dừng thì nháy nhanh (100 ms). LED dùng chung chân PC10 với WDI, nên không thể sáng liên tục mà vẫn kick SGM706, vốn có timeout tối thiểu 1,0 s.
    1. `F` không hợp lệ: **dừng**, không ghi gì cả.
    2. Xóa sector đầu của staging, để image trong đó không bị cài lại ở lần boot sau. Không xóa được: **dừng**.
    3. `copy` F → QSPI. Thất bại: **dừng**.
@@ -1037,12 +1038,13 @@ Ngoài ra, file map của linker phải cho thấy mỗi section nằm trong ng�
 - CMake preset `boot` và `app`. Kết quả gồm `boot.elf`, `app.elf` và `app.img` (đã có header).
 - Nạp qua SWD (P6) bằng STM32CubeProgrammer CLI (`tools/flash.sh`, chạy từ WSL): flash nội nạp trực tiếp; QSPI bank 2 qua external loader. OpenOCD `stmqspi` không đọc được flash trên board này ("Failed to read memory at 0x52005020"), nên OpenOCD chỉ dùng để debug, với `QUADSPI 0`.
 - **Bước sản xuất:**
-  1. nạp bootloader và image QSPI, build với khóa công khai thật (§11.5): `tools/flash.sh both`;
-  2. ghi bản ghi liên kết: `tools/flash.sh bind <khóa riêng>`;
-  3. cấp nguồn một lần, để bootloader gieo firmware gốc (§11.2);
-  4. **đặt RDP Level 1, luôn là bước cuối** (`STM32_Programmer_CLI -c port=SWD -ob RDP=0xBB`).
+  1. ghi bản ghi liên kết **trước**: `tools/flash.sh bind <khóa riêng>`. Bước này không cần bootloader.
+     - Thứ tự này là bắt buộc: `flash.sh` reset board sau mỗi lần nạp.
+     - Một board làm lại (rework) còn mang bản ghi của UID khác sẽ xóa app vừa nạp ngay ở lần boot đó (đã thấy trên bench, Plan 04b).
+  2. nạp bootloader và image QSPI, build với khóa công khai thật (§11.5): `tools/flash.sh both`. Lần boot sau lệnh này gieo firmware gốc (§11.2);
+  3. **đặt RDP Level 1, luôn là bước cuối** (`STM32_Programmer_CLI -c port=SWD -ob RDP=0xBB`).
 - Board phát triển dùng `tools/flash.sh bind dev` và firmware build không có `SBIOT_BIND_PUBKEY_FILE`.
-- Plan 02 dùng loader của nhóm `STM32H750VBT6_GD25Q32ESIG.stldr` (Dev_info: 0x90000000, 4 MB, page 256 B, 1024 sector 4 KB; SHA-256 `5ef2de362969bb2ad9d0c92604e58f27b018614533fe421e6ac5974c9bcb0699`), sau khi chứng minh xóa, ghi và đọc lại trên vùng dự trữ 0x903E0000. Loader này không kick WDI: chỉ an toàn khi R20 chưa lắp. Plan 04 thay bằng loader build từ mã nguồn (cùng driver QSPI với bootloader, kick WDI và IWDG1 trong các vòng chờ).
+- Plan 02 dùng loader của nhóm `STM32H750VBT6_GD25Q32ESIG.stldr` (Dev_info: 0x90000000, 4 MB, page 256 B, 1024 sector 4 KB; SHA-256 `5ef2de362969bb2ad9d0c92604e58f27b018614533fe421e6ac5974c9bcb0699`), sau khi chứng minh xóa, ghi và đọc lại trên vùng dự trữ 0x903E0000. Loader này không kick WDI: chỉ an toàn khi R20 chưa lắp. Plan 04b vẫn giữ loader này, vì nó đã nạp được cả image lẫn bản ghi liên kết trên board. Loader build từ mã nguồn (cùng driver QSPI với bootloader, kick WDI và IWDG1 trong các vòng chờ) để lại tới khi lắp R20.
 - Log debug ra UART7, 115200 baud.
 
 ## 13. Khác biệt so với bản ESP32

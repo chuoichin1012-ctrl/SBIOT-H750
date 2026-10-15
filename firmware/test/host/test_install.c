@@ -317,6 +317,18 @@ static void test_restore(void)
     CHECK(version_at(&b.q, QSPI_SLOT) == 2 && version_at(&b.s, SPI_STAGING) == 2, "QSPI and staging untouched");
     bench_free(&b);
 
+    // GD25Q32E ignores an erase of a protected sector and reports nothing (§7.15): the staging
+    // erase must be seen to have worked, or the next boot would install staging over the factory image.
+    bench_v1(&b, 43);
+    CHECK(upload(&b, 2, BODY_V2) == OTA_OK && boot(&b, false).version == 2, "v2 installed");
+    upload(&b, 3, BODY_V1);  // v3 staged, differs from QSPI
+    sim_fail(&b.w, 0, DEV_SPI, SPI_STAGING, SPI_STAGING + NOR_SECTOR, SIM_ERASE_SILENT);
+    o = boot(&b, true);
+    CHECK(o.kind == OUT_HALT && o.why == WHY_STAGING, "Reload, the staging erase silently ignored: halt (kind %d why %d)", o.kind, o.why);
+    CHECK(version_at(&b.q, QSPI_SLOT) == 2, "before QSPI is touched");
+    sim_fail(&b.w, 0, 0, 0, 0, 0);
+    bench_free(&b);
+
     bench_v1(&b, 42);
     CHECK(upload(&b, 2, BODY_V2) == OTA_OK && boot(&b, false).version == 2, "v2 installed");
     sim_fail(&b.w, 0, DEV_SPI, SPI_STAGING, SPI_STAGING + NOR_SECTOR, NOR_EIO);
@@ -329,7 +341,7 @@ static void test_restore(void)
 
 static void test_copy_failures(void)
 {
-    int codes[] = {NOR_EIO, NOR_TIMEOUT, SIM_SILENT};
+    int codes[] = {NOR_EIO, NOR_ETIMEOUT, SIM_SILENT};
     const char *names[] = {"flash error", "deadline", "silent bad program"};
     for (int i = 0; i < 3; i++) {
         bench_t b;
@@ -493,6 +505,15 @@ static void test_upload_errors(void)
     CHECK(upload_raw(&b, img, len, 100) == OTA_ESHORT, "an upload that stops in its first page");
     o = boot(&b, false);
     CHECK(o.kind == OUT_RUN && o.version == 1 && o.ops == 0, "a new upload invalidates the staged image at once");
+    // The old staged image must be gone before a byte of the new one is taken: an erase of a
+    // protected sector reports success and changes nothing (GD25Q32E §7.15).
+    CHECK(upload(&b, 3, BODY_V1) == OTA_OK, "v3 staged (differs from QSPI)");
+    sim_fail(&b.w, 0, DEV_SPI, SPI_STAGING, SPI_STAGING + NOR_SECTOR, SIM_ERASE_SILENT);
+    ota_stage_t st;
+    long ops0 = b.w.ops;
+    CHECK(ota_stage_begin(&st, &b.s.nor, len) == OTA_EFLASH, "begin, the staging erase silently ignored: 500");
+    CHECK(b.w.ops - ops0 == 1, "and nothing programmed after the erase (%ld operations)", b.w.ops - ops0);
+    sim_fail(&b.w, 0, 0, 0, 0, 0);
     sim_fail(&b.w, 0, DEV_SPI, SPI_STAGING + 0x4000, SPI_STAGING + 0x5000, SIM_SILENT);
     CHECK(upload_raw(&b, img, len, len) == OTA_EFLASH, "staging programmed wrong: the read-back check answers 500");
     sim_fail(&b.w, 0, 0, 0, 0, 0);

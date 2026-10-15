@@ -68,7 +68,9 @@ proc qspi_hostile_continuous {} {
     qspi_cmd 0x0710EDEB 0x0 3
     set d [read_memory [expr {$QSPI + 0x20}] 32 1]       ;# one 32-bit read pops the 4 bytes at 0x0
     qspi_done
-    if {$d != 0xffffffff} { error [format "EBh read %08x, expected the erased header" $d] }
+    # The image header's magic "SBIO" (spec §11.1; Plan 02's placeholder header read ffffffff). A
+    # flash left in continuous-read mode by an earlier failed run reads garbage here, not the magic.
+    if {$d != 0x4f494253} { error [format "EBh read %08x, expected the image magic SBIO" $d] }
     echo [format "hostile: continuous-read mode entered (read %08x)" $d]
     reset run
 }

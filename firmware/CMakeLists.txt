@@ -116,6 +116,9 @@ set(APP_OWN
   ${CMAKE_SOURCE_DIR}/components/arena/arena.c app/arena_port.c)
 # The embedded UI (Plan 06b): tools/embed_web.py writes the gzip bytes as C arrays and their table.
 set(APP_WWW ${WEB}/www/www_files.c)
+if(NOT EXISTS ${APP_WWW})  # a build output (gitignored), not a source
+  message(FATAL_ERROR "No embedded UI: run `npm ci && npm run build:firmware` in stm32/web first (spec §10.3).")
+endif()
 # Network (Plan 06a): lwIP 2.2.1 and its FreeRTOS port (third_party/lwip/README.md), built without -Werror.
 set(LWIP ${CMAKE_SOURCE_DIR}/third_party/lwip)
 file(GLOB LWIP_SRC ${LWIP}/src/core/*.c ${LWIP}/src/core/ipv4/*.c ${LWIP}/src/api/*.c)

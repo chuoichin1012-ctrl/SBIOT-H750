@@ -57,7 +57,7 @@ static bool rx(uint8_t *p, uint32_t n, uint32_t ms)
 
 void bench_ota_upload(bool reset)
 {
-    static uint8_t buf[BLOCK];
+    static uint8_t buf[BLOCK] __attribute__((section(".axi_bss")));  // not DTCM (spec §5.3)
     static ota_stage_t st;
     uint32_t total;
     if (!rx(buf, 4, 2000)) {

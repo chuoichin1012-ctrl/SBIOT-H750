@@ -81,6 +81,7 @@ set(CFGM ${CMAKE_SOURCE_DIR}/components/cfgmodel)
 set(NET ${CMAKE_SOURCE_DIR}/components/netmgr)
 set(SYS ${CMAKE_SOURCE_DIR}/components/sysmgr)
 set(WEB ${CMAKE_SOURCE_DIR}/components/webapi)
+set(SER ${CMAKE_SOURCE_DIR}/components/serial)
 set(PROTO ${CMAKE_SOURCE_DIR}/components/proto)
 set(MONO ${CMAKE_SOURCE_DIR}/third_party/monocypher)
 set(OTA_BOOT ${OTA}/sha256.c ${OTA}/ota_image.c ${OTA}/bind.c)
@@ -113,7 +114,8 @@ set(APP_OWN
   app/store_port.c ${STORE}/store.c ${STORE}/fal_nor.c ${CMAKE_SOURCE_DIR}/components/syslog/syslog.c ${CFGM}/cfgmodel.c ${PROTO}/ipacl.c ${PROTO}/jsonscan.c
   ${BOARD}/board_rng.c ${BOARD}/rng_core.c ${NET}/ip101.c ${NET}/netcfg.c ${NET}/eth_drv.c ${NET}/netmgr.c app/fdset_check.c
   ${SYS}/clock.c ${SYS}/sysmgr.c ${WEB}/web_core.c ${WEB}/web.c ${WEB}/api.c ${WEB}/console.c ${WEB}/mg_port.c
-  ${CMAKE_SOURCE_DIR}/components/arena/arena.c app/arena_port.c)
+  ${CMAKE_SOURCE_DIR}/components/arena/arena.c app/arena_port.c
+  ${SER}/serial_frame.c ${SER}/uart_drv.c ${SER}/serial.c)
 # The embedded UI (Plan 06b): tools/embed_web.py writes the gzip bytes as C arrays and their table.
 set(APP_WWW ${WEB}/www/www_files.c)
 if(NOT EXISTS ${APP_WWW})  # a build output (gitignored), not a source
@@ -134,7 +136,7 @@ image_includes(app ${CUBE}/app)
 target_include_directories(app PRIVATE app ${RTOS}/include ${RTOS}/portable/GCC/ARM_CM4F ${OTA}/include ${MONO} ${CMAKE_BINARY_DIR}/gen
   ${CMAKE_SOURCE_DIR}/components/syslog/include ${STORE}/include ${STORE}/port ${FDB}/inc ${FDB}/port/fal/inc ${CFGM}/include ${PROTO}/include ${CMAKE_SOURCE_DIR}/third_party/cjson
   ${NET}/include ${LWIP}/src/include ${LWIP}/contrib/ports/freertos/include
-  ${SYS}/include ${WEB}/include ${CMAKE_SOURCE_DIR}/components/arena/include ${CMAKE_SOURCE_DIR}/third_party/tlsf
+  ${SYS}/include ${WEB}/include ${SER}/include ${CMAKE_SOURCE_DIR}/components/arena/include ${CMAKE_SOURCE_DIR}/third_party/tlsf
   ${CMAKE_SOURCE_DIR}/third_party/mongoose)
 set_source_files_properties(${APP_OWN} TARGET_DIRECTORY app PROPERTIES COMPILE_OPTIONS "${STRICT}")
 # The copy loops of Reset_Handler must stay loops: memcpy/memset run from ITCM, which they fill.
@@ -144,7 +146,7 @@ target_link_options(app PRIVATE -T${CMAKE_SOURCE_DIR}/app/app.ld -Wl,-Map=${CMAK
 set_target_properties(app PROPERTIES LINK_DEPENDS ${CMAKE_SOURCE_DIR}/app/app.ld)
 bin_from_elf(app)
 # The app's version, once: compiled in, and written into the image header of app.img (spec §11.1).
-set(APP_VERSION 0.6.1 CACHE STRING "app version major.minor.patch")
+set(APP_VERSION 0.7.0 CACHE STRING "app version major.minor.patch")
 target_compile_definitions(app PRIVATE APP_VERSION="${APP_VERSION}")
 add_custom_command(TARGET app POST_BUILD
   COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/mkimage.py --version ${APP_VERSION} ${CMAKE_BINARY_DIR}/app.bin

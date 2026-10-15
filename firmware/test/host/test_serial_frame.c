@@ -245,8 +245,20 @@ static void test_tx(void)
     CHECK(s.action == SF_TX_ABORT, "no USART TC by the deadline: abort");
 }
 
+static void test_payload(void)
+{
+    uint8_t o[16];
+    CHECK(sf_payload_custom("ping", false, o, sizeof o) == 4 && !memcmp(o, "ping", 4), "text as it is");
+    CHECK(sf_payload_custom("01 a0FF", true, o, sizeof o) == 3 && o[0] == 1 && o[1] == 0xA0 && o[2] == 0xFF, "hex, spaces ignored");
+    CHECK(sf_payload_custom("0", true, o, sizeof o) == 0, "an odd hex text: nothing");
+    CHECK(sf_payload_custom("0g", true, o, sizeof o) == 0, "not hex: nothing");
+    CHECK(sf_payload_custom("", false, o, sizeof o) == 0, "empty: nothing");
+    CHECK(sf_payload_custom("abcdef", false, o, 4) == 4, "cut at max");
+}
+
 int main(void)
 {
+    test_payload();
     test_timing();
     test_ring();
     test_transparent();

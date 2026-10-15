@@ -83,6 +83,14 @@ void sf_rx_mode(sf_rx_t *r, sf_mode_t mode);
 /** RTU, at the one-shot's expiry: a violation when the write position moved since the RTO, or BUSY. */
 static inline bool sf_rtu_violation(uint32_t wr_at_rto, uint32_t wr_now, bool busy) { return wr_now != wr_at_rto || busy; }
 
+// ---- heartbeat payload -----------------------------------------------------------------------------
+
+/**
+ * The custom heartbeat content (serialHeartbeatContent 0): the text as it is, or with hex set, pairs of
+ * hex digits (spaces ignored). Its length; 0 for an empty, odd or non-hex text.
+ */
+size_t sf_payload_custom(const char *custom, bool hex, uint8_t *out, size_t max);
+
 // ---- TX -------------------------------------------------------------------------------------------
 
 typedef enum {

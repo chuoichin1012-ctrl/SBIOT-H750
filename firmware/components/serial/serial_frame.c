@@ -155,6 +155,44 @@ void sf_rx_mode(sf_rx_t *r, sf_mode_t mode)
     r->resync = false;
 }
 
+// ---- heartbeat payload -----------------------------------------------------------------------------
+
+static int hexval(char c)
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    c = (char)(c | 0x20);
+    return c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+}
+
+size_t sf_payload_custom(const char *custom, bool hex, uint8_t *out, size_t max)
+{
+    size_t n = 0;
+    if (!custom)
+        return 0;
+    if (!hex) {
+        while (n < max && custom[n])
+            n++;
+        memcpy(out, custom, n);
+        return n;
+    }
+    int hi = -1;
+    for (const char *p = custom; *p && n < max; p++) {
+        if (*p == ' ')
+            continue;
+        int v = hexval(*p);
+        if (v < 0)
+            return 0;
+        if (hi < 0) {
+            hi = v;
+        } else {
+            out[n++] = (uint8_t)(hi << 4 | v);
+            hi = -1;
+        }
+    }
+    return hi < 0 ? n : 0;
+}
+
 // ---- TX -------------------------------------------------------------------------------------------
 
 static sf_tx_step_t step(sf_tx_action_t a, size_t off, size_t n)

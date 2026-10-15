@@ -10,6 +10,8 @@
 #include "board_rng.h"
 #include "cfgmodel.h"
 #include "netmgr.h"
+#include "serial.h"
+#include "uart_drv.h"
 #include "sysmgr.h"
 #include "webapi.h"
 #include "flash_spi4.h"
@@ -100,6 +102,57 @@ static void net_report(void)
          st.tcp_seg.used, st.tcp_seg.max, st.pbuf_pool.used, st.pbuf_pool.max, st.udp_pcb.used, st.udp_pcb.max);
 }
 
+// Bench: one line (CR or LF ends it, 2 s per byte at most) into buf; its length.
+static size_t read_line(char *buf, size_t cap)
+{
+    size_t n = 0;
+    uint8_t c;
+    while (n < cap - 1 && HAL_UART_Receive(&huart7, &c, 1, 2000) == HAL_OK && c != '\r' && c != '\n')
+        buf[n++] = (char)c;
+    buf[n] = '\0';
+    return n;
+}
+
+static int hexv(char c)
+{
+    return c >= '0' && c <= '9' ? c - '0' : (c | 0x20) >= 'a' && (c | 0x20) <= 'f' ? (c | 0x20) - 'a' + 10 : -1;
+}
+
+// Bench: "T<port> <hex request>": a Modbus transaction; the answer in hex, or why there is none.
+static void bench_transact(void)
+{
+    static char line[600];
+    static uint8_t req[256], resp[300];
+    read_line(line, sizeof line);
+    int port = line[0] - '0';
+    size_t n = 0;
+    for (const char *p = line + 1; *p && n < sizeof req;) {
+        if (*p == ' ') {
+            p++;
+            continue;
+        }
+        if (hexv(p[0]) < 0 || hexv(p[1]) < 0)
+            break;
+        req[n++] = (uint8_t)(hexv(p[0]) << 4 | hexv(p[1]));
+        p += 2;
+    }
+    uint64_t t0 = now_us();
+    int r = n ? serial_transact(port, req, n, resp, sizeof resp, req[0], 1000) : -1;
+    unsigned long ms = (unsigned long)((now_us() - t0) / 1000u);
+    serial_counters_t sc;
+    serial_counters(port, &sc);
+    if (r > 0) {
+        char hx[2 * 64 + 1];
+        int q = 0;
+        for (int i = 0; i < r && i < 64; i++)
+            q += snprintf(hx + q, sizeof hx - q, "%02x", resp[i]);
+        blog("app: T%d answer %d bytes in %lu ms: %s\r\n", port, r, ms, hx);
+    } else {
+        blog("app: T%d %s in %lu ms (violations %lu)\r\n", port,
+             r == SERIAL_DROPPED ? "dropped: t1.5 violation" : r == 0 ? "no answer" : "error", ms, (unsigned long)sc.violations);
+    }
+}
+
 // Bench: one line of JSON (ended by CR or LF, 2 s per byte at most) saved as `network`. Send it
 // after 'N' has been read: the console polls every 10 ms, longer than the FIFO's 16 bytes last.
 static void net_save_line(void)
@@ -142,6 +195,16 @@ static void init_task(void *arg)
     cJSON *sys = store_get("system");
     if (!sys)
         sys = cfg_default(&env, "system");
+    // The serial ports (spec §6.3 step 5): before anything that subscribes to them.
+    for (int port = 1; port <= SERIAL_PORTS; port++) {
+        char name[8];
+        snprintf(name, sizeof name, "port%d", port);
+        cJSON *pc = store_get(name);
+        if (!pc)
+            pc = cfg_default(&env, name);
+        serial_start(port, pc, sys);
+        cJSON_Delete(pc);
+    }
     if (webapi_start(sys))
         blog("app: web FAILED\r\n");
     sysmgr_start(sys);
@@ -242,6 +305,29 @@ static void init_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(3000));
             blog("app: phy up %d\r\n", eth_drv_phy_power(false));
             break;
+        case 'T':
+            bench_transact();
+            break;
+        case 'X': {  // bench: "X<port>": the next write on it sees an XOFF 20 ms in, an XON 1 s later
+            char l[4];
+            read_line(l, sizeof l);
+            int port = l[0] - '0';
+            if (port >= 1 && port <= SERIAL_PORTS) {
+                uart_drv_inject_xoff(port);
+                blog("app: X%d armed\r\n", port);
+            }
+            break;
+        }
+        case 's': {  // bench: the serial counters of both ports
+            for (int port = 1; port <= SERIAL_PORTS; port++) {
+                serial_counters_t sc;
+                serial_counters(port, &sc);
+                blog("app: serial %d tx %lu rx %lu overrun %lu line %lu viol %lu dropped %lu lost %lu\r\n", port,
+                     (unsigned long)sc.tx, (unsigned long)sc.rx, (unsigned long)sc.overruns, (unsigned long)sc.line_errors,
+                     (unsigned long)sc.violations, (unsigned long)sc.dropped, (unsigned long)sc.lost);
+            }
+            break;
+        }
         case 'u':
         case 'U':
             bench_ota_upload(c == 'u');

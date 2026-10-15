@@ -26,12 +26,15 @@ APP_FORBIDDEN = [
 ]
 # Hot code that must run from ITCM (spec §5.3), above the 1 KB null guard.
 APP_ITCM = ['vTaskSwitchContext', 'xTaskIncrementTick', 'PendSV_Handler', 'SysTick_Handler', 'SVC_Handler',
-            'memcpy', 'memset', 'ETH_IRQHandler', 'HAL_ETH_IRQHandler']
+            'memcpy', 'memset', 'ETH_IRQHandler', 'HAL_ETH_IRQHandler',
+            # the serial ports (Plan 07a)
+            'USART1_IRQHandler', 'USART2_IRQHandler', 'DMA1_Stream2_IRQHandler', 'DMA1_Stream3_IRQHandler',
+            'DMA1_Stream4_IRQHandler', 'DMA1_Stream5_IRQHandler', 'TIM2_IRQHandler']
 ITCM = (0x00000400, 0x00010000)
 AXI = (0x24000000, 0x24080000)
 SRAM1 = (0x30000000, 0x30020000)
 # What a DMA engine touches, plus lwIP's MEM heap: SRAM1, non-cacheable (spec §5.4, §5.6).
-APP_SRAM1 = ['lwip_ram_heap', 'DMARxDscrTab', 'DMATxDscrTab', 's_eth_rx_bufs', 's_eth_tx_bufs']
+APP_SRAM1 = ['lwip_ram_heap', 'DMARxDscrTab', 'DMATxDscrTab', 's_eth_rx_bufs', 's_eth_tx_bufs', 's_uart_ring', 's_uart_txbuf']
 # The JSON arena, the Edge and certificate body and the web stack: static, in AXI (spec §5.3, Plan 06b).
 APP_AXI = ['s_web_arena', 's_edge_body', 's_web_stack']
 DTCM = (0x20000000, 0x20020000)

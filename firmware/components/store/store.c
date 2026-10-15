@@ -39,7 +39,13 @@ typedef struct __attribute__((packed)) {
 } log_hdr_t;
 
 // The text cache: every small config's compact JSON, back to back in one region.
-static char s_pool[STORE_CACHE_SIZE];
+// AXI on the board (spec §5.3): the text cache and the Edge record buffer are no DTCM business.
+#ifdef __arm__
+#define AXI_BSS __attribute__((section(".axi_bss")))
+#else
+#define AXI_BSS
+#endif
+static char s_pool[STORE_CACHE_SIZE] AXI_BSS;
 static size_t s_used;
 static struct {
     const char *name;
@@ -54,7 +60,7 @@ static struct {
     int readers;
     bool doomed;  // superseded: deleted when the last reader unpins
 } s_pins[MAX_PINS];
-static char s_chunk[STORE_EDGE_RECORD];  // the record being filled by store_edge_save
+static char s_chunk[STORE_EDGE_RECORD] AXI_BSS;  // the record being filled by store_edge_save
 
 static struct {
     store_listener_t fn;

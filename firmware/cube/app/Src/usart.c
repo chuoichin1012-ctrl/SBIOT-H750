@@ -63,7 +63,7 @@ void MX_UART7_Init(void)
   {
     Error_Handler();
   }
-  if (HAL_UARTEx_DisableFifoMode(&huart7) != HAL_OK)
+  if (HAL_UARTEx_EnableFifoMode(&huart7) != HAL_OK)
   {
     Error_Handler();
   }

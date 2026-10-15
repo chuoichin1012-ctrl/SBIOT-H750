@@ -1,0 +1,42 @@
+diff --git a/contrib/ports/freertos/sys_arch.c b/contrib/ports/freertos/sys_arch.c
+index 8568353..6978474 100644
+--- a/contrib/ports/freertos/sys_arch.c
++++ b/contrib/ports/freertos/sys_arch.c
+@@ -475,7 +475,13 @@ sys_thread_new(const char *name, lwip_thread_fn thread, void *arg, int stacksize
+ 
+   /* lwIP's lwip_thread_fn matches FreeRTOS' TaskFunction_t, so we can pass the
+      thread function without adaption here. */
++#ifdef LWIP_FREERTOS_STATIC_THREAD
++  /* SBIOT patch: lwIP's threads take a static stack from the port (spec §5.3). */
++  rtos_task = LWIP_FREERTOS_STATIC_THREAD(thread, name, rtos_stacksize, arg, prio);
++  ret = rtos_task != NULL ? pdTRUE : pdFALSE;
++#else
+   ret = xTaskCreate(thread, name, (configSTACK_DEPTH_TYPE)rtos_stacksize, arg, prio, &rtos_task);
++#endif
+   LWIP_ASSERT("task creation failed", ret == pdTRUE);
+ 
+   lwip_thread.thread_handle = rtos_task;
+diff --git a/src/core/ipv4/dhcp.c b/src/core/ipv4/dhcp.c
+index 12e0068..a5c8458 100644
+--- a/src/core/ipv4/dhcp.c
++++ b/src/core/ipv4/dhcp.c
+@@ -89,6 +89,9 @@
+ #ifndef LWIP_HOOK_DHCP_APPEND_OPTIONS
+ #define LWIP_HOOK_DHCP_APPEND_OPTIONS(netif, dhcp, state, msg, msg_type, options_len_ptr)
+ #endif
++#ifndef LWIP_DHCP_DNS_FROM_LEASE /* SBIOT patch */
++#define LWIP_DHCP_DNS_FROM_LEASE(netif) 1
++#endif
+ #ifndef LWIP_HOOK_DHCP_PARSE_OPTION
+ #define LWIP_HOOK_DHCP_PARSE_OPTION(netif, dhcp, state, msg, msg_type, option, len, pbuf, offset) do { LWIP_UNUSED_ARG(msg); } while(0)
+ #endif
+@@ -737,7 +740,8 @@ dhcp_handle_ack(struct netif *netif, struct dhcp_msg *msg_in)
+ 
+ #if LWIP_DHCP_PROVIDE_DNS_SERVERS
+   /* DNS servers */
+-  for (n = 0; (n < LWIP_DHCP_PROVIDE_DNS_SERVERS) && dhcp_option_given(dhcp, DHCP_OPTION_IDX_DNS_SERVER + n); n++) {
++  /* SBIOT patch: the port may keep DNS servers of its own (a manual DNS with DHCP, spec §7.1). */
++  for (n = 0; LWIP_DHCP_DNS_FROM_LEASE(netif) && (n < LWIP_DHCP_PROVIDE_DNS_SERVERS) && dhcp_option_given(dhcp, DHCP_OPTION_IDX_DNS_SERVER + n); n++) {
+     ip_addr_t dns_addr;
+     ip_addr_set_ip4_u32_val(dns_addr, lwip_htonl(dhcp_get_option_value(dhcp, DHCP_OPTION_IDX_DNS_SERVER + n)));
+     dns_setserver(n, &dns_addr);

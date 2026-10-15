@@ -8,7 +8,7 @@ BUILD := build
 CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c ../../components/proto/jsonscan.c
 ARENA := ../../components/arena/arena.c $(TLSF)/tlsf.c
 
-all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/bind_sample.bin $(BUILD)/test_bind $(BUILD)/test_store $(BUILD)/test_store_small $(BUILD)/test_heap
+all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/bind_sample.bin $(BUILD)/test_bind $(BUILD)/test_store $(BUILD)/test_store_small $(BUILD)/test_heap $(BUILD)/test_ip101 $(BUILD)/test_netcfg $(BUILD)/test_dhcp_dns $(BUILD)/test_rng
 	$(BUILD)/test_cfgmodel
 	$(BUILD)/test_proto
 	$(BUILD)/test_jsonscan
@@ -24,6 +24,10 @@ all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/
 	STORE_CUTS=1 ASAN_OPTIONS=detect_leaks=0 $(BUILD)/test_store
 	$(BUILD)/test_store_small
 	$(BUILD)/test_heap
+	$(BUILD)/test_ip101
+	$(BUILD)/test_netcfg
+	$(BUILD)/test_dhcp_dns
+	$(BUILD)/test_rng
 
 $(BUILD)/test_cfgmodel: test_cfgmodel.c $(CFG) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
@@ -119,3 +123,26 @@ clean:
 	rm -rf $(BUILD)
 
 .PHONY: all clean
+
+NET := ../../components/netmgr
+
+$(BUILD)/test_ip101: test_ip101.c $(NET)/ip101.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -I$(NET)/include $^ -o $@
+
+$(BUILD)/test_netcfg: test_netcfg.c $(NET)/netcfg.c ../../components/ota/sha256.c $(CJSON)/cJSON.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -I$(NET)/include $^ -lm -o $@
+
+# lwIP's own DHCP client and DNS on the host (NO_SYS), with the SBIOT patch. EXTRA adds flags (RED runs).
+LWIP := ../../third_party/lwip/src
+LWIP_HOST := $(addprefix $(LWIP)/core/,init.c def.c dns.c inet_chksum.c ip.c mem.c memp.c netif.c pbuf.c stats.c sys.c timeouts.c udp.c) \
+  $(addprefix $(LWIP)/core/ipv4/,acd.c dhcp.c etharp.c icmp.c ip4.c ip4_addr.c ip4_frag.c) $(LWIP)/netif/ethernet.c
+
+$(BUILD)/test_dhcp_dns: test_dhcp_dns.c $(LWIP_HOST) lwip/lwipopts.h
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -Wno-address -Ilwip -I$(LWIP)/include $(EXTRA) $(filter %.c,$^) -o $@
+
+$(BUILD)/test_rng: test_rng.c ../../components/board/rng_core.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) $^ -o $@

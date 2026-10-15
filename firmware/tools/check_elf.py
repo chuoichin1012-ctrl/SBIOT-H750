@@ -20,11 +20,18 @@ APP_FORBIDDEN = [
     'HAL_QSPI_MemoryMapped', 'MX_QUADSPI_Init', 'HAL_MPU_ConfigRegion',
     # one heap (spec §5.5): newlib-nano's allocator and the real _sbrk_r never linked
     '__malloc_free_list', '__malloc_sbrk_start', '_sbrk_r',
+    # CubeMX's inits that end in Error_Handler, a spin with interrupts off (Plan 06a): netmgr and
+    # board_rng initialise the ETH and the RNG themselves, and report a failure instead
+    'MX_ETH_Init', 'MX_RNG_Init',
 ]
 # Hot code that must run from ITCM (spec §5.3), above the 1 KB null guard.
 APP_ITCM = ['vTaskSwitchContext', 'xTaskIncrementTick', 'PendSV_Handler', 'SysTick_Handler', 'SVC_Handler',
-            'memcpy', 'memset']
+            'memcpy', 'memset', 'ETH_IRQHandler', 'HAL_ETH_IRQHandler']
 ITCM = (0x00000400, 0x00010000)
+AXI = (0x24000000, 0x24080000)
+SRAM1 = (0x30000000, 0x30020000)
+# What a DMA engine touches, plus lwIP's MEM heap: SRAM1, non-cacheable (spec §5.4, §5.6).
+APP_SRAM1 = ['lwip_ram_heap', 'DMARxDscrTab', 'DMATxDscrTab', 's_eth_rx_bufs', 's_eth_tx_bufs']
 DTCM = (0x20000000, 0x20020000)
 DTCM_BUDGET = 120 * 1024
 QSPI_SLOT = (0x90000000, 0x90000000 + 1472 * 1024)
@@ -106,6 +113,13 @@ def main():
     for name in APP_ITCM:
         a = sym.get(name, 0)
         check(ITCM[0] <= a < ITCM[1], 'app: %s in ITCM (0x%08x)' % (name, a))
+    for name in APP_SRAM1:
+        a = sym.get(name, 0)
+        check(SRAM1[0] <= a < SRAM1[1], 'app: %s in SRAM1 (0x%08x)' % (name, a))
+    # lwIP's memp pools are CPU-only: AXI, cacheable (spec §5.6, pool table).
+    memp = sorted(n for n in sym if re.fullmatch(r'memp_memory_\w+_base', n))
+    off = [n for n in memp if not AXI[0] <= sym[n] < AXI[1]]
+    check(len(memp) >= 10 and not off, 'app: %d lwIP memp pools in AXI%s' % (len(memp), (' (not: %s)' % ', '.join(off)) if off else ''))
     check(sec.get('.image_header') == (0x90000000, 0x400), 'app: 1 KB header at 0x90000000')
     check(sec.get('.isr_vector', (0, 0))[0] == 0x90000400, 'app: vector table at 0x90000400')
     called = calls_in(app, 'Reset_Handler')

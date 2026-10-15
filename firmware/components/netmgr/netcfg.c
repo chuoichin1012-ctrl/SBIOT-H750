@@ -1,0 +1,90 @@
+#include "netcfg.h"
+#include <string.h>
+#include "sha256.h"
+
+static int num(const cJSON *o, const char *k)
+{
+    const cJSON *v = cJSON_GetObjectItemCaseSensitive(o, k);
+    return cJSON_IsNumber(v) ? v->valueint : 0;
+}
+
+static const char *str(const cJSON *o, const char *k)
+{
+    const cJSON *v = cJSON_GetObjectItemCaseSensitive(o, k);
+    return cJSON_IsString(v) ? v->valuestring : "";
+}
+
+bool netcfg_ip4(const char *s, uint32_t *out)
+{
+    if (!s)
+        return false;
+    uint32_t v = 0;
+    for (int part = 0; part < 4; part++) {
+        if (part && *s++ != '.')
+            return false;
+        if (*s < '0' || *s > '9')
+            return false;
+        if (s[0] == '0' && s[1] >= '0' && s[1] <= '9')
+            return false;  // a leading 0: octal to inet_aton, decimal to people
+        uint32_t n = 0;
+        for (int d = 0; *s >= '0' && *s <= '9'; d++, s++) {
+            n = n * 10 + (uint32_t)(*s - '0');
+            if (d >= 3 || n > 255)
+                return false;
+        }
+        v = v << 8 | n;
+    }
+    if (*s)
+        return false;
+    *out = v;
+    return true;
+}
+
+static bool mask_ok(uint32_t m)
+{
+    return m != 0 && (~m & (~m + 1)) == 0;  // ones, then only zeros
+}
+
+static uint32_t ip_or_zero(const char *s)
+{
+    uint32_t v;
+    return netcfg_ip4(s, &v) ? v : 0;
+}
+
+void netcfg_from_json(const cJSON *network, const cJSON *system, net_cfg_t *out)
+{
+    memset(out, 0, sizeof *out);
+    out->dhcp = true;
+    bool manual_dns = num(network, "dnsMode") == 1;
+    if (num(network, "ipMode") == 1) {
+        uint32_t ip, mask, gw;
+        if (netcfg_ip4(str(network, "ip"), &ip) && ip != 0 && netcfg_ip4(str(network, "netmask"), &mask) && mask_ok(mask) &&
+            netcfg_ip4(str(network, "gateway"), &gw)) {
+            out->dhcp = false;
+            out->ip = ip;
+            out->mask = mask;
+            out->gw = gw;
+            manual_dns = true;
+        } else {
+            out->static_incomplete = true;
+        }
+    }
+    out->dns_manual = manual_dns;
+    if (manual_dns) {
+        out->dns1 = ip_or_zero(str(network, "dns1"));
+        out->dns2 = ip_or_zero(str(network, "dns2"));
+    }
+    const char *h = str(system, "hostname");
+    strncpy(out->hostname, *h ? h : NETCFG_HOSTNAME_DEFAULT, sizeof out->hostname - 1);
+}
+
+void netcfg_mac(const uint8_t uid[12], uint8_t mac[6])
+{
+    uint8_t h[32];
+    sha256_t s;
+    sha256_init(&s);
+    sha256_update(&s, uid, 12);
+    sha256_final(&s, h);
+    mac[0] = 0x02;
+    memcpy(mac + 1, h, 5);
+}

@@ -7,7 +7,7 @@ Checks both files:
 - every pin of the spec §3 table carries its signal, GPIO label and initial level;
 - no other pin is assigned;
 - every signal exists on its pin in the CubeMX MCU database;
-- what the bootloader freezes (PLL1, bus prescalers, supply, QSPI, UART7) is identical in the two files.
+- what the bootloader freezes (PLL1, bus prescalers, supply, QSPI, the UART7 line format) is identical in the two files.
 Prints "pins: ok" or the failures and exits 1.
 """
 import os
@@ -56,7 +56,9 @@ def speed_for(pin, sig):
 # What the bootloader sets up once and the app relies on (spec §6.2): identical in both files.
 FROZEN = re.compile(r'^(RCC\.(HSE_VALUE|DIV[MNPQR]1|SYSCLKSource|PLLSourceVirtual|D1CPRE|HPRE|D[123]PPRE[12]?|'
                     r'PWR_Regulator_Voltage_Scale|SupplySource|QSPICLockSelection|SYSCLKFreq_VALUE|HCLKFreq_Value|'
-                    r'APB[1234]Freq_Value|QSPIFreq_Value|FLatency)|QUADSPI\..*|UART7\..*)$')
+                    r'APB[1234]Freq_Value|QSPIFreq_Value|FLatency)|QUADSPI\..*|'
+                    # UART7: the line format the two images share. The app adds its RX FIFO (Plan 06a, B1).
+                    r'UART7\.(BaudRate|VirtualMode|WordLength|Parity|StopBits))$')
 EXPECT_KEYS = {
     'RCC.SYSCLKFreq_VALUE': '480000000', 'RCC.HCLKFreq_Value': '240000000', 'RCC.APB1Freq_Value': '120000000',
     'RCC.QSPIFreq_Value': '160000000', 'RCC.DIVQ1': '6', 'QUADSPI.ClockPrescaler': '1', 'QUADSPI.FlashSize': '22',

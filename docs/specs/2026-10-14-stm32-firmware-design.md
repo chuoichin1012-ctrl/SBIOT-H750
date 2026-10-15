@@ -146,8 +146,8 @@ Mọi thao tác trên slot **xóa** theo sector 4 KB và **ghi** theo page 256 B
 |---|---|---|---|
 | ITCM | 64 KB | Code nóng chép từ QSPI lúc khởi động: kernel FreeRTOS, các ISR (ETH, USART, DMA, TIM), `memcpy`/`memset`, lõi bignum của mbedTLS | Section `.itcm_text` |
 | DTCM | 128 KB | MSP 4 KB, `.data`/`.bss` nhỏ, stack tĩnh của mọi task **trừ** `web` và `edge_tcpN` (khoảng 95 KB theo §6.1, kể cả `init`, timer và `cmux_rx`), TCB. Tổng DTCM ≤ 120 KB, kiểm bằng file map của linker | ETH và DMA1/2 không truy cập được vùng này. §5.4 bảo đảm không DMA nào đọc hay ghi trực tiếp ở đây |
-| AXI SRAM (D1) | 512 KB | **Tĩnh** (các section, tổng khoảng 193 KB): arena JSON 64 KB (§9.3), buffer văn bản Edge 48 KB (§9.3), mô hình Edge lúc chạy và cache giá trị khoảng 20 KB, cache văn bản cấu hình của `store` 20 KB cộng bộ đệm bản ghi Edge 8 KB, stack của `web` và `edge_tcpN` khoảng 33 KB. **Heap** (`heap_5`, vùng heap duy nhất) **256 KB**, dự kiến dùng bên trong như sau: 3 phiên TLS khoảng 105 KB cộng đỉnh lúc handshake khoảng 30 KB, Mongoose khoảng 40 KB, buffer report ≤ 26 KB (§9.4), buffer mạng coreMQTT 2 × 4 KB, các cấp phát nhỏ lúc chạy khoảng 20 KB, tổng khoảng 229 KB. **Mỗi allocation chỉ tính một lần**, hoặc ở phần tĩnh, hoặc ở phần heap | Cacheable (write-back). Phần AXI chưa cấp khoảng 63 KB. Phần heap còn dư khoảng 27 KB, kiểm bằng §12.3 |
-| SRAM1 (D2) | 128 KB | Descriptor, buffer RX và buffer TX của ETH, heap `MEM` của lwIP 64 KB, pool pbuf, ring DMA RX và buffer TX của USART1/2/3, buffer trung chuyển SPI4. Số lượng và kích thước chốt trong bảng pool lwIP (§5.6) | **Non-cacheable qua MPU.** Startup bật clock SRAM D2 trước khi khởi tạo `.data` |
+| AXI SRAM (D1) | 512 KB | **Tĩnh** (các section, tổng khoảng 193 KB): arena JSON 64 KB (§9.3), buffer văn bản Edge 48 KB (§9.3), mô hình Edge lúc chạy và cache giá trị khoảng 20 KB, cache văn bản cấu hình của `store` 20 KB cộng bộ đệm bản ghi Edge 8 KB, stack của `web` và `edge_tcpN` khoảng 33 KB. **Heap** (`heap_5`, vùng heap duy nhất) **256 KB**, dự kiến dùng bên trong như sau: 3 phiên TLS khoảng 105 KB cộng đỉnh lúc handshake khoảng 30 KB, Mongoose khoảng 40 KB, buffer report ≤ 26 KB (§9.4), buffer mạng coreMQTT 2 × 4 KB, các cấp phát nhỏ lúc chạy khoảng 20 KB, tổng khoảng 229 KB. **Mỗi allocation chỉ tính một lần**, hoặc ở phần tĩnh, hoặc ở phần heap | Cacheable (write-back). Các pool memp và `PBUF_POOL` của lwIP chiếm 26 KB tĩnh (§5.6), nên phần AXI chưa cấp còn khoảng 37 KB. Phần heap còn dư khoảng 27 KB, kiểm bằng §12.3 |
+| SRAM1 (D2) | 128 KB | Chỉ những gì DMA chạm tới, cộng heap `MEM` của lwIP 64 KB: descriptor, buffer RX và buffer TX của ETH, ring DMA RX và buffer TX của USART1/2/3, buffer trung chuyển SPI4. Các pool memp của lwIP chỉ CPU dùng nên nằm ở AXI (Plan 06a). Sau 06a đã dùng 99 KB, còn khoảng 29 KB cho USART (14 KB, Plan 07). Số lượng và kích thước chốt trong bảng pool lwIP (§5.6) | **Non-cacheable qua MPU.** Startup bật clock SRAM D2 trước khi khởi tạo `.data` |
 | SRAM2+3 (D2) | 160 KB | Ring serial → mạng 2 × 8 KB, `bufferOffline` 2 × 32 KB, outbox MQTT 64 KB. Còn 16 KB cho metadata và căn lề | Cacheable |
 | SRAM4 (D3) | 64 KB | Ring syslog 32 KB, ring của `mqtt_io` 2 × 12 KB, **buffer BDMA của ADC3** (800 B) trong region non-cacheable 1 KB riêng ở 0x3800FC00 (§6.6). Còn khoảng 7 KB | Region 1 KB của ADC đặt non-cacheable qua MPU, phần còn lại cacheable |
 | Backup SRAM | 4 KB | Bản ghi HardFault (§11.4) | |
@@ -224,14 +224,31 @@ Khoảng 64 netconn, đủ cho:
 
 Cấu hình chính: `TCP_SND_BUF` = `TCP_WND` = 4×MSS, `MEM_SIZE` 64 KB dùng chung, bật `LWIP_IGMP`.
 
-- **Bảng pool:** việc đầu tiên của module `netmgr` trong kế hoạch là lập bảng pool. Bảng chốt kích thước và vùng đặt của từng pool:
-  - `MEMP_NUM_NETCONN`, `MEMP_NUM_TCP_PCB`, `MEMP_NUM_TCP_PCB_LISTEN`, `MEMP_NUM_UDP_PCB`;
-  - `MEMP_NUM_TCP_SEG`, `PBUF_POOL_SIZE`, `MEMP_NUM_NETBUF`;
-  - các mailbox của `tcpip` và netconn;
-  - `LWIP_SOCKET_OFFSET` và số socket tối đa;
-  - DNS và PPP.
+- **Bảng pool** (Plan 06a, `app/lwipopts.h`). Kích thước đo từ file map; `tools/check_elf.py` kiểm vùng đặt:
 
-  Các pool này nằm ngoài `MEM_SIZE`. Mức chiếm dụng của chúng được báo trong `/api/status.mem`.
+  | Mục | Giá trị | Vùng | Đo |
+  |---|---|---|---|
+  | `MEM_SIZE` | 64 KB | SRAM1 (`lwip_ram_heap`) | 65 600 B |
+  | Buffer RX của ETH (zero-copy, free list riêng) | 16 × 1536 B | SRAM1 | 25 088 B |
+  | Buffer TX của ETH (chép vào) | 4 × 1536 B | SRAM1 | 6 144 B |
+  | Descriptor ETH (`ETH_RX/TX_DESC_CNT` của CubeMX) | 4 RX + 4 TX | SRAM1 | 192 B |
+  | `MEMP_NUM_NETCONN` | 64 | AXI | 3 075 B |
+  | `MEMP_NUM_TCP_PCB` | 56 (2 × 16 client server, khoảng 8 web, 4 WebSocket, MQTT, 5 Modbus TCP, 2 bridge client, dư cho TIME_WAIT) | AXI | 9 187 B |
+  | `MEMP_NUM_TCP_PCB_LISTEN` | 8 | AXI | 227 B |
+  | `MEMP_NUM_UDP_PCB` | 12 (DHCP, DNS, SNTP, 2 UDP bridge, dư) | AXI | 483 B |
+  | `MEMP_NUM_TCP_SEG` | 128 | AXI | 2 051 B |
+  | `MEMP_NUM_NETBUF`, `MEMP_NUM_PBUF` | 16, 32 | AXI | 774 B |
+  | `MEMP_NUM_TCPIP_MSG_API` / `_INPKT` | 16 / 32 | AXI | 774 B |
+  | `PBUF_POOL_SIZE` × `PBUF_POOL_BUFSIZE` | 16 × 512 B, chỉ cho PPPoS (Plan 09); RX của ETH có pool riêng | AXI | 8 451 B |
+  | ARP 16 mục, hàng đợi ARP 16, IGMP 8 nhóm, reassembly 4 (`IP_REASS_MAX_PBUFS` 10, dưới 16 buffer RX), DNS 4 mục, 2 server | | AXI | khoảng 1,3 KB |
+  | `TCP_MSS`, `TCP_WND` = `TCP_SND_BUF` | 1460, 4 × MSS | | |
+  | `TCPIP_MBOX_SIZE`; mailbox recv/accept của netconn | 32; 8 mỗi loại | heap (queue FreeRTOS) | tối đa 64 netconn × khoảng 112 B ≈ 7 KB, nằm trong "các cấp phát nhỏ" của §5.3 |
+  | `LWIP_SOCKET_OFFSET`, số socket tối đa | 0, 64 | | `FD_SETSIZE` 64 của newlib ≥ offset + netconn, kiểm bằng `app/fdset_check.c` |
+  | Stack `tcpip`, `eth_rx` | 4 KB, 2 KB, tĩnh | DTCM | qua patch `sys_thread_new` (`third_party/lwip/README.md`) |
+  | PPP | tắt tới Plan 09 | | |
+
+  Các pool này nằm ngoài `MEM_SIZE`. Mức chiếm dụng của chúng được báo trong `/api/status.mem` (`MEMP_STATS`; trên console bench là lệnh `n`).
+- Checksum tính bằng phần mềm ở cả hai chiều; TX không chèn checksum phần cứng. Một quy tắc ở một chỗ.
 - **Thiếu bộ nhớ là lỗi tạm thời, không phải lỗi kết nối.** lwIP ánh xạ `ERR_MEM` thành `ENOMEM` và `ERR_BUF` thành `ENOBUFS`. Các mã `EWOULDBLOCK`/`EAGAIN`, `ENOMEM` và `ENOBUFS` đều được xử lý như "thử lại sau": dữ liệu vẫn nằm trong ring của bridge và socket không bị đóng.
 - **Kiểm soát nhận kết nối:** khi pool `netconn` còn dưới 4, listener của các TCP server ngừng `accept`.
 
@@ -444,7 +461,11 @@ Quy tắc riêng của bản STM32:
 ### 7.1 Ethernet
 
 - Driver ETH của HAL H7 dùng descriptor đặt trong SRAM1 non-cacheable. Phát hiện link qua MDIO, poll mỗi 1 s.
-- IP tĩnh hoặc DHCP, DNS, hostname: lấy từ cấu hình `network`.
+- IP tĩnh hoặc DHCP, DNS, hostname: lấy từ cấu hình `network` (và `system.hostname`), **đọc một lần lúc khởi động** (§9.1). Quy tắc giữ như ESP32: `ipMode` 1 là tĩnh, địa chỉ tĩnh luôn dùng DNS thủ công, địa chỉ tĩnh thiếu (ip, mask hay gateway không hợp lệ, mask không liên tục, ip 0.0.0.0) thì dùng DHCP và DNS theo `dnsMode`. Địa chỉ đọc chặt: bốn số thập phân 0–255, không dấu, không khoảng trắng, không số 0 đứng đầu.
+- **DNS thủ công khi dùng DHCP:** DHCP chỉ đặt DNS khi `dnsMode` là tự động, và chỉ từ ACK đã được lwIP chấp nhận, kể cả ACK gia hạn (patch `dhcp_handle_ack`, test `test_dhcp_dns`). Bản ESP32 để ACK ghi đè DNS thủ công.
+- **MAC:** `02` (quản lý cục bộ, unicast) cộng 5 byte đầu của SHA-256 trên UID 12 byte. Cùng một board luôn có cùng MAC.
+- **PHY:** reset bằng PD13 (10 ms thấp, chờ 50 ms), rồi `HAL_ETH_Init` (cần REF_CLK từ PHY), rồi quét MDIO 1–31 rồi 0. Trên bench IP101 trả lời ở địa chỉ 1 hoặc 0 tùy lần boot (0 là địa chỉ broadcast của IP101). Tốc độ và duplex lấy từ `ANAR ∧ ANLPAR`. Không tìm thấy PHY hay ETH init lỗi: ghi log, mạng nằm im, không vòng `Error_Handler`.
+- **RNG** (HSI48, bật trong `HAL_RNG_MspInit`): `board_rng` báo lỗi khi RNG phần cứng lỗi và là nguồn entropy duy nhất cho mbedTLS (§7.3); `board_rand32` chỉ cho `LWIP_RAND`, khi RNG lỗi thì dùng xorshift lấy mầm từ UID và đồng hồ.
 - Bật IGMP để `bridge` dùng multicast.
 
 ### 7.2 LTE EC600U
@@ -795,7 +816,7 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
   - UI gzip nhúng trong firmware, phục vụ không cần xác thực, ETag là hash nội dung từng file (F23);
   - Basic auth cho `/api/*`, so sánh thời gian hằng định;
   - trả 401 **không kèm** `WWW-Authenticate`;
-  - đổi login có hiệu lực ngay và đóng mọi client WebSocket;
+  - **khác bản ESP32:** đổi login, như mọi cấu hình khác, chỉ có hiệu lực sau khi khởi động lại gateway (§9.1; người dùng giữ nguyên tắc này, 2026-10-15). Trong lúc chưa khởi động lại, login cũ vẫn dùng được;
   - **Quy tắc timeout chung cho mọi body nhận theo luồng** (OTA, chứng chỉ, Edge): bỏ cuộc sau **hai** lần chờ 15 s liên tiếp không có byte nào, tức 30 s im lặng. Kết quả là 408 và giải phóng mọi buffer.
 - **WebSocket console** tại `/ws?auth=`:
   - kiểm login **trước** handshake, sai thì trả 401;

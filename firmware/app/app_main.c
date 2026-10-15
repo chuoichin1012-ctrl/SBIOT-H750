@@ -6,6 +6,7 @@
 // 3 s. Later plans replace it.
 #include "app_main.h"
 #include "bench_ota.h"
+#include "bench_serial.h"
 #include "heap_newlib.h"
 #include "board_rng.h"
 #include "cfgmodel.h"
@@ -16,6 +17,7 @@
 #include "webapi.h"
 #include "flash_spi4.h"
 #include "store.h"
+#include "store_port.h"
 #include "syslog.h"
 #include <stdbool.h>
 #include <stdio.h>
@@ -205,6 +207,7 @@ static void init_task(void *arg)
         serial_start(port, pc, sys);
         cJSON_Delete(pc);
     }
+    bench_serial_init();
     if (webapi_start(sys))
         blog("app: web FAILED\r\n");
     sysmgr_start(sys);
@@ -316,6 +319,34 @@ static void init_task(void *arg)
                 uart_drv_inject_xoff(port);
                 blog("app: X%d armed\r\n", port);
             }
+            break;
+        }
+        case 'E':
+        case 'F': {  // bench: a port as the other's counterpart (bench_serial.c)
+            char l[300];
+            read_line(l, sizeof l);
+            bench_serial_cmd((char)c, l);
+            break;
+        }
+        case 'Z': {  // provisioning: "Z" then "WIPE": erase all of SPI4 (a board that ran another firmware), then reset
+            char l[8];
+            read_line(l, sizeof l);
+            if (strcmp(l, "WIPE") != 0) {
+                blog("app: Z needs WIPE\r\n");
+                break;
+            }
+            store_port_lock();  // FlashDB is never called again before the reset
+            nor_t *n = flash_spi4();
+            uint64_t t0 = now_us();
+            int bad = 0;
+            for (uint32_t a = 0; a < 0x400000u; a += 0x1000u) {
+                bad += n->erase_sector(n, a) != 0;
+                if (a % 0x100000u == 0)
+                    blog("app: wiping SPI4 at %lu KB\r\n", (unsigned long)(a / 1024u));
+            }
+            blog("app: SPI4 wiped in %lu ms, %d sectors failed; restarting\r\n", (unsigned long)((now_us() - t0) / 1000u), bad);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            NVIC_SystemReset();
             break;
         }
         case 's': {  // bench: the serial counters of both ports

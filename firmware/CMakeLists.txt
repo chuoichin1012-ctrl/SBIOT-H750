@@ -108,7 +108,7 @@ set(APP_RTOS
   ${RTOS}/tasks.c ${RTOS}/queue.c ${RTOS}/list.c ${RTOS}/timers.c ${RTOS}/stream_buffer.c
   ${RTOS}/portable/GCC/ARM_CM4F/port.c ${RTOS}/portable/MemMang/heap_5.c)
 set(APP_OWN
-  app/startup_app.c app/mpu_app.c app/app_main.c app/hal_tick.c app/image_header.c app/bench_ota.c app/flash_spi4.c app/heap_newlib.c ${BOARD}/heap_wrap.c
+  app/startup_app.c app/mpu_app.c app/app_main.c app/hal_tick.c app/image_header.c app/bench_ota.c app/bench_serial.c app/flash_spi4.c app/heap_newlib.c ${BOARD}/heap_wrap.c
   ${BOARD}/board_io.c ${BOARD}/now_us.c ${BOARD}/tick64.c ${BOARD}/wdog.c ${BOARD}/blog.c ${BOARD}/crc32.c
   ${BOARD}/syscalls.c ${BOARD}/spi_nor.c ${OTA}/sha256.c ${OTA}/ota_image.c ${OTA}/ota_app.c ${OTA}/bind.c
   app/store_port.c ${STORE}/store.c ${STORE}/fal_nor.c ${CMAKE_SOURCE_DIR}/components/syslog/syslog.c ${CFGM}/cfgmodel.c ${PROTO}/ipacl.c ${PROTO}/jsonscan.c

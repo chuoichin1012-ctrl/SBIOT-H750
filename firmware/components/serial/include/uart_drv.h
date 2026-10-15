@@ -38,6 +38,8 @@ int uart_drv_init(int port, const sf_line_t *line, uint32_t gap_us, bool xonxoff
 /** The ring, its size, and the DMA's absolute write position now. */
 const uint8_t *uart_drv_ring(int port);
 uint32_t uart_drv_wr(int port);
+/** A character is arriving now (the USART's BUSY). */
+bool uart_drv_rx_busy(int port);
 /** RTU (t1.5 receiver timeout, t3.5 one-shot) or transparent (the gap), from the next byte on. */
 void uart_drv_set_mode(int port, sf_mode_t mode);
 /** The device's XOFF (true) or XON, seen by serial_rx. */

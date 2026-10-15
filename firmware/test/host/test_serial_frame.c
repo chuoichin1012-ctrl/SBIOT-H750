@@ -49,6 +49,15 @@ static void test_timing(void)
     CHECK(presc > 0, "600 baud needs the prescaler (%u)", (unsigned)presc);
     sf_brr(120000000u, 230400, &presc, &brr, &err);
     CHECK(presc == 0 && brr == 521, "230 400: no prescaler, BRR 521 (%u %u)", (unsigned)presc, (unsigned)brr);
+    CHECK(sf_rto_us(&r1200, 17) == 14167, "17 RTO bits at 1200: 14 167 us (%u)", (unsigned)sf_rto_us(&r1200, 17));
+    // The t3.5 one-shot starts at the RTO, whose t1.5 is rounded up to whole bits: RTO + one-shot is t3.5.
+    sf_line_t rtu[] = {{600, 7, 1, 2}, {1200, 8, 2, 1}, {9600, 8, 0, 1}, {19200, 8, 2, 1}, {115200, 8, 2, 1}, {230400, 8, 0, 1}};
+    for (size_t i = 0; i < sizeof rtu / sizeof rtu[0]; i++) {
+        uint32_t rto = sf_rto_us(&rtu[i], sf_rto_bits(&rtu[i], sf_t15_us(&rtu[i]))), os = sf_t35_oneshot_us(&rtu[i]);
+        uint32_t t35 = sf_t35_us(&rtu[i]);
+        CHECK(os > 0 && rto + os + 1 >= t35 && rto + os <= t35 + 1, "%u baud: RTO %u + one-shot %u = t3.5 %u", (unsigned)rtu[i].baud,
+              (unsigned)rto, (unsigned)os, (unsigned)t35);
+    }
 }
 
 // ---- ring -----------------------------------------------------------------------------------------
@@ -61,6 +70,14 @@ static void test_ring(void)
     CHECK(sf_ring_wr(0, 2040, 2048, 2040) == 2056, "TC not yet counted: one lap further (%u)", (unsigned)sf_ring_wr(0, 2040, 2048, 2040));
     CHECK(sf_ring_pending(100, sf_ring_wr(1, 0, 2048, 100)) == 3996, "exactly full is more than size: overrun visible");
     CHECK(sf_ring_pending(0, sf_ring_wr(2, 1000, 2048, 0)) > 2048, "two laps behind: overrun");
+    // sf_ring_take: how far a reader at rd reads for an event at ev, the DMA being at now.
+    bool lapped;
+    CHECK(sf_ring_take(0, 1024, 3072, 2048, &lapped) == 3072 && lapped,
+          "events queued while the DMA lapped the reader: an overrun, read on from where the DMA is");
+    CHECK(sf_ring_take(0, 1024, 2020, 2048, &lapped) == 2020 && lapped, "the DMA within 64 bytes of a lap: an overrun");
+    CHECK(sf_ring_take(0, 1024, 1500, 2048, &lapped) == 1024 && !lapped, "the DMA ahead but not near a lap: up to the event");
+    CHECK(sf_ring_take(3072, 2048, 3072, 2048, &lapped) == 3072 && !lapped, "a stale event behind the reader: nothing to read");
+    CHECK(sf_ring_take(0xFFFFFF00u, 0x100u, 0x100u, 2048, &lapped) == 0x100u && !lapped, "across the 32-bit wrap");
 }
 
 // ---- RX -------------------------------------------------------------------------------------------
@@ -147,6 +164,24 @@ static void test_rtu(void)
         sf_rx_end(&r);
     }
     CHECK(g_frames == 1000, "1000 RTOs in a row: 1000 frames (%d)", g_frames);
+
+    // A transaction that ends in a violation: back in transparent mode, the tail is still not a frame.
+    reset();
+    sf_rx_init(&r, SF_RTU, SF_FRAME_MAX, false, emit, NULL);
+    sf_rx_bytes(&r, ok, 3);
+    sf_rx_violation(&r);
+    sf_rx_mode(&r, SF_TRANSPARENT);
+    sf_rx_bytes(&r, ok + 3, 4);
+    sf_rx_end(&r);
+    CHECK(g_frames == 0 && !r.resync, "after the transaction, the tail is dropped up to a silence");
+    sf_rx_bytes(&r, ok, sizeof ok);
+    sf_rx_end(&r);
+    CHECK(g_frames == 1 && g_last_len == sizeof ok, "then frames come in");
+    // A transaction starts after a silence: entering RTU ends a resync.
+    sf_rx_bytes(&r, ok, 2);
+    sf_rx_line_error(&r);
+    sf_rx_mode(&r, SF_RTU);
+    CHECK(!r.resync, "entering RTU ends a resync");
 }
 
 static void test_errors(void)
@@ -159,8 +194,10 @@ static void test_errors(void)
     sf_rx_line_error(&r);
     sf_rx_bytes(&r, a + 2, 2);
     sf_rx_end(&r);
-    CHECK(g_frames == 1 && g_last_len == 2 && g_last[0] == 3 && r.line_errors == 1 && r.dropped == 1,
-          "a parity error mid-frame: what came before is dropped, what follows is a frame");
+    CHECK(g_frames == 0 && r.line_errors == 1 && r.dropped == 1, "a parity error mid-frame: the whole frame is dropped, to its end");
+    sf_rx_bytes(&r, a, 4);
+    sf_rx_end(&r);
+    CHECK(g_frames == 1 && g_last_len == 4, "the next frame comes in");
     sf_rx_bytes(&r, a, 4);
     sf_rx_overrun(&r);
     sf_rx_end(&r);
@@ -169,6 +206,15 @@ static void test_errors(void)
     sf_rx_mode(&r, SF_RTU);
     sf_rx_end(&r);
     CHECK(g_frames == 1 && r.mode == SF_RTU, "a mode switch drops the half frame");
+    // packetLength 1: the byte in error (read after the error is known) never goes out.
+    reset();
+    sf_rx_init(&r, SF_TRANSPARENT, 1, false, emit, NULL);
+    sf_rx_bytes(&r, a, 1);
+    sf_rx_line_error(&r);
+    sf_rx_bytes(&r, a + 1, 1);
+    sf_rx_end(&r);
+    sf_rx_bytes(&r, a + 2, 1);
+    CHECK(g_frames == 2 && g_last[0] == 3, "packetLength 1: the byte in error is not a frame (%d)", g_frames);
 }
 
 static void test_xonxoff(void)

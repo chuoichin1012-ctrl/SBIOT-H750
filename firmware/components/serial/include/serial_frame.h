@@ -30,6 +30,10 @@ uint32_t sf_t35_us(const sf_line_t *l);
 uint32_t sf_gap_ms(const sf_line_t *l, uint32_t packet_interval_ms);
 /** A silence of `us` as receiver-timeout bits (RTOR), rounded up, at least 1. */
 uint32_t sf_rto_bits(const sf_line_t *l, uint32_t us);
+/** `bits` receiver-timeout bits in microseconds (rounded). */
+uint32_t sf_rto_us(const sf_line_t *l, uint32_t bits);
+/** The t3.5 one-shot, started at the t1.5 RTO: t3.5 less the RTO as programmed (whole bits, rounded up). */
+uint32_t sf_t35_oneshot_us(const sf_line_t *l);
 /**
  * The USART prescaler and BRR for `baud` from kernel clock `clk` (Hz): the smallest prescaler of
  * {1,2,4,6,8,10,12,16,32,64,128,256} whose BRR (16x oversampling) fits 16..0xFFFF. presc_index is
@@ -46,6 +50,14 @@ bool sf_brr(uint32_t clk, uint32_t baud, uint32_t *presc_index, uint32_t *brr, i
 uint32_t sf_ring_wr(uint32_t laps, uint32_t ndtr, uint32_t size, uint32_t rd);
 /** Bytes between reader rd and writer wr; more than `size` means the writer lapped the reader. */
 static inline uint32_t sf_ring_pending(uint32_t rd, uint32_t wr) { return wr - rd; }
+#define SF_RING_MARGIN 64u  // what the DMA may write while the reader copies: 2.8 ms at 230 400
+/**
+ * How far a reader at rd reads for an event at position ev, the DMA being at now (events queue up, so
+ * ev may be stale): up to ev, or rd when ev is behind the reader. *lapped when the DMA lapped the
+ * reader, or is within SF_RING_MARGIN of it: the ring no longer holds rd's bytes, and the reader
+ * goes on from now (the return value).
+ */
+uint32_t sf_ring_take(uint32_t rd, uint32_t ev, uint32_t now, uint32_t size, bool *lapped);
 
 // ---- RX: frames -----------------------------------------------------------------------------------
 
@@ -58,7 +70,7 @@ typedef struct {
     uint32_t packet_len;  // transparent cut, 1..SF_FRAME_MAX
     bool xonxoff;         // flowControl 2: XON/XOFF are taken out of the data and pause our TX
     bool tx_paused;       // the device sent XOFF and no XON yet
-    bool resync;          // RTU: after a violation, nothing is a frame until t3.5 of silence
+    bool resync;          // after a violation or a line error, nothing is a frame until the next silence
     uint8_t frame[SF_FRAME_MAX];
     size_t len;
     sf_emit_fn emit;
@@ -73,11 +85,11 @@ void sf_rx_bytes(sf_rx_t *r, const uint8_t *p, size_t n);
 void sf_rx_end(sf_rx_t *r);
 /** RTU: a byte came, or a character was still arriving, inside t1.5..t3.5. The frame is dropped. */
 void sf_rx_violation(sf_rx_t *r);
-/** A parity, framing, noise or USART overrun error: the frame being built is dropped. */
+/** A parity, framing, noise or USART overrun error: the frame it is in is dropped, up to the next silence. */
 void sf_rx_line_error(sf_rx_t *r);
 /** The DMA writer lapped the reader: the frame being built is dropped. */
 void sf_rx_overrun(sf_rx_t *r);
-/** Switches the cut (a transaction starts or ends); the frame being built is dropped. */
+/** Switches the cut (a transaction starts or ends); the frame being built is dropped. Entering RTU ends a resync. */
 void sf_rx_mode(sf_rx_t *r, sf_mode_t mode);
 
 /** RTU, at the one-shot's expiry: a violation when the write position moved since the RTO, or BUSY. */

@@ -27,6 +27,7 @@ typedef struct {
     bool mask7;  // 7 data bits and parity: the USART's word carries the parity in bit 7
     sf_rx_t rx;  // serial_rx[n] only
     uint32_t rd;
+    uint32_t seen_wr;  // the DMA position a writer saw last (rx_quiet_since, under the bus mutex)
     uint32_t lost_seen;
     bool paused_seen;
     QueueHandle_t q;
@@ -125,14 +126,9 @@ static void deliver(void *ctx, const uint8_t *data, size_t len)
         p->subs[i].fn(p->n, data, len, p->subs[i].ctx);
 }
 
-// Feeds the ring's bytes up to `wr` to the frame logic.
+// Feeds the ring's bytes up to `wr` to the frame logic (sf_ring_take: the ring still holds them).
 static void drain(sport_t *p, uint32_t wr)
 {
-    if (wr - p->rd > UART_RING) {  // the DMA lapped the reader: what is in the ring is not in order
-        sf_rx_overrun(&p->rx);
-        p->rd = wr;
-        return;
-    }
     const uint8_t *ring = uart_drv_ring(p->n);
     while (p->rd != wr) {
         uint32_t at = p->rd % UART_RING, n = wr - p->rd;
@@ -168,10 +164,22 @@ static void rx_task(void *arg)
         if (lost != p->lost_seen) {  // events were lost: start over from where the DMA is
             p->lost_seen = lost;
             sf_rx_overrun(&p->rx);
-            p->rd = ev.wr;
+            p->rd = uart_drv_wr(p->n);
         }
-        if (ev.wr != p->rd)
-            drain(p, ev.wr);
+        // Events queue up behind a busy reader: their positions are checked against the DMA's now.
+        bool lapped, error = ev.type == UART_EV_ERROR;
+        uint32_t to = sf_ring_take(p->rd, ev.wr, uart_drv_wr(p->n), UART_RING, &lapped);
+        if (lapped) {
+            sf_rx_overrun(&p->rx);
+            p->rd = to;
+        } else if (to != p->rd) {
+            if (error) {  // the byte in error is the last one in: the bytes before it first, then the error
+                drain(p, to - 1);
+                sf_rx_line_error(&p->rx);
+                error = false;
+            }
+            drain(p, to);
+        }
         switch (ev.type) {
         case UART_EV_GAP:
         case UART_EV_RTU_END:
@@ -185,7 +193,8 @@ static void rx_task(void *arg)
             }
             break;
         case UART_EV_ERROR:
-            sf_rx_line_error(&p->rx);
+            if (error)
+                sf_rx_line_error(&p->rx);
             break;
         case UART_EV_MODE:
             sf_rx_mode(&p->rx, (sf_mode_t)ev.arg);
@@ -202,13 +211,27 @@ static void rx_task(void *arg)
 
 // ---- TX ---------------------------------------------------------------------------------------------
 
+// Since when nothing came in, as a writer can tell. serial_rx[n] stamps its reads, which wait for half
+// a ring or a silence; a frame still arriving shows first as the DMA's position moving, or as BUSY.
+// Under the bus mutex.
+static uint64_t rx_quiet_since(sport_t *p)
+{
+    uint32_t wr = uart_drv_wr(p->n);
+    if (wr != p->seen_wr || uart_drv_rx_busy(p->n)) {
+        p->seen_wr = wr;
+        ts_set(&p->last_rx_us, now_us());
+    }
+    return ts_get(&p->last_rx_us);
+}
+
 // 485 collision avoidance: wait until nothing was received for rs485IdleTime.
 static void wait_idle_bus(sport_t *p)
 {
     if (!p->anticollision || !p->idle_ms)
         return;
     for (int guard = 0; guard < 200; guard++) {
-        uint64_t quiet_ms = (now_us() - ts_get(&p->last_rx_us)) / 1000u;
+        uint64_t since = rx_quiet_since(p);  // first: it may stamp now
+        uint64_t quiet_ms = (now_us() - since) / 1000u;
         if (quiet_ms >= p->idle_ms)
             return;
         vTaskDelay(ticks((uint32_t)(p->idle_ms - quiet_ms + 1)));
@@ -252,7 +275,7 @@ int serial_transact(int port, const uint8_t *req, size_t len, uint8_t *resp, siz
     while (now_us() < ts_get(&p->reply_until_us))
         vTaskDelay(ticks(5));
     // A frame still arriving belongs to the subscribers: let it finish first.
-    while ((now_us() - ts_get(&p->last_rx_us)) / 1000u < p->gap_ms + 1u)
+    for (uint64_t since; since = rx_quiet_since(p), (now_us() - since) / 1000u < p->gap_ms + 1u;)
         vTaskDelay(ticks(p->gap_ms + 1u));
     uart_drv_set_mode(port, SF_RTU);
     xSemaphoreTake(p->txn_lock, portMAX_DELAY);
@@ -272,6 +295,10 @@ int serial_transact(int port, const uint8_t *req, size_t len, uint8_t *resp, siz
     if (got == 0)
         got = p->txn_dropped ? SERIAL_DROPPED : (int)p->txn_len;
     xSemaphoreGive(p->txn_lock);
+    // The tail of a broken answer is dropped up to t3.5 of silence: wait for that in RTU, so it never
+    // reaches the subscribers. Bounded, for a device that does not stop; serial_rx[n] writes resync.
+    for (int i = 0; got == SERIAL_DROPPED && i < 100 && p->rx.resync; i++)
+        vTaskDelay(ticks(2));
     uart_drv_set_mode(port, SF_TRANSPARENT);
     xSemaphoreGive(p->bus);
     return got;
@@ -390,8 +417,11 @@ int serial_start(int port, const cJSON *pcfg, const cJSON *sys)
         snprintf(name, sizeof name, "serial_hb%d", port);
         xTaskCreateStatic(hb_task, name, HB_STACK_WORDS, p, HB_PRIO, p->hb_stack, &p->hb_tcb);
     }
-    blog("serial: UART%d %lu %u%c%u, gap %lu ms, max %lu bytes, reply window %lu ms%s\r\n", port, (unsigned long)p->line.baud,
+    char ca[32] = "";
+    if (p->anticollision)
+        snprintf(ca, sizeof ca, ", bus idle %lu ms", (unsigned long)p->idle_ms);
+    blog("serial: UART%d %lu %u%c%u, gap %lu ms, max %lu bytes, reply window %lu ms%s%s\r\n", port, (unsigned long)p->line.baud,
          p->line.data_bits, "NOE"[p->line.parity % 3], p->line.stop_bits, (unsigned long)p->gap_ms,
-         (unsigned long)p->rx.packet_len, (unsigned long)p->reply_window_ms, xonxoff ? ", XON/XOFF" : "");
+         (unsigned long)p->rx.packet_len, (unsigned long)p->reply_window_ms, xonxoff ? ", XON/XOFF" : "", ca);
     return 0;
 }

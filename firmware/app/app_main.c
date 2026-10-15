@@ -336,14 +336,8 @@ static void init_task(void *arg)
                 break;
             }
             store_port_lock();  // FlashDB is never called again before the reset
-            nor_t *n = flash_spi4();
             uint64_t t0 = now_us();
-            int bad = 0;
-            for (uint32_t a = 0; a < 0x400000u; a += 0x1000u) {
-                bad += n->erase_sector(n, a) != 0;
-                if (a % 0x100000u == 0)
-                    blog("app: wiping SPI4 at %lu KB\r\n", (unsigned long)(a / 1024u));
-            }
+            int bad = flash_spi4_wipe();  // also fails every OTA write from here on
             blog("app: SPI4 wiped in %lu ms, %d sectors failed; restarting\r\n", (unsigned long)((now_us() - t0) / 1000u), bad);
             vTaskDelay(pdMS_TO_TICKS(50));
             NVIC_SystemReset();

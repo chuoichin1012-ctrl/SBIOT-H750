@@ -43,6 +43,17 @@ uint32_t sf_rto_bits(const sf_line_t *l, uint32_t us)
     return b ? b : 1;
 }
 
+uint32_t sf_rto_us(const sf_line_t *l, uint32_t bits)
+{
+    return (uint32_t)(((uint64_t)bits * 1000000u + l->baud / 2) / l->baud);
+}
+
+uint32_t sf_t35_oneshot_us(const sf_line_t *l)
+{
+    uint32_t rto = sf_rto_us(l, sf_rto_bits(l, sf_t15_us(l))), t35 = sf_t35_us(l);
+    return t35 > rto ? t35 - rto : 1;
+}
+
 bool sf_brr(uint32_t clk, uint32_t baud, uint32_t *presc_index, uint32_t *brr, int32_t *err_ppm)
 {
     static const uint16_t k_presc[] = {1, 2, 4, 6, 8, 10, 12, 16, 32, 64, 128, 256};  // RM0433 USART_PRESC
@@ -71,6 +82,14 @@ uint32_t sf_ring_wr(uint32_t laps, uint32_t ndtr, uint32_t size, uint32_t rd)
     if ((int32_t)(wr - rd) < 0)
         wr += size;
     return wr;
+}
+
+uint32_t sf_ring_take(uint32_t rd, uint32_t ev, uint32_t now, uint32_t size, bool *lapped)
+{
+    *lapped = now - rd > size - SF_RING_MARGIN;
+    if (*lapped)
+        return now;
+    return (int32_t)(ev - rd) > 0 ? ev : rd;
 }
 
 // ---- RX ---------------------------------------------------------------------------------------------
@@ -140,6 +159,7 @@ void sf_rx_line_error(sf_rx_t *r)
 {
     r->line_errors++;
     drop(r);
+    r->resync = true;  // the rest of the frame is not a frame either: dropped up to the next silence
 }
 
 void sf_rx_overrun(sf_rx_t *r)
@@ -152,7 +172,10 @@ void sf_rx_mode(sf_rx_t *r, sf_mode_t mode)
 {
     drop(r);
     r->mode = mode;
-    r->resync = false;
+    // A transaction starts after a silence, which ends a resync; when it ends after a violation, the
+    // tail is still dropped up to the next silence.
+    if (mode == SF_RTU)
+        r->resync = false;
 }
 
 // ---- heartbeat payload -----------------------------------------------------------------------------
@@ -286,3 +309,4 @@ sf_tx_step_t sf_tx_tick(sf_tx_t *t, uint64_t now_us)
         return abort_tx(t);
     return step(SF_TX_NONE, 0, 0);
 }
+

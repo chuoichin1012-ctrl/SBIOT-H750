@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include "FreeRTOS.h"
+#include "blog.h"
 #include "semphr.h"
 #include "spi.h"
 
@@ -15,8 +16,9 @@ static volatile bool s_failed;
 static unsigned s_dma_errors;
 static uint8_t s_bounce[BOUNCE] __attribute__((section(".sram1_bss"), aligned(32)));  // MPU: non-cacheable
 
-static void lock(void) { xSemaphoreTake(s_lock, portMAX_DELAY); }
-static void unlock(void) { xSemaphoreGive(s_lock); }
+// Recursive: the sealed operations below hold it around spi_nor's, which take it again.
+static void lock(void) { xSemaphoreTakeRecursive(s_lock, portMAX_DELAY); }
+static void unlock(void) { xSemaphoreGiveRecursive(s_lock); }
 static void busy_wait(void) { vTaskDelay(1); }
 
 static void done_from_isr(SPI_HandleTypeDef *h, bool failed)
@@ -75,12 +77,47 @@ static int s_init = NOR_EIO;
 
 int flash_spi4_init(void)
 {
-    s_lock = xSemaphoreCreateMutexStatic(&s_lock_mem);
+    s_lock = xSemaphoreCreateRecursiveMutexStatic(&s_lock_mem);
     s_done = xSemaphoreCreateBinaryStatic(&s_done_mem);
     s_init = spi_nor_init(&s_spi, &hspi4, NULL, &k_port);  // the wdog task kicks meanwhile
     return s_init;
 }
 
-nor_t *flash_spi4(void) { return s_init == NOR_OK ? &s_spi.nor : &s_dead; }
+// What the users get: spi_nor's operations, whose writes fail once flash_spi4_wipe has sealed the chip.
+static volatile bool s_sealed;
+static int pub_read(nor_t *n, uint32_t off, void *buf, uint32_t len) { return s_spi.nor.read(&s_spi.nor, off, buf, len); }
+static int pub_erase(nor_t *n, uint32_t off)
+{
+    lock();
+    int r = s_sealed ? NOR_EIO : s_spi.nor.erase_sector(&s_spi.nor, off);
+    unlock();
+    return r;
+}
+static int pub_program(nor_t *n, uint32_t off, const void *buf, uint32_t len)
+{
+    lock();
+    int r = s_sealed ? NOR_EIO : s_spi.nor.program(&s_spi.nor, off, buf, len);
+    unlock();
+    return r;
+}
+static nor_t s_pub = {pub_read, pub_erase, pub_program, 0};
+
+nor_t *flash_spi4(void) { return s_init == NOR_OK ? &s_pub : &s_dead; }
+
+int flash_spi4_wipe(void)
+{
+    if (s_init != NOR_OK)
+        return -1;
+    lock();  // a write in progress (an OTA upload, FlashDB) finishes first; every one after it fails
+    s_sealed = true;
+    unlock();
+    int bad = 0;
+    for (uint32_t a = 0; a < FLASH_SPI4_SIZE; a += NOR_SECTOR) {
+        if (a % 0x100000u == 0)
+            blog("app: wiping SPI4 at %lu KB\r\n", (unsigned long)(a / 1024u));
+        bad += s_spi.nor.erase_sector(&s_spi.nor, a) != NOR_OK;
+    }
+    return bad;
+}
 uint32_t flash_spi4_jedec(void) { return spi_nor_jedec(&s_spi); }
 unsigned flash_spi4_dma_errors(void) { return s_dma_errors; }

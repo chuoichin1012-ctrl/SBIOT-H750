@@ -127,6 +127,12 @@ static ITCM void usart_isr(port_t *p)
 {
     BaseType_t woken = pdFALSE;
     uint32_t isr = p->u->ISR;
+    // An error first: serial_rx must know it before the gap that ends its frame.
+    if (isr & (USART_ISR_PE | USART_ISR_FE | USART_ISR_NE | USART_ISR_ORE)) {
+        p->u->ICR = USART_ICR_PECF | USART_ICR_FECF | USART_ICR_NECF | USART_ICR_ORECF;
+        p->errors++;
+        post(p, UART_EV_ERROR, pos(p), &woken);
+    }
     if (isr & USART_ISR_RTOF) {
         p->u->ICR = USART_ICR_RTOCF;
         uint32_t wr = pos(p);
@@ -140,11 +146,6 @@ static ITCM void usart_isr(port_t *p)
         } else {
             post(p, UART_EV_GAP, wr, &woken);
         }
-    }
-    if (isr & (USART_ISR_PE | USART_ISR_FE | USART_ISR_NE | USART_ISR_ORE)) {
-        p->u->ICR = USART_ICR_PECF | USART_ICR_FECF | USART_ICR_NECF | USART_ICR_ORECF;
-        p->errors++;
-        post(p, UART_EV_ERROR, pos(p), &woken);
     }
     if ((p->u->CR1 & USART_CR1_TCIE) && (isr & USART_ISR_TC)) {
         p->u->CR1 &= ~USART_CR1_TCIE;
@@ -234,7 +235,7 @@ int uart_drv_init(int port, const sf_line_t *line, uint32_t gap_us, bool xonxoff
     p->tx_sem = xSemaphoreCreateBinaryStatic(&p->tx_sem_mem);
     p->gap_bits = sf_rto_bits(line, gap_us);
     p->t15_bits = sf_rto_bits(line, sf_t15_us(line));
-    p->t35_minus_us = sf_t35_us(line) - sf_t15_us(line);
+    p->t35_minus_us = sf_t35_oneshot_us(line);  // from the RTO as programmed, in whole bits
     p->char_us = sf_char_us(line);
     p->mode = SF_TRANSPARENT;
 
@@ -290,6 +291,11 @@ uint32_t uart_drv_wr(int port)
     uint32_t wr = pos(p);
     taskEXIT_CRITICAL();
     return wr;
+}
+
+bool uart_drv_rx_busy(int port)
+{
+    return (s_ports[port - 1].u->ISR & USART_ISR_BUSY) != 0;
 }
 
 void uart_drv_set_mode(int port, sf_mode_t mode)

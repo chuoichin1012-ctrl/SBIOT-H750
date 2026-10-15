@@ -3,7 +3,7 @@
 other (A to A, B to B). UART2 is UART1's counterpart, timed by the board itself (bench console E/F,
 app/bench_serial.c), so the gaps on the wire are the board's own and not Windows' buffering.
 
-    python3 stm32/firmware/test/bench/serial_check.py
+    python3 stm32/firmware/test/bench/serial_check.py [console|modbus|parity|collision|xonxoff|continuous ...]
 
 Needs the board running this build's app, its LAN reachable at 192.168.0.7 (factory login), UART7 on
 the bench console. Cases:
@@ -15,8 +15,11 @@ the bench console. Cases:
    halves 20 ms apart is dropped as a t1.5 violation by the board's own count; 60 ms apart (beyond
    t3.5) is two frames and no violation; the next good answer after a violation comes in; an answer
    from another slave goes to the subscribers;
-3. 60 s of continuous RX at 230 400 on UART1 while the LAN is flooded: every byte counted, 0 overrun;
-4. a parity mismatch: frames dropped and counted as line errors;
+3. 60 s of continuous RX at 230 400 on UART1 while the LAN is flooded (the flood checked to have run):
+   every byte counted, 0 overrun;
+4. a parity mismatch: frames dropped and counted as line errors, also with packetLength 1;
+4b. collision avoidance (rs485CollisionAvoid, 10 ms): a write asked for while UART2 streams (no RTO, a
+   DMA half every 44 ms) waits for the bus: no byte of the stream lost, the write arrives whole;
 5. XON/XOFF at 230 400: an XOFF before a write holds it, the XON lets it through whole; an XOFF with
    no XON fails the write at its deadline, and the next write works; an XOFF injected 20 ms into a
    2 KB write (bench X) pauses the running DMA for about 1 s, and every byte arrives.
@@ -80,8 +83,8 @@ def frames(port):
     return int(m.group(1)), int(m.group(2)), items
 
 
-def setup(line1, line2=None, target=0, extra1=None):
-    """Both ports' line settings (and the console target), saved, then a restart."""
+def setup(line1, line2=None, target=0, extra1=None, sys_extra=None):
+    """Both ports' line settings (and the console target, collision avoidance), saved, then a restart."""
     line2 = line2 or line1
     for n, ln, ex in ((1, line1, extra1), (2, line2, None)):
         cfg = dict(zip(('baudRate', 'dataBits', 'parity', 'stopBits'), ln))
@@ -90,6 +93,8 @@ def setup(line1, line2=None, target=0, extra1=None):
         w.req('POST', '/api/config/port%d' % n, body=json.dumps(cfg).encode())
     _, sysc = w.get_json('/api/config/system')
     sysc['websocketTarget'] = target
+    sysc['rs485CollisionAvoid'] = 0
+    sysc.update(sys_extra or {})
     w.req('POST', '/api/config/system', body=json.dumps(sysc).encode())
     ok = w.restart()
     time.sleep(1)
@@ -208,11 +213,14 @@ def case_continuous():
     flood = subprocess.Popen([WIN_PY, '-c', (
         'import socket,time\n'
         's=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\n'
-        'time.sleep(15);t=time.time()\n'
+        'time.sleep(15);t=time.time();n=0\n'
         'while time.time()-t<20:\n'
-        '    s.sendto(b"x"*1000,("192.168.0.7",9))\n')])
+        '    s.sendto(b"x"*1000,("192.168.0.7",9));n+=1\n'
+        'print(n)\n')], stdout=subprocess.PIPE, text=True)
     lines = console([(0.3, 'E2 3 60')], 66)
-    flood.wait()
+    out, _ = flood.communicate()
+    packets = int(out.strip() or 0) if flood.returncode == 0 else 0
+    check(packets > 10000, 'the LAN flood ran: %d packets of 1000 bytes in 20 s' % packets)
     m = find(lines, r'E2 streamed (\d+) bytes')
     d1, d2 = counters(1), counters(2)
     sent = d2['tx'] - c2['tx']
@@ -230,6 +238,34 @@ def case_parity():
     d = counters(1)
     n, b, items = frames(1)
     check(d['line'] > c['line'] and n == 0, 'a parity mismatch: line errors +%d, no frame' % (d['line'] - c['line']))
+    check(setup((9600, 8, 2, 1), (9600, 8, 1, 1), extra1={'packetLength': 1}), 'set up UART1 8E1 packetLength 1, UART2 8O1')
+    c = counters(1)
+    console([(0.3, 'F1'), (0.8, 'T2 0203000000010000')], 2.5)
+    d = counters(1)
+    n, b, items = frames(1)
+    check(d['line'] > c['line'] and n == 0, 'packetLength 1: no byte in error goes out (line errors +%d, %d frames)' % (d['line'] - c['line'], n))
+
+
+def case_collision():
+    check(setup((230400, 8, 0, 1), target=1, sys_extra={'rs485CollisionAvoid': 1, 'rs485IdleTime': 10}),
+          'set up 230 400, collision avoidance (10 ms) on, console on UART1')
+    c1 = counters(1)
+    frames(2)
+    ws, _ = w.ws_open(6432, TOKEN)
+    w.ws_recv_all(ws, 0.5)
+
+    def mid_stream():  # UART2 streams from 0.4 s for 2 s: no RTO, and a DMA half every 44 ms
+        time.sleep(1.0)
+        ws_send_bin(ws, bytes(range(100)))
+    lines = [l for _, l in board.listen(4, sends=[(0.3, 'E'), (0.4, '2 3 2\r')], during=mid_stream)]
+    ws.close()
+    m = find(lines, r'E2 streamed (\d+) bytes')
+    n, b, items = frames(2)
+    d1 = counters(1)
+    streamed = int(m.group(1)) if m else -1
+    check(n == 1 and b == 100 and d1['rx'] - c1['rx'] == streamed and d1['line'] == c1['line'],
+          'a write asked for during a stream waits for the bus: %d bytes streamed, UART1 got %d (line errors +%d), '
+          'UART2 got %s' % (streamed, d1['rx'] - c1['rx'], d1['line'] - c1['line'], items))
 
 
 def case_xonxoff():
@@ -268,11 +304,10 @@ def main():
     if not w.wait_up(5):
         print('the board does not answer on %s' % w.HOST)
         return 1
-    case_console()
-    case_modbus()
-    case_parity()
-    case_xonxoff()
-    case_continuous()
+    cases = {'console': case_console, 'modbus': case_modbus, 'parity': case_parity, 'collision': case_collision,
+             'xonxoff': case_xonxoff, 'continuous': case_continuous}
+    for name in sys.argv[1:] or cases:
+        cases[name]()
     setup((115200, 8, 0, 1))  # the factory line settings again
     print('bench: %s' % ('ok' if not failures else 'FAILED (%d)' % len(failures)))
     return 1 if failures else 0

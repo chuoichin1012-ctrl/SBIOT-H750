@@ -165,7 +165,7 @@ void boot_main(void)
     static qf_nor_t q;
     static spi_nor_t s;
     qf_nor_init(&q, &hqspi, board_kick);
-    r = spi_nor_init(&s, &hspi4, board_kick);
+    r = spi_nor_init(&s, &hspi4, board_kick, NULL);  // polling: single-threaded, deadlines and kicks
     log_line("boot: spi4 id %06lx%s\r\n", (unsigned long)spi_nor_jedec(&s), r ? " FAILED" : "");
     // A failed SPI4 is not fatal, and not used: nothing is installed, seeded or restored.
     nor_t *spi = r ? &s_dead_spi : &s.nor;

@@ -795,7 +795,7 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
   - UI gzip nhúng trong firmware, phục vụ không cần xác thực, ETag là hash nội dung từng file (F23);
   - Basic auth cho `/api/*`, so sánh thời gian hằng định;
   - trả 401 **không kèm** `WWW-Authenticate`;
-  - đổi login có hiệu lực ngay và đóng mọi client WebSocket;
+  - **khác bản ESP32:** đổi login, như mọi cấu hình khác, chỉ có hiệu lực sau khi khởi động lại gateway (§9.1; người dùng giữ nguyên tắc này, 2026-10-15). Trong lúc chưa khởi động lại, login cũ vẫn dùng được;
   - **Quy tắc timeout chung cho mọi body nhận theo luồng** (OTA, chứng chỉ, Edge): bỏ cuộc sau **hai** lần chờ 15 s liên tiếp không có byte nào, tức 30 s im lặng. Kết quả là 408 và giải phóng mọi buffer.
 - **WebSocket console** tại `/ws?auth=`:
   - kiểm login **trước** handshake, sai thì trả 401;

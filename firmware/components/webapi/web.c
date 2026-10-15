@@ -146,6 +146,7 @@ static void pump(struct mg_connection *c, slot_t *s)
             size_t n = (size_t)(s->file->end - s->file->start) - s->off;
             if (n == 0) {
                 finish_stream(s);
+                c->is_resp = 0;  // the response is complete: Mongoose may parse the next request (keep-alive)
                 return;
             }
             if (n > 2048)
@@ -206,6 +207,7 @@ static void serve_file(struct mg_connection *c, slot_t *s, struct mg_http_messag
         struct mg_str *inm = mg_http_get_header(hm, "If-None-Match");
         if (inm && inm->len == strlen(f->etag) && !memcmp(inm->buf, f->etag, inm->len)) {
             mg_printf(c, "HTTP/1.1 304 Not Modified\r\nETag: %s\r\nCache-Control: no-cache\r\nContent-Length: 0\r\n\r\n", f->etag);
+            c->is_resp = 0;  // complete (mg_printf does not end a response the way mg_http_reply does)
             return;
         }
         mg_printf(c,

@@ -119,6 +119,12 @@ uint32_t board_rand32(void);
 #define LWIP_SOCKET_SELECT 1
 #define LWIP_SOCKET_POLL 1
 
+// --- SNTP (sysmgr, spec §10.4): the server by name, the time handed to sysmgr in the lwIP core ---------
+#define SNTP_SERVER_DNS 1
+#define SNTP_MAX_SERVERS 1
+void sysmgr_sntp_set(uint32_t sec, uint32_t us);
+#define SNTP_SET_SYSTEM_TIME_US(sec, us) sysmgr_sntp_set((uint32_t)(sec), (uint32_t)(us))
+
 // --- stats: the pool use for netmgr_status (and /api/status.mem, 06b) --------------------------------
 #define LWIP_STATS 1
 #define LWIP_STATS_DISPLAY 0

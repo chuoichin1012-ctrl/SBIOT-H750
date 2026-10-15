@@ -10,6 +10,8 @@
 #include "board_rng.h"
 #include "cfgmodel.h"
 #include "netmgr.h"
+#include "sysmgr.h"
+#include "webapi.h"
 #include "flash_spi4.h"
 #include "store.h"
 #include "syslog.h"
@@ -136,6 +138,14 @@ static void init_task(void *arg)
     blog("app: store %s in %lu ms, boot %lu, heap free %lu\r\n", se == STORE_OK ? "mounted" : "FAILED",
          (unsigned long)((now_us() - t0) / 1000u), (unsigned long)store_boot_count(), (unsigned long)heap_free_now());
     net_start(&env);
+    // The web (spec §6.3 step 7), then sysmgr last (step 8); both read `system` once (spec §9.1).
+    cJSON *sys = store_get("system");
+    if (!sys)
+        sys = cfg_default(&env, "system");
+    if (webapi_start(sys))
+        blog("app: web FAILED\r\n");
+    sysmgr_start(sys);
+    cJSON_Delete(sys);
     info();
     for (;;) {
         uint8_t c;

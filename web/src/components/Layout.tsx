@@ -2,7 +2,7 @@ import type { ComponentChildren } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { signOut } from '../lib/auth';
 import { range, useDevice, wsIsLog } from '../lib/device';
-import mark from '../assets/sbiot-mark.png';
+import mark from '../assets/sbiot-logo-square.svg';
 
 interface Item { href: string; label: string }
 
@@ -138,7 +138,7 @@ export function Layout(props: { url: string; children: ComponentChildren }) {
 function Brand() {
   return (
     <div class="flex items-center gap-3 border-b border-white/10 px-6 py-4 text-white">
-      <img src={mark} alt="" width={30} height={29} class="rounded-xs" />
+      <img src={mark} alt="" width={30} height={30} class="rounded-xs" />
       <span class="leading-tight">
         <span class="block font-semibold tracking-tight">SBIOT Gateway</span>
         <span class="block text-[12px] text-white/55">Make your work easier</span>

@@ -21,11 +21,39 @@ static int failures;
 
 static _Alignas(8) char region[64 * 1024];
 
+// The running "task", for arena_port_self (the board's is the FreeRTOS task handle).
+static int s_task_a, s_task_b;
+static void *s_self = &s_task_a;
+void *arena_port_self(void)
+{
+    return s_self;
+}
+
+// A scope belongs to the task that opened it (Codex 06b r1): another task's cJSON stays on the heap.
+static void test_per_task(arena_t *a)
+{
+    s_self = &s_task_a;
+    arena_begin(a);
+    s_self = &s_task_b;
+    CHECK(arena_current() == NULL, "task B does not see A's scope");
+    cJSON *b = cJSON_Parse("{\"from\":\"B\",\"n\":[1,2]}");
+    CHECK(b && !arena_owns(a, b) && a->used == 0, "task B parses on the heap while A's scope is open");
+    s_self = &s_task_a;
+    cJSON *in = cJSON_Parse("{\"from\":\"A\"}");
+    CHECK(in && arena_owns(a, in), "task A still gets the arena");
+    cJSON_Delete(in);
+    s_self = &s_task_b;
+    cJSON_Delete(b);  // B's heap blocks go back to the heap
+    s_self = &s_task_a;
+    arena_end(a);
+}
+
 int main(void)
 {
     arena_t a;
     arena_init(&a, region, sizeof region);
     json_alloc_install();
+    test_per_task(&a);
 
     // Outside a scope cJSON uses the heap.
     cJSON *heap = cJSON_CreateString("heap");

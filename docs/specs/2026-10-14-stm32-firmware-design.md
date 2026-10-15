@@ -363,7 +363,8 @@ Quy tắc riêng của bản STM32:
     - UART n: chỉ `serial_rx[n]` ghi.
 
     Buffer đầy thì bỏ frame và tăng bộ đếm.
-  - Lệnh "đóng mọi client khi đổi mật khẩu" (F19) đi qua một cờ atomic.
+  - Không còn lệnh "đóng mọi client khi đổi mật khẩu" (F19): login mới, như mọi cấu hình khác, chỉ có hiệu lực sau khi khởi động lại (§10.1).
+  - Client đọc chậm không làm heap tăng: client nào có `c->send` vượt 4 KB thì không nhận frame mới (frame bị bỏ và đếm), các client khác vẫn chạy (Plan 06b).
   - `console` rút dữ liệu sau mỗi lần `mg_mgr_poll`, timeout poll 20 ms.
 - **coreMQTT:** chỉ task `mqtt` được gọi `MQTT_*`. Task khác đưa dữ liệu vào outbox rồi notify `mqtt`. **Không giữ mutex của outbox trong lúc gọi transport.** `mqtt` lấy tin ra dưới mutex, nhả mutex, rồi mới gửi.
 - **Thứ tự khóa** (luôn lấy theo thứ tự này, không bao giờ ngược lại):
@@ -678,7 +679,8 @@ Quy tắc riêng của bản STM32:
   - **Giới hạn đã biết** (người dùng chấp nhận, không sửa):
     - ghi hoặc xóa flash lỗi dai dẳng mà đọc vẫn tốt thì **không** khóa sang chỉ đọc; các lần lưu sau vẫn thử ghi, và báo lỗi khi thất bại;
     - FlashDB vẫn có thể hành xử chưa tối ưu khi ghi hỏng liên tục;
-    - không tự phục hồi phần cứng hỏng.
+    - không tự phục hồi phần cứng hỏng;
+    - **flash mang layout sector khác** (Plan 06b, B4): FlashDB chỉ kiểm header ở biên 16 KB. Một partition từng được format với sector 4 KB vẫn được nhận, và các bản ghi lớn đầu tiên bị hỏng vì ghi đè lên header cũ. Board trắng không gặp lỗi này, và kích thước sector không bao giờ đổi giữa các bản firmware. Factory reset sẽ format lại.
 - Mỗi DB dùng sector 16 KB. Riêng `edge` chứa vừa bản ghi 8 KB cùng header của nó, và dọn rác mịn trong 256 KB.
 
 ### 9.2 Vì sao phải xử lý theo node
@@ -811,7 +813,12 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
   - Với `/api/ota`, `/api/cert` và `POST edgeDevices`: xử lý ở `MG_EV_HTTP_HDRS`, tự đọc `c->recv` theo luồng.
     - Các endpoint này bắt buộc có `Content-Length`. Request dùng chunked thì trả 411.
     - Giới hạn áp lên số byte thực nhận: OTA ≤ kích thước slot, chứng chỉ ≤ 12 KB, Edge ≤ 48 KB.
-  - Các endpoint khác: giới hạn body 10.240 byte (§9.3), vượt quá thì trả 413. `MG_MAX_RECV_SIZE` đặt ở mức tương ứng.
+  - Các endpoint khác: giới hạn body 10.240 byte (§9.3), vượt quá thì trả 413. `MG_MAX_RECV_SIZE` đặt 12 KB.
+  - **Cách làm (Plan 06b):**
+    - Giới hạn được quyết tại `MG_EV_HTTP_HDRS`, mỗi request một lần, vì Mongoose phát lại sự kiện này ở mỗi lần đọc và poll khi body chưa đủ. Request dùng chunked bị trả 411 ở mọi endpoint.
+    - Khi đã trả lời ngay ở header (lỗi 4xx), body còn lại vẫn được đọc rồi bỏ, tối đa 64 KB, trước khi đóng kết nối, vì lwIP gửi RST khi đóng socket còn dữ liệu chưa đọc.
+    - Mọi câu trả lời theo luồng (file UI, GET Edge, log) chỉ thêm phần kế tiếp khi `c->send` dưới 4 KB, và tự kết thúc response (`is_resp`) để kết nối keep-alive nhận được request kế tiếp.
+    - Tối đa 8 kết nối web; arena JSON theo task, mỗi scope nằm trong một callback.
 - **Giữ hành vi của bản ESP32:**
   - UI gzip nhúng trong firmware, phục vụ không cần xác thực, ETag là hash nội dung từng file (F23);
   - Basic auth cho `/api/*`, so sánh thời gian hằng định;
@@ -830,7 +837,8 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
 |---|---|
 | `GET /api/device` | `portmax` = 2. `io` = `{do: 2, di: 2, ai: 2, ao: 0}`. Model và phần cứng là `SBIOT-H750` |
 | `/api/config/port2` | Schema đã có từ ESP32 nhưng bị tắt theo phần cứng. Nay được **bật trên phần cứng STM32**. TLS có trên cả hai cổng |
-| `/api/cert?scope=` | Thêm `port2` |
+| `/api/cert?scope=` | Thêm `port2`. Tới Plan 08 (mbedTLS) chỉ kiểm cấu trúc PEM: một cặp BEGIN/END đúng loại, chỉ ký tự base64 ở giữa, từ chối khóa mã hóa. Trả `{restartNeeded: true}`, chưa có `subject`, `validTo`, `pairMatches` |
+| `/api/io` | Trả 503 cho tới khi có `iomgr` (Plan 07) |
 | `port<n>` | Bỏ `rfc2217` |
 | `system` | Bỏ `telnet`, `telnetPort` |
 | `edgeDevices` | Tối đa 100 điểm, 64 thiết bị. Body ≤ 48 KB, văn bản chuẩn hóa ≤ 48 KB. Lỗi 411, 413, 503 như §9.4 |
@@ -847,7 +855,7 @@ Chép từ `src/` ở gốc, rồi sửa trực tiếp:
 - đổi chuỗi EC800 thành EC600U;
 - bỏ cảnh báo `WAITING FOR CLOCK`.
 
-`npm run build:firmware` nhúng UI vào `stm32/firmware/components/webapi/www`.
+`npm run build:firmware` nhúng UI vào `stm32/firmware/components/webapi/www`: `tools/embed_web.py` ghi các byte gzip thành mảng C hằng trong `www_files.c`, nằm trong QSPI (đơn giản hơn `.incbin`, theo đề xuất của người dùng, Plan 06b). Bench: `npm run test:pages` lưu và tải lại từng trang trên board thật.
 
 ### 10.4 Giờ
 

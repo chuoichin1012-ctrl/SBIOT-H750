@@ -1,0 +1,26 @@
+// System services (spec §4, §6.3, §10.4): the clock (SNTP or POST /api/time, the timezone, "not set"),
+// restarts, the serial number and the uptime. The clock functions work from boot on; sysmgr_start runs
+// last in init.
+#pragma once
+#include <stdbool.h>
+#include <stdint.h>
+#include "cJSON.h"
+
+/** Reads ntp, ntpServer and timezone from `system` once (spec §9.1), starts SNTP when ntp is 1. */
+void sysmgr_start(const cJSON *system);
+bool sysmgr_clock_set(void);
+/** Unix time in ms, 0 while the clock is not set. */
+int64_t sysmgr_utc_ms(void);
+/** Local "YYYY-MM-DD hh:mm:ss", or "" while the clock is not set (out holds 20 bytes). */
+void sysmgr_time_str(char out[20]);
+/** A Unix time in ms as local "YYYY-MM-DD hh:mm:ss" in the configured zone (out holds 20 bytes). */
+void sysmgr_format_wall(int64_t utc_ms, char out[20]);
+/** POST /api/time: a local time in the configured zone; 0, or -1 when it is not a valid time. */
+int sysmgr_set_local(const char *text);
+/** lwIP's SNTP (SNTP_SET_SYSTEM_TIME_US), in the lwIP core. */
+void sysmgr_sntp_set(uint32_t sec, uint32_t us);
+/** Resets the MCU after delay_ms (the answer to the request gets out first). */
+void sysmgr_restart_later(uint32_t delay_ms);
+uint32_t sysmgr_uptime_s(void);
+/** The chip UID as 24 hex digits. */
+const char *sysmgr_serial(void);

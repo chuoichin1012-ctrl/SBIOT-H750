@@ -1,0 +1,136 @@
+#include "sysmgr.h"
+#include <stdio.h>
+#include <string.h>
+#include "FreeRTOS.h"
+#include "blog.h"
+#include "clock.h"
+#include "lwip/apps/sntp.h"
+#include "lwip/tcpip.h"
+#include "now_us.h"
+#include "stm32h7xx.h"
+#include "syslog.h"
+#include "task.h"
+
+#define RESTART_STACK_WORDS 768  // 3 KB (spec §6.1)
+
+static int64_t s_offset_us;  // UTC in us minus now_us(); 0: not set. In a critical section (64 bits).
+static int s_tz;             // hours, from system.timezone at boot
+static char s_ntp_server[129];  // lwIP keeps the pointer: lives for the whole run
+static char s_serial[25];
+
+static int64_t offset(void)
+{
+    taskENTER_CRITICAL();
+    int64_t o = s_offset_us;
+    taskEXIT_CRITICAL();
+    return o;
+}
+
+static void set_utc_us(int64_t utc_us)
+{
+    int64_t o = utc_us - (int64_t)now_us();
+    taskENTER_CRITICAL();
+    s_offset_us = o ? o : 1;
+    taskEXIT_CRITICAL();
+}
+
+bool sysmgr_clock_set(void)
+{
+    return offset() != 0;
+}
+
+int64_t sysmgr_utc_ms(void)
+{
+    int64_t o = offset();
+    return o ? (o + (int64_t)now_us()) / 1000 : 0;
+}
+
+void sysmgr_time_str(char out[20])
+{
+    int64_t ms = sysmgr_utc_ms();
+    if (!ms) {
+        out[0] = '\0';
+        return;
+    }
+    clock_format(ms / 1000, s_tz, out);
+}
+
+void sysmgr_format_wall(int64_t utc_ms, char out[20])
+{
+    clock_format(utc_ms / 1000, s_tz, out);
+}
+
+int sysmgr_set_local(const char *text)
+{
+    civil_t c;
+    if (!clock_parse(text, &c))
+        return -1;
+    set_utc_us(clock_local_to_utc(&c, s_tz) * 1000000);
+    SLOG_I("sys", "clock set to %s (UTC%+d)", text, s_tz);
+    return 0;
+}
+
+void sysmgr_sntp_set(uint32_t sec, uint32_t us)
+{
+    if (!clock_plausible((int64_t)sec))
+        return;  // a server answering 1970 does not set the clock
+    bool first = !sysmgr_clock_set();
+    set_utc_us((int64_t)sec * 1000000 + us);
+    if (first)
+        SLOG_I("sys", "clock set by NTP");
+}
+
+void sysmgr_start(const cJSON *system)
+{
+    const cJSON *tz = cJSON_GetObjectItemCaseSensitive(system, "timezone");
+    s_tz = cJSON_IsNumber(tz) && tz->valueint >= -12 && tz->valueint <= 12 ? tz->valueint : 0;
+    const cJSON *ntp = cJSON_GetObjectItemCaseSensitive(system, "ntp");
+    const cJSON *srv = cJSON_GetObjectItemCaseSensitive(system, "ntpServer");
+    if (cJSON_IsNumber(ntp) && ntp->valueint == 1 && cJSON_IsString(srv) && srv->valuestring[0]) {
+        snprintf(s_ntp_server, sizeof s_ntp_server, "%s", srv->valuestring);
+        LOCK_TCPIP_CORE();  // the SNTP app is part of the lwIP core
+        sntp_setoperatingmode(SNTP_OPMODE_POLL);
+        sntp_setservername(0, s_ntp_server);
+        sntp_init();
+        UNLOCK_TCPIP_CORE();
+        blog("sys: NTP from %s, UTC%+d\r\n", s_ntp_server, s_tz);
+    } else {
+        blog("sys: no NTP, UTC%+d; the clock waits for POST /api/time\r\n", s_tz);
+    }
+}
+
+static void restart_task(void *arg)
+{
+    vTaskDelay(pdMS_TO_TICKS((uint32_t)(uintptr_t)arg));
+    blog("sys: restarting\r\n");
+    vTaskDelay(pdMS_TO_TICKS(20));  // the line out of UART7
+    NVIC_SystemReset();
+}
+
+void sysmgr_restart_later(uint32_t delay_ms)
+{
+    static StaticTask_t tcb;
+    static StackType_t stack[RESTART_STACK_WORDS];
+    static bool started;
+    taskENTER_CRITICAL();
+    bool again = started;
+    started = true;
+    taskEXIT_CRITICAL();
+    if (!again)
+        xTaskCreateStatic(restart_task, "restart", RESTART_STACK_WORDS, (void *)(uintptr_t)delay_ms, 10, stack, &tcb);
+}
+
+uint32_t sysmgr_uptime_s(void)
+{
+    return (uint32_t)(now_us() / 1000000u);
+}
+
+const char *sysmgr_serial(void)
+{
+    if (!s_serial[0]) {
+        const uint32_t *uid = (const uint32_t *)UID_BASE;
+        snprintf(s_serial, sizeof s_serial, "%08lX%08lX%08lX", (unsigned long)uid[2], (unsigned long)uid[1],
+                 (unsigned long)uid[0]);
+    }
+    return s_serial;
+}

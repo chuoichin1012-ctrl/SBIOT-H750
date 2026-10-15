@@ -7,6 +7,7 @@
 #include "semphr.h"
 #include "blog.h"
 #include "now_us.h"
+#include "sysmgr.h"
 
 static StaticSemaphore_t s_mem;
 static SemaphoreHandle_t s_lock;
@@ -20,7 +21,7 @@ void store_port_lock(void)
 
 void store_port_unlock(void) { xSemaphoreGiveRecursive(s_lock); }
 
-int64_t store_port_wall_ms(void) { return 0; }  // no clock until SNTP (Plan 06)
+int64_t store_port_wall_ms(void) { return sysmgr_utc_ms(); }  // 0 while the clock is not set (spec §10.4)
 
 uint32_t store_port_uptime_ms(void) { return (uint32_t)(now_us() / 1000u); }
 

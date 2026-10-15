@@ -1,6 +1,6 @@
 import { useState } from 'preact/hooks';
 import * as api from '../lib/api';
-import logo from '../assets/sbiot-logo.png';
+import logo from '../assets/sbiot-logo.svg';
 import { PasswordInput, Stacked, TextInput } from '../components/form';
 import { Button } from '../components/ui';
 

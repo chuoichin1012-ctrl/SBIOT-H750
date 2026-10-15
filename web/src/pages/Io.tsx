@@ -60,7 +60,7 @@ function functionDefs(d: DeviceInfo) {
   return { general, outputs, inputs, analog, timers, all: [...general, ...outputs, ...inputs, ...analog, ...timers.flat()] };
 }
 
-// ---- Live control ------------------------------------------------------------------
+// ---- IO control --------------------------------------------------------------------
 
 const POLL_MS = 1000;
 
@@ -250,7 +250,7 @@ export function IoPage(props: { path?: string; tab?: string }) {
   return (
     <>
       <PageHeader title="IO" intro="Built-in digital and analog channels." />
-      <Tabs base="/io" active={tab} tabs={[['control', 'Live control'], ['functions', 'Behaviour']]} />
+      <Tabs base="/io" active={tab} tabs={[['control', 'IO control'], ['functions', 'IO function']]} />
       {tab === 'control' ? (
         <>
           <Notice tone="warn">Switching an output acts on the connected equipment immediately.</Notice>

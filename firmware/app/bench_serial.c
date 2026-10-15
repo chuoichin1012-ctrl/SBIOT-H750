@@ -2,7 +2,8 @@
 // counterpart, timed by the board itself. Driven from the UART7 console (app_main.c):
 //   E<port> 0                     off
 //   E<port> 1                     echo every frame back
-//   E<port> 2 <gap_ms> <hex>      answer each frame with <hex>, in two halves <gap_ms> apart (0: one write)
+//   E<port> 2 <gap_ms> <hex>      answer each frame with <hex>, in two halves <gap_ms> apart (0: one write);
+//                                 with '|' in <hex>, in those parts instead (up to 4)
 //   E<port> 3 <seconds>           stream bytes 0..255 continuously for <seconds>
 //   E<port> 4 <hex>               send <hex> now (an XOFF 13, an XON 11)
 //   F<port>                       the frames received since the last F: count, bytes, lengths and gaps
@@ -23,6 +24,8 @@ typedef struct {
     int mode, gap_ms;
     uint8_t reply[128];
     size_t reply_len;
+    size_t cut[4];  // the '|' marks in the reply
+    int ncut;
     uint32_t stream_s;
     // what came in (F)
     volatile uint32_t frames, bytes;
@@ -44,11 +47,13 @@ static int hexv(char c)
     return c >= '0' && c <= '9' ? c - '0' : (c | 0x20) >= 'a' && (c | 0x20) <= 'f' ? (c | 0x20) - 'a' + 10 : -1;
 }
 
-static size_t parse_hex(const char *s, uint8_t *out, size_t max)
+static size_t parse_hex(const char *s, uint8_t *out, size_t max, size_t *cut, int *ncut)
 {
     size_t n = 0;
     while (*s && n < max) {
-        if (*s == ' ') {
+        if (*s == ' ' || *s == '|') {
+            if (*s == '|' && cut && *ncut < 4)
+                cut[(*ncut)++] = n;
             s++;
             continue;
         }
@@ -92,10 +97,18 @@ static void task(void *arg)
             if (!p->gap_ms) {
                 serial_write(port, p->reply, p->reply_len, 1000);
             } else {
-                size_t h = p->reply_len / 2;
-                serial_write(port, p->reply, h, 1000);  // returns when the last bit has left
-                vTaskDelay(pdMS_TO_TICKS(p->gap_ms));
-                serial_write(port, p->reply + h, p->reply_len - h, 1000);
+                size_t at[6] = {0}, n = 1;
+                if (p->ncut)
+                    for (int i = 0; i < p->ncut; i++)
+                        at[n++] = p->cut[i];
+                else
+                    at[n++] = p->reply_len / 2;
+                at[n] = p->reply_len;
+                for (size_t i = 0; i < n; i++) {
+                    if (i)
+                        vTaskDelay(pdMS_TO_TICKS(p->gap_ms));
+                    serial_write(port, p->reply + at[i], at[i + 1] - at[i], 1000);  // returns when the last bit has left
+                }
             }
         } else if (p->mode == 3) {
             static uint8_t chunk[256];
@@ -155,7 +168,7 @@ void bench_serial_cmd(char cmd, const char *line)
     }
     if (mode == 4) {
         uint8_t b[64];
-        size_t n = parse_hex(rest, b, sizeof b);
+        size_t n = parse_hex(rest, b, sizeof b, NULL, NULL);
         int r = serial_write(port, b, n, 1000);
         blog("app: E%d sent %u bytes: %d\r\n", port, (unsigned)n, r);
         return;
@@ -163,7 +176,8 @@ void bench_serial_cmd(char cmd, const char *line)
     p->mode = mode;
     p->gap_ms = mode == 2 ? a : 0;
     p->stream_s = mode == 3 ? (uint32_t)a : 0;
-    p->reply_len = mode == 2 ? parse_hex(rest, p->reply, sizeof p->reply) : 0;
+    p->ncut = 0;
+    p->reply_len = mode == 2 ? parse_hex(rest, p->reply, sizeof p->reply, p->cut, &p->ncut) : 0;
     s_echo_len[port] = 0;
     blog("app: E%d mode %d gap %d reply %u\r\n", port, mode, p->gap_ms, (unsigned)p->reply_len);
     if (mode == 3)

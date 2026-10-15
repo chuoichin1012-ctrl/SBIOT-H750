@@ -89,6 +89,14 @@ void sf_rx_violation(sf_rx_t *r);
 void sf_rx_line_error(sf_rx_t *r);
 /** The DMA writer lapped the reader: the frame being built is dropped. */
 void sf_rx_overrun(sf_rx_t *r);
+/**
+ * One event's bytes, from the ring (`size` bytes, a power of two) at *rd up to the event's position ev,
+ * the DMA being at now (sf_ring_take). Lapped: an overrun, and *rd goes on from now. `error`: the event
+ * is a line error, whose byte is any of those since the last read (its interrupt may come late): they
+ * are all dropped, with the frame they are in. Else they go to the frame logic; `mask7` clears bit 7 (7
+ * data bits and parity). The bytes read or dropped.
+ */
+uint32_t sf_rx_ring(sf_rx_t *r, const uint8_t *ring, uint32_t size, uint32_t *rd, uint32_t ev, uint32_t now, bool error, bool mask7);
 /** Switches the cut (a transaction starts or ends); the frame being built is dropped. Entering RTU ends a resync. */
 void sf_rx_mode(sf_rx_t *r, sf_mode_t mode);
 

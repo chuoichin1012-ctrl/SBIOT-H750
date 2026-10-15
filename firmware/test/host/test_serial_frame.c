@@ -217,6 +217,39 @@ static void test_errors(void)
     CHECK(g_frames == 2 && g_last[0] == 3, "packetLength 1: the byte in error is not a frame (%d)", g_frames);
 }
 
+// sf_rx_ring: one event's bytes from the ring into the frame logic.
+static void test_ring_read(void)
+{
+    sf_rx_t r;
+    static uint8_t ring[2048];
+    for (unsigned i = 0; i < 16; i++)
+        ring[i] = (uint8_t)('A' + i);
+    uint32_t rd = 0;
+    reset();
+    sf_rx_init(&r, SF_TRANSPARENT, 1, false, emit, NULL);
+    CHECK(sf_rx_ring(&r, ring, sizeof ring, &rd, 3, 3, false, false) == 3 && rd == 3 && g_frames == 3 && g_last[0] == 'C',
+          "data: the bytes up to the event go out");
+    // A line error whose interrupt came late: the byte in error is any of those since the last read.
+    CHECK(sf_rx_ring(&r, ring, sizeof ring, &rd, 7, 7, true, false) == 4 && rd == 7 && g_frames == 3 && r.line_errors == 1,
+          "a line error: every byte since the last read is dropped (packetLength 1: none goes out)");
+    sf_rx_ring(&r, ring, sizeof ring, &rd, 9, 9, false, false);
+    CHECK(g_frames == 3, "up to the next silence, nothing goes out");
+    sf_rx_end(&r);
+    sf_rx_ring(&r, ring, sizeof ring, &rd, 10, 10, false, false);
+    CHECK(g_frames == 4 && g_last[0] == 'J', "after the silence, frames again");
+    // Lapped: an overrun, and the reader goes on from the DMA.
+    CHECK(sf_rx_ring(&r, ring, sizeof ring, &rd, 12, 3010, false, false) == 0 && rd == 3010 && r.overruns == 1 && g_frames == 4,
+          "lapped: an overrun, nothing read, the reader at the DMA");
+    // 7 data bits and parity: bit 7 is the parity, masked.
+    uint8_t ring7[4] = {0xC1, 0x42, 0xC3, 0x44};
+    rd = 0;
+    reset();
+    sf_rx_init(&r, SF_TRANSPARENT, SF_FRAME_MAX, false, emit, NULL);
+    sf_rx_ring(&r, ring7, sizeof ring7, &rd, 4, 4, false, true);
+    sf_rx_end(&r);
+    CHECK(g_frames == 1 && g_last_len == 4 && !memcmp(g_last, "ABCD", 4), "7 data bits: the parity bit masked");
+}
+
 static void test_xonxoff(void)
 {
     sf_rx_t r;
@@ -310,6 +343,7 @@ int main(void)
     test_transparent();
     test_rtu();
     test_errors();
+    test_ring_read();
     test_xonxoff();
     test_tx();
     printf("test_serial_frame: %s\n", failures ? "FAILED" : "ok");

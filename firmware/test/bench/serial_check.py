@@ -14,7 +14,8 @@ the bench console. Cases:
 2. a Modbus transaction at 1200 8E1 (t1.5 13.75 ms, t3.5 32.08 ms): a good answer; an answer in two
    halves 20 ms apart is dropped as a t1.5 violation by the board's own count; 60 ms apart (beyond
    t3.5) is two frames and no violation; the next good answer after a violation comes in; an answer
-   from another slave goes to the subscribers;
+   from another slave goes to the subscribers; with packetInterval 1, a broken answer whose tail runs
+   past 200 ms and pauses under t3.5 sends no part of it to the subscribers;
 3. 60 s of continuous RX at 230 400 on UART1 while the LAN is flooded (the flood checked to have run):
    every byte counted, 0 overrun;
 4. a parity mismatch: frames dropped and counted as line errors, also with packetLength 1;
@@ -207,6 +208,20 @@ def case_modbus():
     console([(0.3, 'E2 0')], 1)
 
 
+def case_tail():
+    check(setup((1200, 8, 2, 1), extra1={'packetInterval': 1}), 'set up 1200 8E1, packetInterval 1 on UART1')
+    long = '0400010002' + 'aa' * 40  # 45 bytes: 412 ms at 1200 8E1
+    console([(0.3, 'E2 2 20 0103|' + long + '|0213fb'), (0.9, 'F1')], 1.5)
+    lines = console([(0.3, 'T1 010300000002c40b')], 2.5)
+    time.sleep(0.5)
+    n, b, items = frames(1)
+    console([(0.3, 'E2 0'), (0.6, 'E2 4 0102030405')], 1.2)
+    n2, b2, _ = frames(1)
+    check(find(lines, r'T1 dropped: t1\.5 violation') is not None and n == 0 and n2 == 1 and b2 == 5,
+          'a broken answer whose tail runs past 200 ms, then pauses under t3.5: no part reaches the subscribers (%s); '
+          'then a frame does (%d bytes)' % (items, b2))
+
+
 def case_continuous():
     check(setup((230400, 8, 0, 1)), 'set up 230 400 8N1')
     c1, c2 = counters(1), counters(2)
@@ -305,7 +320,7 @@ def main():
         print('the board does not answer on %s' % w.HOST)
         return 1
     cases = {'console': case_console, 'modbus': case_modbus, 'parity': case_parity, 'collision': case_collision,
-             'xonxoff': case_xonxoff, 'continuous': case_continuous}
+             'tail': case_tail, 'xonxoff': case_xonxoff, 'continuous': case_continuous}
     for name in sys.argv[1:] or cases:
         cases[name]()
     setup((115200, 8, 0, 1))  # the factory line settings again

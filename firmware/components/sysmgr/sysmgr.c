@@ -107,16 +107,22 @@ static void restart_task(void *arg)
     NVIC_SystemReset();
 }
 
+static bool s_restart_claimed;
+
+bool sysmgr_restart_claim(void)
+{
+    taskENTER_CRITICAL();
+    bool again = s_restart_claimed;
+    s_restart_claimed = true;
+    taskEXIT_CRITICAL();
+    return !again;
+}
+
 void sysmgr_restart_later(uint32_t delay_ms)
 {
     static StaticTask_t tcb;
     static StackType_t stack[RESTART_STACK_WORDS];
-    static bool started;
-    taskENTER_CRITICAL();
-    bool again = started;
-    started = true;
-    taskEXIT_CRITICAL();
-    if (!again)
+    if (sysmgr_restart_claim())
         xTaskCreateStatic(restart_task, "restart", RESTART_STACK_WORDS, (void *)(uintptr_t)delay_ms, 10, stack, &tcb);
 }
 

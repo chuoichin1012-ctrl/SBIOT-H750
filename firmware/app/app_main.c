@@ -335,6 +335,12 @@ static void init_task(void *arg)
                 blog("app: Z needs WIPE\r\n");
                 break;
             }
+            // A restart already set (an OTA just done) would cut the wipe, and staging installs; once
+            // claimed here, no other restart comes before ours.
+            if (!sysmgr_restart_claim()) {
+                blog("app: a restart is pending: Z refused\r\n");
+                break;
+            }
             store_port_lock();  // FlashDB is never called again before the reset
             uint64_t t0 = now_us();
             int bad = flash_spi4_wipe();  // also fails every OTA write from here on

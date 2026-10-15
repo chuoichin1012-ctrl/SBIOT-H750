@@ -168,6 +168,42 @@ void sf_rx_overrun(sf_rx_t *r)
     drop(r);
 }
 
+uint32_t sf_rx_ring(sf_rx_t *r, const uint8_t *ring, uint32_t size, uint32_t *rd, uint32_t ev, uint32_t now, bool error, bool mask7)
+{
+    bool lapped;
+    uint32_t to = sf_ring_take(*rd, ev, now, size, &lapped);
+    if (lapped) {
+        sf_rx_overrun(r);
+        *rd = to;
+        if (error)
+            sf_rx_line_error(r);
+        return 0;
+    }
+    uint32_t n = to - *rd;
+    if (error) {
+        sf_rx_line_error(r);
+        *rd = to;
+        return n;
+    }
+    while (*rd != to) {
+        uint32_t at = *rd % size, k = to - *rd;
+        if (k > size - at)
+            k = size - at;
+        if (mask7) {
+            uint8_t tmp[64];
+            if (k > sizeof tmp)
+                k = sizeof tmp;
+            for (uint32_t i = 0; i < k; i++)
+                tmp[i] = ring[at + i] & 0x7F;
+            sf_rx_bytes(r, tmp, k);
+        } else {
+            sf_rx_bytes(r, ring + at, k);
+        }
+        *rd += k;
+    }
+    return n;
+}
+
 void sf_rx_mode(sf_rx_t *r, sf_mode_t mode)
 {
     drop(r);
@@ -309,4 +345,5 @@ sf_tx_step_t sf_tx_tick(sf_tx_t *t, uint64_t now_us)
         return abort_tx(t);
     return step(SF_TX_NONE, 0, 0);
 }
+
 

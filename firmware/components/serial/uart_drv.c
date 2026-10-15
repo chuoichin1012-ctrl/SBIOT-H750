@@ -123,16 +123,22 @@ static ITCM void arm_oneshot(port_t *p)
     p->armed = true;
 }
 
+// A line error is posted before any event that hands its byte on: the DMA moves a byte only once the
+// USART has set the byte's error flags, so both interrupts look at them first.
+static ITCM void rx_errors(port_t *p, BaseType_t *woken)
+{
+    if (p->u->ISR & (USART_ISR_PE | USART_ISR_FE | USART_ISR_NE | USART_ISR_ORE)) {
+        p->u->ICR = USART_ICR_PECF | USART_ICR_FECF | USART_ICR_NECF | USART_ICR_ORECF;
+        p->errors++;
+        post(p, UART_EV_ERROR, pos(p), woken);
+    }
+}
+
 static ITCM void usart_isr(port_t *p)
 {
     BaseType_t woken = pdFALSE;
+    rx_errors(p, &woken);
     uint32_t isr = p->u->ISR;
-    // An error first: serial_rx must know it before the gap that ends its frame.
-    if (isr & (USART_ISR_PE | USART_ISR_FE | USART_ISR_NE | USART_ISR_ORE)) {
-        p->u->ICR = USART_ICR_PECF | USART_ICR_FECF | USART_ICR_NECF | USART_ICR_ORECF;
-        p->errors++;
-        post(p, UART_EV_ERROR, pos(p), &woken);
-    }
     if (isr & USART_ISR_RTOF) {
         p->u->ICR = USART_ICR_RTOCF;
         uint32_t wr = pos(p);
@@ -158,6 +164,7 @@ static ITCM void usart_isr(port_t *p)
 static ITCM void rx_dma_isr(port_t *p)
 {
     BaseType_t woken = pdFALSE;
+    rx_errors(p, &woken);
     uint32_t f = dma_flags(p->rx_idx);
     dma_clear(p->rx_idx, f);
     if (f & DMA_TC)
@@ -298,7 +305,7 @@ bool uart_drv_rx_busy(int port)
     return (s_ports[port - 1].u->ISR & USART_ISR_BUSY) != 0;
 }
 
-void uart_drv_set_mode(int port, sf_mode_t mode)
+void uart_drv_set_timing(int port, sf_mode_t mode)
 {
     port_t *p = &s_ports[port - 1];
     taskENTER_CRITICAL();
@@ -309,6 +316,12 @@ void uart_drv_set_mode(int port, sf_mode_t mode)
         p->armed = false;
     }
     taskEXIT_CRITICAL();
+}
+
+void uart_drv_set_mode(int port, sf_mode_t mode)
+{
+    port_t *p = &s_ports[port - 1];
+    uart_drv_set_timing(port, mode);
     uart_ev_t ev = {.type = UART_EV_MODE, .arg = (uint8_t)mode, .wr = uart_drv_wr(port)};
     xQueueSend(p->q, &ev, pdMS_TO_TICKS(100));
 }

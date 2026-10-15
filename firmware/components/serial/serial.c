@@ -41,6 +41,7 @@ typedef struct {
     SemaphoreHandle_t bus, txn_lock, txn_done;
     StaticSemaphore_t bus_mem, txn_lock_mem, txn_done_mem;
     volatile bool txn, txn_dropped;
+    bool tail;  // a broken answer's tail: RTU timing until t3.5 of silence ends the resync (txn_lock)
     uint8_t *txn_buf;
     size_t txn_max, txn_len;
     int txn_unit;
@@ -126,32 +127,6 @@ static void deliver(void *ctx, const uint8_t *data, size_t len)
         p->subs[i].fn(p->n, data, len, p->subs[i].ctx);
 }
 
-// Feeds the ring's bytes up to `wr` to the frame logic (sf_ring_take: the ring still holds them).
-static void drain(sport_t *p, uint32_t wr)
-{
-    const uint8_t *ring = uart_drv_ring(p->n);
-    while (p->rd != wr) {
-        uint32_t at = p->rd % UART_RING, n = wr - p->rd;
-        if (n > UART_RING - at)
-            n = UART_RING - at;
-        if (p->mask7) {
-            uint8_t tmp[64];
-            if (n > sizeof tmp)
-                n = sizeof tmp;
-            for (uint32_t i = 0; i < n; i++)
-                tmp[i] = ring[at + i] & 0x7F;
-            sf_rx_bytes(&p->rx, tmp, n);
-        } else {
-            sf_rx_bytes(&p->rx, ring + at, n);
-        }
-        p->rd += n;
-        p->rxc += n;
-    }
-    uint64_t now = now_us();
-    ts_set(&p->last_rx_us, now);
-    ts_set(&p->last_us, now);
-}
-
 static void rx_task(void *arg)
 {
     sport_t *p = arg;
@@ -167,18 +142,12 @@ static void rx_task(void *arg)
             p->rd = uart_drv_wr(p->n);
         }
         // Events queue up behind a busy reader: their positions are checked against the DMA's now.
-        bool lapped, error = ev.type == UART_EV_ERROR;
-        uint32_t to = sf_ring_take(p->rd, ev.wr, uart_drv_wr(p->n), UART_RING, &lapped);
-        if (lapped) {
-            sf_rx_overrun(&p->rx);
-            p->rd = to;
-        } else if (to != p->rd) {
-            if (error) {  // the byte in error is the last one in: the bytes before it first, then the error
-                drain(p, to - 1);
-                sf_rx_line_error(&p->rx);
-                error = false;
-            }
-            drain(p, to);
+        uint32_t rd0 = p->rd;
+        p->rxc += sf_rx_ring(&p->rx, uart_drv_ring(p->n), UART_RING, &p->rd, ev.wr, uart_drv_wr(p->n), ev.type == UART_EV_ERROR, p->mask7);
+        if (p->rd != rd0) {
+            uint64_t now = now_us();
+            ts_set(&p->last_rx_us, now);
+            ts_set(&p->last_us, now);
         }
         switch (ev.type) {
         case UART_EV_GAP:
@@ -192,16 +161,20 @@ static void rx_task(void *arg)
                 xSemaphoreGive(p->txn_done);
             }
             break;
-        case UART_EV_ERROR:
-            if (error)
-                sf_rx_line_error(&p->rx);
-            break;
         case UART_EV_MODE:
             sf_rx_mode(&p->rx, (sf_mode_t)ev.arg);
             break;
         default:
             break;
         }
+        // The tail of a broken answer has ended with t3.5 of silence: back to transparent.
+        xSemaphoreTake(p->txn_lock, portMAX_DELAY);
+        if (p->tail && !p->rx.resync) {
+            p->tail = false;
+            uart_drv_set_timing(p->n, SF_TRANSPARENT);
+            sf_rx_mode(&p->rx, SF_TRANSPARENT);
+        }
+        xSemaphoreGive(p->txn_lock);
         if (p->rx.tx_paused != p->paused_seen) {
             p->paused_seen = p->rx.tx_paused;
             uart_drv_flow(p->n, p->paused_seen);
@@ -277,6 +250,9 @@ int serial_transact(int port, const uint8_t *req, size_t len, uint8_t *resp, siz
     // A frame still arriving belongs to the subscribers: let it finish first.
     for (uint64_t since; since = rx_quiet_since(p), (now_us() - since) / 1000u < p->gap_ms + 1u;)
         vTaskDelay(ticks(p->gap_ms + 1u));
+    xSemaphoreTake(p->txn_lock, portMAX_DELAY);
+    p->tail = false;  // serial_rx[n] no longer switches to transparent: this transaction owns the mode
+    xSemaphoreGive(p->txn_lock);
     uart_drv_set_mode(port, SF_RTU);
     xSemaphoreTake(p->txn_lock, portMAX_DELAY);
     xSemaphoreTake(p->txn_done, 0);  // drop a stale signal
@@ -294,12 +270,13 @@ int serial_transact(int port, const uint8_t *req, size_t len, uint8_t *resp, siz
     p->txn = false;
     if (got == 0)
         got = p->txn_dropped ? SERIAL_DROPPED : (int)p->txn_len;
+    // The tail of a broken answer is dropped up to t3.5 of silence, however long it runs: the port stays
+    // in RTU timing until then, and serial_rx[n] switches it back (it ends the resync, under txn_lock).
+    bool tail = got == SERIAL_DROPPED && p->rx.resync;
+    p->tail = tail;
     xSemaphoreGive(p->txn_lock);
-    // The tail of a broken answer is dropped up to t3.5 of silence: wait for that in RTU, so it never
-    // reaches the subscribers. Bounded, for a device that does not stop; serial_rx[n] writes resync.
-    for (int i = 0; got == SERIAL_DROPPED && i < 100 && p->rx.resync; i++)
-        vTaskDelay(ticks(2));
-    uart_drv_set_mode(port, SF_TRANSPARENT);
+    if (!tail)
+        uart_drv_set_mode(port, SF_TRANSPARENT);
     xSemaphoreGive(p->bus);
     return got;
 }

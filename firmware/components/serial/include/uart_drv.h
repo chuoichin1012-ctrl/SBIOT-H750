@@ -40,8 +40,11 @@ const uint8_t *uart_drv_ring(int port);
 uint32_t uart_drv_wr(int port);
 /** A character is arriving now (the USART's BUSY). */
 bool uart_drv_rx_busy(int port);
-/** RTU (t1.5 receiver timeout, t3.5 one-shot) or transparent (the gap), from the next byte on. */
+/** RTU (t1.5 receiver timeout, t3.5 one-shot) or transparent (the gap), from the next byte on; serial_rx
+ * learns it from a UART_EV_MODE in the queue. */
 void uart_drv_set_mode(int port, sf_mode_t mode);
+/** The timing alone, for serial_rx itself (it switches its frame logic directly). */
+void uart_drv_set_timing(int port, sf_mode_t mode);
 /** The device's XOFF (true) or XON, seen by serial_rx. */
 void uart_drv_flow(int port, bool paused);
 /**

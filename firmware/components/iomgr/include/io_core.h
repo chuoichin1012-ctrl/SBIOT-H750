@@ -32,6 +32,9 @@ typedef struct {
     io_timer_cfg_t timers[IO_TIMERS];
 } io_cfg_t;
 
+/** A DO or DI index from JSON: v when it is a whole number in 0..n-1, else -1 (never truncated). */
+int io_index(double v, int n);
+
 /** The `io` config (a missing or malformed timer time disables that timer). */
 void io_cfg_parse(const cJSON *io, io_cfg_t *out);
 

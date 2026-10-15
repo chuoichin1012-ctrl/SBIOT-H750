@@ -5,6 +5,7 @@
 #include <string.h>
 #include "FreeRTOS.h"
 #include "heap_newlib.h"
+#include "io_core.h"
 #include "iomgr.h"
 #include "netmgr.h"
 #include "serial.h"
@@ -263,8 +264,9 @@ static void io_post(struct mg_connection *c, struct mg_http_message *hm)
     const cJSON *d = cJSON_GetObjectItemCaseSensitive(b, "do"), *v = cJSON_GetObjectItemCaseSensitive(b, "value");
     bool ao = cJSON_GetObjectItemCaseSensitive(b, "ao") != NULL;
     int r = -1;
-    if (!ao && cJSON_IsNumber(d) && (cJSON_IsBool(v) || cJSON_IsNumber(v)))
-        r = iomgr_do_set((int)d->valuedouble, cJSON_IsTrue(v) || (cJSON_IsNumber(v) && v->valuedouble != 0));
+    int i = cJSON_IsNumber(d) ? io_index(d->valuedouble, IO_DO) : -1;  // never truncated: 1.9 is no output
+    if (!ao && i >= 0 && (cJSON_IsBool(v) || cJSON_IsNumber(v)))
+        r = iomgr_do_set(i, cJSON_IsTrue(v) || (cJSON_IsNumber(v) && v->valuedouble != 0));
     cJSON_Delete(b);
     if (ao)
         api_error(c, 400, "This gateway has no analog outputs.");

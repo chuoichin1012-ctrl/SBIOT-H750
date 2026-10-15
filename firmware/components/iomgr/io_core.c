@@ -2,23 +2,43 @@
 #include <stdio.h>
 #include <string.h>
 
+
 static int num(const cJSON *o, const char *k, int dflt)
 {
     const cJSON *v = cJSON_GetObjectItemCaseSensitive(o, k);
     return cJSON_IsNumber(v) ? v->valueint : dflt;
 }
 
-// "HH:MM" or "HH:MM:SS" -> second of the day, -1 when malformed.
+// "HH:MM" or "HH:MM:SS" (fields of 1 or 2 digits) -> second of the day; -1 for anything else.
 static int parse_time(const char *s)
 {
-    int h, m, sec = 0;
-    char extra;
-    int n = s ? sscanf(s, "%d:%d:%d%c", &h, &m, &sec, &extra) : 0;
-    if (n < 2 || n == 4)  // a character after the seconds: not a time
+    int f[3] = {0, 0, 0}, n = 0;
+    if (!s)
         return -1;
-    if (h < 0 || h > 23 || m < 0 || m > 59 || sec < 0 || sec > 59)
+    for (;;) {
+        int digits = 0;
+        while (*s >= '0' && *s <= '9' && digits < 3) {
+            f[n] = f[n] * 10 + (*s++ - '0');
+            digits++;
+        }
+        if (digits < 1 || digits > 2)
+            return -1;
+        n++;
+        if (*s == '\0')
+            break;
+        if (*s++ != ':' || n == 3)
+            return -1;
+    }
+    if (n < 2 || f[0] > 23 || f[1] > 59 || f[2] > 59)
         return -1;
-    return h * 3600 + m * 60 + sec;
+    return f[0] * 3600 + f[1] * 60 + f[2];
+}
+
+int io_index(double v, int n)
+{
+    if (!(v >= 0 && v < n) || v != (double)(int)v)  // NaN fails the first test
+        return -1;
+    return (int)v;
 }
 
 void io_cfg_parse(const cJSON *io, io_cfg_t *out)

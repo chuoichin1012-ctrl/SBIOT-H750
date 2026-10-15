@@ -266,6 +266,12 @@ def case_misc():
     s, _, _ = req('POST', '/api/io', body=b'{"ao": 0, "value": 1}')
     s2, _, _ = req('POST', '/api/io', body=b'{"do": 5, "value": true}')
     check(s == 400 and s2 == 400, '/api/io: no analog outputs, no DO6: 400 (%d, %d)' % (s, s2))
+    before = (get_json('/api/io')[1] or {}).get('do')
+    s3, _, _ = req('POST', '/api/io', body=b'{"do": -0.5, "value": true}')
+    s4, _, _ = req('POST', '/api/io', body=b'{"do": 1.9, "value": true}')
+    after = (get_json('/api/io')[1] or {}).get('do')
+    check(s3 == 400 and s4 == 400 and before == after, '/api/io: do -0.5 and 1.9 are no output: 400, relays unchanged (%d, %d, %s -> %s)'
+          % (s3, s4, before, after))
     s, _, _ = req('GET', '/api/x')
     check(s == 404, 'an unknown endpoint: 404')
 

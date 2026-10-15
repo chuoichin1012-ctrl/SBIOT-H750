@@ -46,6 +46,33 @@ static void test_cfg(void)
           "timer 0: 08:30, set output 2, toggle");
     CHECK(c.timers[1].enable && c.timers[1].restart && c.timers[1].sod == 86399, "timer 1: 23:59:59, restart");
     CHECK(!c.timers[2].enable && !c.timers[3].enable && !c.timers[4].enable, "a malformed time disables its timer");
+    // The whole text must be HH:MM or HH:MM:SS (Codex code review r1).
+    static const char *bad[] = {"08:30bad", "08:30:xx", "08:30:", "08:30:5x", " 08:30", "08:30 ", "08-30", "8", "08:3a",
+                                "-1:30", "08:-1", "123:00", "08:30:00:00", ""};
+    for (size_t k = 0; k < sizeof bad / sizeof bad[0]; k++) {
+        char js[96];
+        snprintf(js, sizeof js, "{\"timer0Enabled\":1,\"timer0Time\":\"%s\"}", bad[k]);
+        io_cfg_t b = cfg_of(js);
+        CHECK(!b.timers[0].enable, "\"%s\" is not a time: timer disabled", bad[k]);
+    }
+    static const struct { const char *t; int sod; } good[] = {{"8:30", 30600}, {"08:30:5", 30605}, {"00:00:00", 0}, {"23:59", 86340}};
+    for (size_t k = 0; k < sizeof good / sizeof good[0]; k++) {
+        char js[96];
+        snprintf(js, sizeof js, "{\"timer0Enabled\":1,\"timer0Time\":\"%s\"}", good[k].t);
+        io_cfg_t g = cfg_of(js);
+        CHECK(g.timers[0].enable && g.timers[0].sod == good[k].sod, "\"%s\" is %d (%d)", good[k].t, good[k].sod, g.timers[0].sod);
+    }
+}
+
+// ---- the DO index of a command (POST /api/io) ------------------------------------------------------
+
+static void test_index(void)
+{
+    CHECK(io_index(0, IO_DO) == 0 && io_index(1, IO_DO) == 1, "0 and 1 are DO1 and DO2");
+    static const double bad[] = {-0.5, 1.9, 0.5, -1, 2, 1e300, -0.0001};
+    for (size_t k = 0; k < sizeof bad / sizeof bad[0]; k++)
+        CHECK(io_index(bad[k], IO_DO) == -1, "%g is no output", bad[k]);
+    CHECK(io_index(0.0 / 0.0, IO_DO) == -1 && io_index(1.0 / 0.0, IO_DO) == -1, "NaN and infinity are no output");
 }
 
 // ---- DI -------------------------------------------------------------------------------------------
@@ -224,6 +251,7 @@ static void test_timers(void)
 int main(void)
 {
     test_cfg();
+    test_index();
     test_di();
     test_do();
     test_persist();

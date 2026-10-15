@@ -1,0 +1,35 @@
+// components/store's platform (store_port.h) on FreeRTOS: a recursive mutex around FlashDB and
+// the text cache, the clocks, and the log.
+#include "store_port.h"
+#include <stdarg.h>
+#include <stdio.h>
+#include "FreeRTOS.h"
+#include "semphr.h"
+#include "blog.h"
+#include "now_us.h"
+
+static StaticSemaphore_t s_mem;
+static SemaphoreHandle_t s_lock;
+
+void store_port_lock(void)
+{
+    if (!s_lock)  // first used by init (store_init), before any other task touches the store
+        s_lock = xSemaphoreCreateRecursiveMutexStatic(&s_mem);
+    xSemaphoreTakeRecursive(s_lock, portMAX_DELAY);
+}
+
+void store_port_unlock(void) { xSemaphoreGiveRecursive(s_lock); }
+
+int64_t store_port_wall_ms(void) { return 0; }  // no clock until SNTP (Plan 06)
+
+uint32_t store_port_uptime_ms(void) { return (uint32_t)(now_us() / 1000u); }
+
+void store_port_log(const char *fmt, ...)
+{
+    char line[160];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof line, fmt, ap);
+    va_end(ap);
+    blog("store: %s\r\n", line);
+}

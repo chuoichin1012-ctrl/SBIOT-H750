@@ -9,12 +9,11 @@
 #include "ota_app.h"
 #include "ota_image.h"
 #include "spi.h"
-#include "spi_nor.h"
+#include "flash_spi4.h"
 #include "usart.h"
 
 #define BLOCK 4096u
 
-static spi_nor_t s_spi;
 static int s_spi_err = NOR_EIO;
 
 bool app_bind_ok(void)
@@ -26,14 +25,14 @@ bool app_bind_ok(void)
 
 void bench_ota_init(void)
 {
-    s_spi_err = spi_nor_init(&s_spi, &hspi4, NULL);  // the wdog task kicks meanwhile
-    blog("app: spi4 id %06lx%s\r\n", (unsigned long)spi_nor_jedec(&s_spi), s_spi_err ? " FAILED" : "");
+    s_spi_err = flash_spi4_init();
+    blog("app: spi4 id %06lx%s\r\n", (unsigned long)flash_spi4_jedec(), s_spi_err ? " FAILED" : "");
 }
 
 static void report_slot(const char *name, uint32_t off)
 {
     img_hdr_t h;
-    int r = s_spi_err ? IMG_EREAD : img_check(&s_spi.nor, off, NULL, &h);
+    int r = s_spi_err ? IMG_EREAD : img_check(flash_spi4(), off, NULL, &h);
     if (r == IMG_OK)
         blog("app: %s v%u.%u.%u size %lu ok\r\n", name, h.version[0], h.version[1], h.version[2], (unsigned long)h.size);
     else
@@ -66,7 +65,7 @@ void bench_ota_upload(bool reset)
         return;
     }
     memcpy(&total, buf, 4);
-    int r = s_spi_err ? OTA_EFLASH : ota_stage_begin(&st, &s_spi.nor, total);
+    int r = s_spi_err ? OTA_EFLASH : ota_stage_begin(&st, flash_spi4(), total);
     blog("ota: ready %lu %d\r\n", (unsigned long)total, r);
     if (r)
         return;

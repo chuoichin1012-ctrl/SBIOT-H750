@@ -8,7 +8,7 @@ BUILD := build
 CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c ../../components/proto/jsonscan.c
 ARENA := ../../components/arena/arena.c $(TLSF)/tlsf.c
 
-all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/bind_sample.bin $(BUILD)/test_bind $(BUILD)/test_store $(BUILD)/test_store_small
+all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/bind_sample.bin $(BUILD)/test_bind $(BUILD)/test_store $(BUILD)/test_store_small $(BUILD)/test_heap
 	$(BUILD)/test_cfgmodel
 	$(BUILD)/test_proto
 	$(BUILD)/test_jsonscan
@@ -23,6 +23,7 @@ all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/
 	$(BUILD)/test_store
 	STORE_CUTS=1 ASAN_OPTIONS=detect_leaks=0 $(BUILD)/test_store
 	$(BUILD)/test_store_small
+	$(BUILD)/test_heap
 
 $(BUILD)/test_cfgmodel: test_cfgmodel.c $(CFG) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
@@ -109,6 +110,10 @@ $(BUILD)/test_store: test_store.c nor_sim.c ../../components/store/store.c ../..
 $(BUILD)/test_store_small: test_store.c nor_sim.c ../../components/store/store.c ../../components/store/fal_nor.c $(CFG) $(CJSON)/cJSON.c $(BUILD)/libflashdb.a
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -DSTORE_CACHE_SIZE=3800u $(STORE_INC) $(filter %.c,$^) $(BUILD)/libflashdb.a -lm -o $@
+
+$(BUILD)/test_heap: test_heap.c ../../components/board/heap_wrap.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) $^ -o $@
 
 clean:
 	rm -rf $(BUILD)

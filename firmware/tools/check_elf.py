@@ -18,6 +18,8 @@ APP_FORBIDDEN = [
     'SystemInit', 'ExitRun0Mode', 'SystemClock_Config', 'MPU_Config', 'HAL_RCC_OscConfig',
     'HAL_RCC_ClockConfig', 'HAL_RCC_DeInit', 'HAL_PWREx_ConfigSupply', 'HAL_QSPI_Init',
     'HAL_QSPI_MemoryMapped', 'MX_QUADSPI_Init', 'HAL_MPU_ConfigRegion',
+    # one heap (spec §5.5): newlib-nano's allocator and the real _sbrk_r never linked
+    '__malloc_free_list', '__malloc_sbrk_start', '_sbrk_r',
 ]
 # Hot code that must run from ITCM (spec §5.3), above the 1 KB null guard.
 APP_ITCM = ['vTaskSwitchContext', 'xTaskIncrementTick', 'PendSV_Handler', 'SysTick_Handler', 'SVC_Handler',
@@ -114,6 +116,7 @@ def main():
     check(not any(c.startswith('HAL_') for c in called or []), 'app: Reset_Handler calls no HAL function')
     dtcm = sum(s for a, s in sec.values() if DTCM[0] <= a < DTCM[1]) + 4096
     check(dtcm <= DTCM_BUDGET, 'app: DTCM %d bytes (data + bss + 4 KB MSP) <= %d' % (dtcm, DTCM_BUDGET))
+    check(all(n in sym for n in ('malloc', '_malloc_r', 'sb_malloc')), 'app: malloc and _malloc_r are the heap_5 wrapper')
     image_end = sym.get('__image_end__', 0)
     check(QSPI_SLOT[0] < image_end <= QSPI_SLOT[1], 'app: image ends at 0x%08x, inside the slot' % image_end)
 

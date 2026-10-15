@@ -92,7 +92,8 @@ def main():
         check(len(crc) == 1 and crc[0].startswith(want), 'XIP image reads back as app.img (%s)' % (crc[0] if crc else '-'))
 
         resets = 10
-        b = boots(board.listen(1.0 + resets, sends=[(0.5 + n, 'r') for n in range(resets)]))
+        # 3 s apart: a boot takes about 2.3 s once the store mounts a well-used cfg database (Plan 05b)
+        b = boots(board.listen(1.0 + 3 * resets, sends=[(0.5 + 3 * n, 'r') for n in range(resets)]))
         check(len(b) == resets and all(r & RSR_SFT for _, r in b),
               '%d software resets: %d complete boots with SFTRSTF' % (resets, len(b)))
 

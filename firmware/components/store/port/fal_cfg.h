@@ -3,6 +3,10 @@
 #pragma once
 
 #define FAL_PART_HAS_TABLE_CFG
+#ifdef __arm__
+#include "blog.h"
+#define FAL_PRINTF(...) blog(__VA_ARGS__)
+#endif
 #define STORE_FAL_DEV "spi4"
 
 extern const struct fal_flash_dev store_fal_dev;

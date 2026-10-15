@@ -358,6 +358,7 @@ static void init_task(void *arg)
             break;
         }
         case 'a':
+        case 'D':
         case 'J':
             bench_io_cmd((char)c, "");
             break;

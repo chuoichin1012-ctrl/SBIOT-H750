@@ -8,7 +8,8 @@ console. Cases:
 - adcbase: the ADC3 registers (BOOST 01, OVSR 15, OVSS 4, 64.5 cycles), 10 interrupts a second (no
   interrupt per sample), and an injected fault (bench J): nothing published during the recovery, and a
   value again within 300 ms. Runs on any board (no 4-20 mA source needed).
-- dido: DO1's relay contact wired to DI1 and DO2's to DI2 (through the DI supply). Commands, the DI
+- dido: each DO's relay contact (COM-NO) wired to one DI, through a 12-24 V supply (which DI is found
+  first: DO1 may drive DI2). Commands, the DI
   debounce, diInvert, mode 1 (pulse 2 s), mode 2 (flip 1 s), keepOutputs over a restart, and a timer.
 - reload: the Reload button pressed by hand when asked (1 s, 5 s, 20 s, and held through a restart).
 - adcpoint MA: the source set to MA mA (AI1 and AI2 in series): prints the window means, the µA, and
@@ -124,6 +125,18 @@ def setup_io(**fields):
     return ok
 
 
+def trace(during, seconds):
+    """The board's own record of the outputs (bench D) while during() drives them: [(ms, mask)].
+    HTTP is no clock: its answers stall now and then, and right after a boot it skews."""
+    lines = board.listen(seconds, sends=[(0.3, 'D'), (seconds - 0.5, 'D')], during=during)
+    out = []
+    for _, l in lines:
+        m = re.search(r'outputs 0x(\w+) at (\d+) ms', l)
+        if m:
+            out.append((int(m.group(2)), int(m.group(1), 16)))
+    return out
+
+
 def wait_di(i, want, seconds):
     end = time.time() + seconds
     while time.time() < end:
@@ -133,55 +146,85 @@ def wait_di(i, want, seconds):
     return False
 
 
-def case_dido():
-    check(setup_io(keepOutputs=0, do0Mode=0, do1Mode=0, diDebounce=50, diInvert=0), 'set up io: follow, debounce 50 ms')
+def find_pairs():
+    """{do: di} for the DO whose relay drives a DI."""
+    pairs = {}
     for i in (0, 1):
         set_do(i, True)
-        on = wait_di(i, True, 0.5)
+        time.sleep(0.4)
+        on = io().get('di', [False, False])
         set_do(i, False)
+        time.sleep(0.4)
+        off = io().get('di', [False, False])
+        hit = [k for k in (0, 1) if on[k] and not off[k]]
+        if len(hit) == 1:
+            pairs[i] = hit[0]
+    return pairs
+
+
+def case_dido():
+    check(setup_io(keepOutputs=0, do0Mode=0, do1Mode=0, diDebounce=50, diInvert=0), 'set up io: follow, debounce 50 ms')
+    pairs = find_pairs()
+    check(bool(pairs), 'wiring: %s' % (', '.join('DO%d -> DI%d' % (d + 1, i + 1) for d, i in pairs.items()) or 'no DO drives a DI'))
+    if not pairs:
+        return
+    for d, i in pairs.items():
+        set_do(d, True)
+        on = wait_di(i, True, 0.5)
+        set_do(d, False)
         off = wait_di(i, False, 0.5)
-        check(on and off, 'DO%d on: DI%d active; off: inactive (within 500 ms)' % (i + 1, i + 1))
+        check(on and off, 'DO%d on: DI%d active; off: inactive (within 500 ms)' % (d + 1, i + 1))
+    pulse_do, pulse_di = next(iter(pairs.items()))
+    flip_do, flip_di = list(pairs.items())[-1]
     check(setup_io(diInvert=1), 'set up diInvert 1')
-    set_do(0, False)
-    check(wait_di(0, True, 0.5), 'diInvert: DO1 off reads DI1 active')
-    check(setup_io(diInvert=0, do0Mode=1, do0FlipDelay=2, do1Mode=2, do1FlipDelay=1), 'set up DO1 pulse 2 s, DO2 flip 1 s')
-    t0 = time.time()
-    set_do(0, True)
-    wait_di(0, True, 0.5)
-    back = wait_di(0, False, 3.0)
-    dt = time.time() - t0
-    check(back and 1.8 <= dt <= 2.4, 'mode 1: DO1 back off after %.2f s (2 s)' % dt)
-    set_do(1, True)
-    edges, last, t0 = [], None, time.time()
-    while time.time() - t0 < 4.5:
-        v = io().get('di', [None, None])[1]
-        if last is not None and v != last:
-            edges.append(time.time() - t0)
-        last = v
-        time.sleep(0.05)
-    set_do(1, False)
-    gaps = [b - a for a, b in zip(edges, edges[1:])]
-    stays = wait_di(1, False, 1.5) and not wait_di(1, True, 1.5)
-    check(len(edges) >= 3 and all(0.8 <= g <= 1.2 for g in gaps) and stays,
-          'mode 2: DI2 toggles every %s s while on, and stays off after an off' % ['%.2f' % g for g in gaps])
+    set_do(pulse_do, False)
+    check(wait_di(pulse_di, True, 0.5), 'diInvert: DO%d off reads DI%d active' % (pulse_do + 1, pulse_di + 1))
+    modes = {'diInvert': 0, 'do%dMode' % pulse_do: 1, 'do%dFlipDelay' % pulse_do: 2}
+    check(setup_io(**modes), 'set up DO%d pulse 2 s' % (pulse_do + 1))
+    def pulse():
+        time.sleep(1)
+        set_do(pulse_do, True)
+    tr = trace(pulse, 5)
+    bit = 1 << pulse_do
+    ons = [t for t, m in tr if m & bit]
+    offs = [t for t, m in tr if not m & bit and ons and t > ons[0]]
+    dt = offs[0] - ons[0] if ons and offs else -1
+    check(1990 <= dt <= 2020 and not wait_di(pulse_di, True, 0.3), 'mode 1: DO%d on, then off %d ms later (2000), DI%d off'
+          % (pulse_do + 1, dt, pulse_di + 1))
+    check(setup_io(**{'do%dMode' % pulse_do: 0, 'do%dMode' % flip_do: 2, 'do%dFlipDelay' % flip_do: 1}),
+          'set up DO%d flip 1 s' % (flip_do + 1))
+
+    def flip():
+        time.sleep(1)
+        set_do(flip_do, True)
+        time.sleep(6)
+        set_do(flip_do, False)
+    tr = trace(flip, 9)
+    bit = 1 << flip_do
+    edges = [t for (t, m), (_, p) in zip(tr[1:], tr) if (m ^ p) & bit] if len(tr) > 1 else []
+    gaps = [b - a for a, b in zip(edges, edges[1:])][:-1]  # the last edge is the command off
+    stays = wait_di(flip_di, False, 1.5) and not wait_di(flip_di, True, 1.5)
+    check(len(gaps) >= 4 and all(990 <= g <= 1015 for g in gaps) and stays,
+          'mode 2: DO%d toggles every %s ms (1000), and DI%d stays off after an off' % (flip_do + 1, gaps, flip_di + 1))
+    d, i = pulse_do, pulse_di
     check(setup_io(do0Mode=0, do1Mode=0, keepOutputs=1), 'set up keepOutputs 1')
-    set_do(0, True)
+    set_do(d, True)
     time.sleep(0.5)  # the reload task saves within 50 ms
     w.restart()
     time.sleep(1)
-    check(io().get('do', [False])[0] and wait_di(0, True, 0.5), 'keepOutputs 1: DO1 still on after a restart')
-    check(setup_io(keepOutputs=0), 'set up keepOutputs 0 (DO1 was on)')
-    check(not io().get('do', [True])[0] and wait_di(0, False, 0.5), 'keepOutputs 0: DO1 off after the restart (the bootloader latched zeros)')
-    # A timer: the clock set, timer 0 closes DO2 at the next minute.
-    lt = time.localtime(time.time() + 3)
-    w.req('POST', '/api/time', body=json.dumps({'time': time.strftime('%Y-%m-%d %H:%M:%S', lt)}).encode())
-    at = time.localtime(time.time() + 63)
-    hhmm = time.strftime('%H:%M', at)
-    check(setup_io(timer0Enabled=1, timer0Time=hhmm, timer0Action=1, timer0Output=1, timer0OutputAction=1),
-          'set up timer 0: close DO2 at %s' % hhmm)
+    check(io().get('do', [False, False])[d] and wait_di(i, True, 0.5), 'keepOutputs 1: DO%d still on after a restart' % (d + 1))
+    check(setup_io(keepOutputs=0), 'set up keepOutputs 0 (DO%d was on)' % (d + 1))
+    check(not io().get('do', [True, True])[d] and wait_di(i, False, 0.5),
+          'keepOutputs 0: DO%d off after the restart (the bootloader latched zeros)' % (d + 1))
+    # A timer, 30 s ahead (time enough for the restart that applies it); the clock set after the restart
+    # (no RTC; the bench LAN has no NTP).
+    hhmm = time.strftime('%H:%M:%S', time.localtime(time.time() + 30))
+    check(setup_io(timer0Enabled=1, timer0Time=hhmm, timer0Action=1, timer0Output=d, timer0OutputAction=1),
+          'set up timer 0: close DO%d at %s' % (d + 1, hhmm))
     w.req('POST', '/api/time', body=json.dumps({'time': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}).encode())
-    fired = wait_di(1, True, 75)
-    check(fired, 'timer 0 closed DO2 at %s (seen on DI2)' % hhmm)
+    fired = wait_di(i, True, 40)
+    check(fired, 'timer 0 closed DO%d at %s (seen on DI%d)' % (d + 1, hhmm, i + 1))
+    set_do(d, False)
     setup_io(timer0Enabled=0, keepOutputs=0)
 
 

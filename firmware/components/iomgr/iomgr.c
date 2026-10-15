@@ -29,6 +29,7 @@ static StaticSemaphore_t s_lock_mem;
 static uint8_t s_latched;
 static int s_tz;
 static volatile bool s_factory;
+volatile bool g_io_trace;  // bench: log each change of the outputs (bench_io.c 'D')
 static TaskHandle_t s_io, s_reload;
 static StaticTask_t s_io_tcb, s_reload_tcb;
 static StackType_t s_io_stack[IO_STACK_WORDS], s_reload_stack[RELOAD_STACK_WORDS];
@@ -49,6 +50,8 @@ static void latch(void)
     (void)LATCH_LE_GPIO_Port->ODR;
     HAL_GPIO_WritePin(LATCH_LE_GPIO_Port, LATCH_LE_Pin, GPIO_PIN_RESET);  // latched
     s_latched = m;
+    if (g_io_trace)
+        blog("io: outputs 0x%02x at %lu ms\r\n", m, (unsigned long)now_ms());
 }
 
 static uint8_t di_pins(void)

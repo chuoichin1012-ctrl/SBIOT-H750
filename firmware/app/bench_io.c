@@ -51,6 +51,10 @@ void bench_io_cmd(char cmd, const char *line)
         int ra = write_copy(n, FREC_A, rec), rb = write_copy(n, FREC_B, rec);
         blog("app: A record written: copy A %s, copy B %s (applies after a restart)\r\n", ra ? "FAILED" : "ok",
              rb ? "FAILED" : "ok");
+    } else if (cmd == 'D') {
+        extern volatile bool g_io_trace;
+        g_io_trace = !g_io_trace;
+        blog("app: D output trace %s\r\n", g_io_trace ? "on" : "off");
     } else if (cmd == 'J') {
         adc_drv_inject_fault();
         blog("app: J ADC fault injected\r\n");

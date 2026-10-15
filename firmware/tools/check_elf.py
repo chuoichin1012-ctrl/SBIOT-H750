@@ -29,7 +29,9 @@ APP_ITCM = ['vTaskSwitchContext', 'xTaskIncrementTick', 'PendSV_Handler', 'SysTi
             'memcpy', 'memset', 'ETH_IRQHandler', 'HAL_ETH_IRQHandler',
             # the serial ports (Plan 07a)
             'USART1_IRQHandler', 'USART2_IRQHandler', 'DMA1_Stream2_IRQHandler', 'DMA1_Stream3_IRQHandler',
-            'DMA1_Stream4_IRQHandler', 'DMA1_Stream5_IRQHandler', 'TIM2_IRQHandler']
+            'DMA1_Stream4_IRQHandler', 'DMA1_Stream5_IRQHandler', 'TIM2_IRQHandler',
+            # the ADC (Plan 07b)
+            'BDMA_Channel0_IRQHandler', 'ADC3_IRQHandler']
 ITCM = (0x00000400, 0x00010000)
 AXI = (0x24000000, 0x24080000)
 SRAM1 = (0x30000000, 0x30020000)
@@ -37,6 +39,8 @@ SRAM1 = (0x30000000, 0x30020000)
 APP_SRAM1 = ['lwip_ram_heap', 'DMARxDscrTab', 'DMATxDscrTab', 's_eth_rx_bufs', 's_eth_tx_bufs', 's_uart_ring', 's_uart_txbuf']
 # The JSON arena, the Edge and certificate body and the web stack: static, in AXI (spec §5.3, Plan 06b).
 APP_AXI = ['s_web_arena', 's_edge_body', 's_web_stack']
+# The BDMA's ADC buffer: the 1 KB non-cacheable region in SRAM4 (MPU region 3, spec §6.6).
+ADCBUF = (0x3800FC00, 0x38010000)
 DTCM = (0x20000000, 0x20020000)
 DTCM_BUDGET = 120 * 1024
 QSPI_SLOT = (0x90000000, 0x90000000 + 1472 * 1024)
@@ -118,6 +122,8 @@ def main():
     for name in APP_ITCM:
         a = sym.get(name, 0)
         check(ITCM[0] <= a < ITCM[1], 'app: %s in ITCM (0x%08x)' % (name, a))
+    a = sym.get('s_adc_buf')
+    check(a is not None and ADCBUF[0] <= a < ADCBUF[1], 'app: s_adc_buf in the ADC region (0x%08x)' % (a or 0))
     for name in APP_SRAM1:
         a = sym.get(name, 0)
         check(SRAM1[0] <= a < SRAM1[1], 'app: %s in SRAM1 (0x%08x)' % (name, a))

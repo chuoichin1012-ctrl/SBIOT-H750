@@ -18,6 +18,8 @@
 #include "flash_spi4.h"
 #include "store.h"
 #include "store_port.h"
+#include "iomgr.h"
+#include "bench_io.h"
 #include "syslog.h"
 #include <stdbool.h>
 #include <stdio.h>
@@ -197,6 +199,12 @@ static void init_task(void *arg)
     cJSON *sys = store_get("system");
     if (!sys)
         sys = cfg_default(&env, "system");
+    // The IO (spec §6.3 step 4): keepOutputs restored, the factory record read, the ADC started.
+    cJSON *ioc = store_get("io");
+    if (!ioc)
+        ioc = cfg_default(&env, "io");
+    iomgr_start(ioc, sys, flash_spi4());
+    cJSON_Delete(ioc);
     // The serial ports (spec §6.3 step 5): before anything that subscribes to them.
     for (int port = 1; port <= SERIAL_PORTS; port++) {
         char name[8];
@@ -347,6 +355,16 @@ static void init_task(void *arg)
             blog("app: SPI4 wiped in %lu ms, %d sectors failed; restarting\r\n", (unsigned long)((now_us() - t0) / 1000u), bad);
             vTaskDelay(pdMS_TO_TICKS(50));
             NVIC_SystemReset();
+            break;
+        }
+        case 'a':
+        case 'J':
+            bench_io_cmd((char)c, "");
+            break;
+        case 'A': {  // bench: "A <g1> <o1> <g2> <o2>": the factory record (bench_io.c)
+            char l[80];
+            read_line(l, sizeof l);
+            bench_io_cmd('A', l);
             break;
         }
         case 's': {  // bench: the serial counters of both ports

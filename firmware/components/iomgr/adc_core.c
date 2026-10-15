@@ -1,5 +1,4 @@
 #include "adc_core.h"
-#include <math.h>
 #include <string.h>
 #include "crc32.h"
 
@@ -51,7 +50,7 @@ int32_t adc_core_ua(const adc_core_t *a, int ch)
     if (!adc_core_ok(a, ch))
         return 0;
     float ma = a->cal.gain[ch] * adc_nominal_ma(a->mean[ch]) + a->cal.offset_ma[ch];
-    return ma > 0 ? (int32_t)lroundf(ma * 1000.0f) : 0;
+    return ma > 0 ? (int32_t)(ma * 1000.0f + 0.5f) : 0;  // rounded (no libm in the firmware)
 }
 
 // ---- factory record -----------------------------------------------------------------------------

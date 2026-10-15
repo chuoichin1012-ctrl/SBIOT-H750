@@ -12,6 +12,7 @@
 #include "message_buffer.h"
 #include "heap_newlib.h"
 #include "netmgr.h"
+#include "now_us.h"
 #include "syslog.h"
 #include "sysmgr.h"
 #include "task.h"
@@ -23,6 +24,8 @@
 #define MAX_CLIENTS 4
 #define LOG_BUF 2048
 #define POLL_MS 20  // spec §6.4
+#define MAX_CONNS (MAX_CLIENTS + 1)  // sockets of this listener at once: the clients and one being refused
+#define HANDSHAKE_MS 5000u           // a connection not upgraded by then is closed (Codex 06b review)
 
 static StaticTask_t s_tcb;
 static StackType_t s_stack[CONSOLE_STACK_WORDS];
@@ -91,8 +94,36 @@ static int clients(void)
     return n;
 }
 
+static int conns(void)
+{
+    int n = 0;
+    for (struct mg_connection *x = s_mgr.conns; x; x = x->next)
+        n += x->is_accepted;
+    return n;
+}
+
+static uint64_t ms_now(void)
+{
+    return now_us() / 1000u;
+}
+
 static void handler(struct mg_connection *c, int ev, void *ev_data)
 {
+    if (ev == MG_EV_ACCEPT) {
+        if (conns() > MAX_CONNS)
+            c->is_closing = 1;  // a pending socket counts too: they share lwIP's pool
+        uint64_t t = ms_now();
+        memcpy(c->data, &t, sizeof t);
+        return;
+    }
+    if (ev == MG_EV_POLL && c->is_accepted) {
+        uint64_t t;
+        memcpy(&t, c->data, sizeof t);
+        if (!c->is_websocket && ms_now() - t >= HANDSHAKE_MS)
+            c->is_closing = 1;
+        c->is_full = c->send.len >= WEB_SEND_HIGH;  // a client that does not read: its commands wait
+        return;
+    }
     if (ev == MG_EV_HTTP_MSG) {
         struct mg_http_message *hm = ev_data;
         if (mg_strcmp(hm->uri, mg_str("/ws")) != 0) {
@@ -123,6 +154,8 @@ static void handler(struct mg_connection *c, int ev, void *ev_data)
         mg_ws_send(c, hello, strlen(hello), WEBSOCKET_OP_TEXT);
     } else if (ev == MG_EV_WS_MSG) {
         struct mg_ws_message *wm = ev_data;
+        if (c->send.len >= WEB_SEND_HIGH)
+            return;  // not reading its answers: no more of them (Codex 06b review)
         if (s_target == 3 && (wm->flags & 15) == WEBSOCKET_OP_TEXT)
             command(c, wm->data.buf, wm->data.len);
     }

@@ -43,6 +43,7 @@ typedef enum { ST_FREE, ST_IDLE, ST_FILE, ST_EDGE_GET, ST_LOG, ST_UPLOAD, ST_DIS
 
 #define DISCARD_MAX (64u * 1024u)  // a rejected body is read and dropped up to this, then the connection closes
 #define QUIET_MS 300u
+#define IDLE_MS 60000u  // a connection with nothing in progress and nothing received for this long is closed
 
 typedef struct {
     state_t st;
@@ -51,6 +52,7 @@ typedef struct {
     bool until_quiet;  // ST_DISCARD of a body without a length: close once nothing comes for QUIET_MS
     bool hdrs_done;    // this request's headers were handled: Mongoose emits MG_EV_HTTP_HDRS again on every
                        // read and poll while the body is incomplete
+    size_t declared;   // this request's Content-Length: a body that came short (the client closed) has no effect
     // ST_FILE
     const www_file_t *file;
     size_t off;
@@ -303,6 +305,13 @@ static void upload_take(struct mg_connection *c, slot_t *s)
         upload_complete(c, s);
 }
 
+// Where this request's body starts in c->recv: after earlier pipelined requests, its headers are not
+// at offset 0 (Codex 06b review).
+static size_t body_offset(struct mg_connection *c, struct mg_http_message *hm)
+{
+    return (size_t)((const uint8_t *)hm->body.buf - c->recv.buf);
+}
+
 // An answer before the body (an error at the headers): the body is still read and dropped, so the
 // close that follows is a FIN and not a reset (lwIP resets a socket closed with unread data), and the
 // client reads the answer. Chunked or huge bodies: up to DISCARD_MAX, or until they stall.
@@ -314,7 +323,7 @@ static void reject(struct mg_connection *c, slot_t *s, struct mg_http_message *h
     s->expected = cl && hm->body.len < DISCARD_MAX ? hm->body.len : DISCARD_MAX;
     s->got = 0;
     s->last_ms = ms_now();
-    mg_iobuf_del(&c->recv, 0, hm->head.len);
+    mg_iobuf_del(&c->recv, 0, body_offset(c, hm));
     c->pfn = NULL;  // what follows is not parsed
     size_t n = c->recv.len < s->expected ? c->recv.len : s->expected;
     s->got += n;
@@ -363,7 +372,7 @@ static bool upload_start(struct mg_connection *c, slot_t *s, struct mg_http_mess
     s->expected = hm->body.len;
     s->got = 0;
     s->last_ms = ms_now();
-    mg_iobuf_del(&c->recv, 0, hm->head.len);  // the headers; the body follows
+    mg_iobuf_del(&c->recv, 0, body_offset(c, hm));  // up to this request's body (Codex 06b review)
     c->pfn = NULL;                            // silence Mongoose's HTTP handler: MG_EV_READ from here
     upload_take(c, s);
     return true;
@@ -407,6 +416,7 @@ static void on_headers(struct mg_connection *c, slot_t *s, struct mg_http_messag
         return;
     }
     s->waiting = hm->body.len > 0;
+    s->declared = hm->body.len;
     s->last_ms = ms_now();
 }
 
@@ -416,6 +426,13 @@ static void on_message(struct mg_connection *c, slot_t *s, struct mg_http_messag
     s->hdrs_done = false;  // the next request on this connection
     if (c->is_draining)
         return;  // answered at the headers
+    if (hm->body.len != s->declared)
+        return;  // the client closed before its whole body came (Mongoose still delivers it): no effect
+    // A client that sends requests without reading the answers: close it rather than queue them all.
+    if (c->send.len >= 2 * WEB_SEND_HIGH) {
+        c->is_closing = 1;
+        return;
+    }
     if (!is_api(hm)) {
         serve_file(c, s, hm);
         return;
@@ -426,9 +443,14 @@ static void on_message(struct mg_connection *c, slot_t *s, struct mg_http_messag
     }
     bool get = mg_strcmp(hm->method, mg_str("GET")) == 0;
     if (get && mg_strcmp(hm->uri, mg_str("/api/config/edgeDevices")) == 0) {
+        store_edge_pin(&s->pin);  // first: a pin that failed gets an error, not a 200 (Codex 06b review)
+        if (s->pin.count == 0) {
+            api_error(c, 503, s->pin.gen ? "The Edge model is being read by too many clients; try again."
+                                         : "The Edge model storage is unavailable; restart the gateway.");
+            return;
+        }
         mg_printf(c, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n"
                      "Transfer-Encoding: chunked\r\n\r\n");
-        store_edge_pin(&s->pin);
         s->st = ST_EDGE_GET;
         s->rec = 0;
         pump(c, s);
@@ -463,6 +485,7 @@ static void handler(struct mg_connection *c, int ev, void *ev_data)
         }
         memset(free_slot, 0, sizeof *free_slot);
         free_slot->st = ST_IDLE;
+        free_slot->last_ms = ms_now();
         memcpy(c->data, &free_slot, sizeof free_slot);
         return;
     }
@@ -490,6 +513,9 @@ static void handler(struct mg_connection *c, int ev, void *ev_data)
         }
         break;
     case MG_EV_POLL:
+        c->is_full = c->send.len >= WEB_SEND_HIGH;  // no more requests read while answers wait (Codex 06b review)
+        if (s->st == ST_IDLE && !s->waiting && c->send.len == 0 && ms_now() - s->last_ms >= IDLE_MS)
+            c->is_closing = 1;  // an idle connection gives its slot back
         if (s->st == ST_DISCARD && (web_stalled(s->last_ms, ms_now()) || (s->until_quiet && ms_now() - s->last_ms >= QUIET_MS)))
             c->is_draining = 1;  // the rest never came (or a chunked body ended): close
         if ((s->st == ST_UPLOAD || s->waiting) && web_stalled(s->last_ms, ms_now())) {

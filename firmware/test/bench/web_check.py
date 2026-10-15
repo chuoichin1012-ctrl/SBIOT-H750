@@ -330,6 +330,99 @@ def case_console(running_hostname):
     return ws, port
 
 
+def case_review(ws_port):
+    """The cases of Codex's 06b code review."""
+    # 1. A body that comes short (the client closes its side): no effect.
+    _, before = get_json('/api/config/system')
+    k = socket.create_connection((HOST, PORT), timeout=5)
+    body = json.dumps({'hostname': 'short-body'}).encode()
+    k.sendall(b'POST /api/config/system HTTP/1.1\r\nHost: x\r\nAuthorization: ' + AUTH.encode() +
+              b'\r\nContent-Length: %d\r\n\r\n' % (len(body) + 50) + body)
+    k.shutdown(socket.SHUT_WR)
+    time.sleep(1)
+    k.close()
+    _, after = get_json('/api/config/system')
+    check(after['hostname'] == before['hostname'], 'a body cut short by the client: nothing saved')
+
+    # 2. A GET, then an edgeDevices POST, pipelined in one send.
+    model = edge_model(1, 2)
+    eb = json.dumps(model).encode()
+    r = raw(b'GET /api/device HTTP/1.1\r\nHost: x\r\nAuthorization: ' + AUTH.encode() + b'\r\n\r\n'
+            b'POST /api/config/edgeDevices HTTP/1.1\r\nHost: x\r\nAuthorization: ' + AUTH.encode() +
+            b'\r\nContent-Length: %d\r\n\r\n' % len(eb) + eb)
+    _, back = get_json('/api/config/edgeDevices')
+    names = [n['name'] for d in back for n in d['nodes']]
+    check(r.count(b'HTTP/1.1 200') == 2 and names == ['p0', 'p1'], 'GET then a pipelined Edge POST: both answered, the model saved')
+
+    # 3. Requests without reading the answers: the heap stays bounded.
+    h0 = heap_free()
+    k = socket.create_connection((HOST, PORT), timeout=5)
+    k.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    req1 = b'GET /api/status HTTP/1.1\r\nHost: x\r\nAuthorization: ' + AUTH.encode() + b'\r\n\r\n'
+    try:
+        for _ in range(40):
+            k.sendall(req1 * 4)
+            time.sleep(0.05)
+    except OSError:
+        pass  # the board closed it: also bounded
+    time.sleep(1)
+    h1 = heap_free()
+    ws, st = ws_open(ws_port, base64.b64encode(b'admin:admin').decode())
+    ws.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    try:
+        for _ in range(1000):
+            ws_send(ws, 'status')
+    except OSError:
+        pass
+    time.sleep(1)
+    h2 = heap_free()
+    k.close()
+    ws.close()
+    check(h1 > h0 - 20000 and h2 > h0 - 20000, 'requests and console commands without reading: heap bounded (%d, %d, %d)' % (h0, h1, h2))
+
+    # 4. Console sockets that never finish their handshake: limited, and closed after 5 s.
+    pend = [socket.create_connection((HOST, ws_port), timeout=5) for _ in range(8)]
+    time.sleep(0.5)
+    closed = 0
+    for x in pend:
+        x.settimeout(0.2)
+        try:
+            closed += x.recv(1) == b''
+        except (socket.timeout, OSError):
+            pass
+    time.sleep(6)
+    late = 0
+    for x in pend:
+        x.settimeout(0.5)
+        try:
+            late += x.recv(1) == b''
+        except (socket.timeout, ConnectionResetError):
+            late += 1
+        x.close()
+    ws, st = ws_open(ws_port, base64.b64encode(b'admin:admin').decode())
+    check(closed >= 3 and late == 8 and st == 101, 'pending console sockets: %d refused at once, all closed after 5 s, a client then gets in' % closed)
+    ws.close()
+
+    # 5. Edge GETs that hold 4 generations: the fifth gets 503, not an empty 200; closing frees them.
+    big = json.dumps(edge_model(10, 10)).encode()
+    holders = []
+    for i in range(4):
+        req('POST', '/api/config/edgeDevices', body=big.replace(b'"p0"', b'"q%d"' % i), timeout=60)
+        k = socket.create_connection((HOST, PORT), timeout=5)
+        k.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2048)
+        k.sendall(b'GET /api/config/edgeDevices HTTP/1.1\r\nHost: x\r\nAuthorization: ' + AUTH.encode() + b'\r\n\r\n')
+        holders.append(k)
+        time.sleep(0.5)
+    req('POST', '/api/config/edgeDevices', body=big, timeout=60)
+    s5, _, _ = req('GET', '/api/config/edgeDevices')
+    for k in holders:
+        k.close()
+    time.sleep(1)
+    s6, back = get_json('/api/config/edgeDevices')
+    check(s5 == 503 and s6 == 200 and len(back) == 10, 'a fifth generation pinned: 503; after the readers close: 200 (%d, %d)' % (s5, s6))
+    req('POST', '/api/config/edgeDevices', body=b'[]')
+
+
 def case_ota(build):
     img = open(os.path.join(build, 'app.img'), 'rb').read()
     s, _, d = req('POST', '/api/ota', body=img, headers={'Content-Type': 'application/octet-stream'}, timeout=120)
@@ -354,6 +447,7 @@ def main():
     ws, ws_port = case_console(running)
     ws.close()
     case_slow_readers(ws_port)
+    case_review(ws_port)
     case_ota(build)
     # Back to the console off, as the factory has it.
     _, sysc = get_json('/api/config/system')

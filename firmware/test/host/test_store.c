@@ -63,6 +63,21 @@ static int (*s_sim_erase)(nor_t *, uint32_t);
 static int (*s_sim_program)(nor_t *, uint32_t, const void *, uint32_t);
 static long s_trace_from = -1;  // STORE_TRACE=<op>: print the operations from there on
 static long s_fail_op = -1;     // that erase or program fails once with NOR_EIO, doing nothing
+static int (*s_sim_read)(nor_t *, uint32_t, void *, uint32_t);
+static uint32_t s_rfail_lo, s_rfail_hi;  // reads touching [lo, hi) are counted while s_rcounting;
+static long s_rfail_at = -1, s_rcount;   // the one numbered s_rfail_at fails, and the next
+static int s_rfail_times = 1;            // s_rfail_times - 1 attempts too (a retry meets them)
+static bool s_rcounting = true;
+
+static int failing_read(nor_t *n, uint32_t off, void *buf, uint32_t len)
+{
+    if (s_rfail_at >= 0 && s_rcounting && off < s_rfail_hi && off + len > s_rfail_lo) {
+        long i = s_rcount++;
+        if (i >= s_rfail_at && i < s_rfail_at + s_rfail_times)
+            return NOR_EIO;
+    }
+    return s_sim_read(n, off, buf, len);
+}
 
 static int counting_erase(nor_t *n, uint32_t off)
 {
@@ -107,6 +122,8 @@ static void flash_new(uint32_t seed)
     s_spi.nor.erase_sector = counting_erase;
     s_sim_program = s_spi.nor.program;
     s_spi.nor.program = tracing_program;
+    s_sim_read = s_spi.nor.read;
+    s_spi.nor.read = failing_read;
 }
 
 static void reboot(void)
@@ -673,8 +690,18 @@ static void test_no_endless_loops(void)
     alarm(20);
     reboot();
     alarm(0);
+    // the recovery could not finish: the edge database is unusable, never an empty model
+    store_edge_pin_t pp;
+    store_edge_pin(&pp);
+    char *e = edge_now();
+    CHECK(pp.count == 0 && e == NULL, "recovery unfinished: no model is served, not even the default");
+    CHECK(store_edge_save(m2, strlen(m2), err, sizeof err) == STORE_EFLASH, "and a save is refused (500)");
+    free(e);
     sim_fail(&s_w, 0, 0, 0, 0, 0);
-    CHECK(1, "FlashDB's recovery returned");
+    reboot();
+    e = edge_now();
+    CHECK(e && strcmp(e, "[]"), "the flash readable again: the model is back (%.20s)", e ? e : "(none)");
+    free(e);
     free(m), free(m2);
 }
 
@@ -850,14 +877,24 @@ static void test_power_cuts(void)
 // A write failing once (NOR_EIO, nothing written) at every operation of an edge save: whatever
 // the save answers, the model it leaves in RAM is the one the reboot finds, and it is exactly the
 // old or the new one (a commit that FlashDB reports as failed must not lose the new records).
+static void write_failures_from(bool empty);
+
 static void test_write_failures(void)
 {
+    write_failures_from(false);
+    write_failures_from(true);
+}
+
+// empty: no model saved before the measured save (old generation 0, the default text).
+static void write_failures_from(bool empty)
+{
     s_snap = malloc(0x100000);
-    flash_new(22);
+    flash_new(empty ? 24 : 22);
     reboot();
     char err[200];
-    char *ma = edge_model(14, 4, 1), *wa = edge_oracle(ma), *mb = edge_model(16, 4, 2), *wb = edge_oracle(mb);
-    for (int i = 0; i < 40; i++) {  // as in test_power_cuts: the measured save collects garbage
+    char *ma = edge_model(14, 4, 1), *mb = edge_model(16, 4, 2), *wb = edge_oracle(mb);
+    char *wa = empty ? default_text("edgeDevices") : edge_oracle(ma);
+    for (int i = 0; !empty && i < 40; i++) {  // as in test_power_cuts: the measured save collects garbage
         char *m = edge_model(16, 4, 50 + i);
         store_edge_save(m, strlen(m), err, sizeof err);
         free(m);
@@ -870,6 +907,10 @@ static void test_write_failures(void)
         store_deinit();
         restore();
         reboot();
+    }
+    if (empty) {
+        store_deinit();
+        snapshot();
     }
     store_deinit();
     restore();
@@ -887,11 +928,20 @@ static void test_write_failures(void)
         s_fail_op = op;
         store_err_t r = store_edge_save(mb, strlen(mb), err, sizeof err);
         s_fail_op = -1;
-        char *before = edge_now();
+        char *before = edge_now();  // NULL: the store says it cannot tell (until a reboot)
+        store_edge_pin_t pp;
+        store_edge_pin(&pp);
+        store_edge_unpin(&pp);
+        // a failed save whose outcome is known leaves no record but the committed generation's
+        int keys = edge_keys("ed.");  // counted before the boot cleanup could hide a stray
+        bool clean = !before || r == STORE_OK || keys == (int)(pp.gen ? pp.count : 0);
+        if (!clean && bad < 5)
+            printf("  write fails at op %ld: %d records left for generation %u (%u records)\n", op, keys, (unsigned)pp.gen,
+                   (unsigned)pp.count);
         reboot();
         char *after = edge_now();
-        bool ok = before && after && !strcmp(before, after) && (!strcmp(after, wa) || !strcmp(after, wb)) &&
-                  (r != STORE_OK || !strcmp(after, wb));
+        bool ok = after && (!before || !strcmp(before, after)) && (!strcmp(after, wa) || !strcmp(after, wb)) &&
+                  (r != STORE_OK || !strcmp(after, wb)) && clean;
         if (!ok && bad++ < 5)
             printf("  write fails at op %ld of %ld: save %d, before %s, after %s\n", op, total, r,
                    before ? (!strcmp(before, wa) ? "old" : !strcmp(before, wb) ? "new" : "OTHER") : "none",
@@ -899,7 +949,7 @@ static void test_write_failures(void)
         free(before), free(after);
     }
     s_quiet = false;
-    CHECK(bad == 0, "edge save: %d of %ld single write failures end inconsistent", bad, total);
+    CHECK(bad == 0, "edge save%s: %d of %ld single write failures end inconsistent", empty ? " (no model before)" : "", bad, total);
     free(ma), free(wa), free(mb), free(wb), free(s_snap);
 }
 
@@ -920,12 +970,16 @@ static bool keep_intact(void)
     return n == 17 && !memcmp(v, "a value to keep!!", 17);
 }
 
+static bool s_count_mount = true;  // false: reads of the mount itself are not counted
+
 static long churn(int writes)
 {
     struct fdb_kvdb db = {0};
     uint32_t sec = 16 * 1024;
     fdb_kvdb_control(&db, FDB_KVDB_CTRL_SET_SEC_SIZE, &sec);
+    s_rcounting = s_count_mount;
     fdb_kvdb_init(&db, "cert", "cert", NULL, NULL);
+    s_rcounting = true;
     static char big[6000];
     long moves = 0;
     for (int i = 0; i < writes; i++) {
@@ -979,6 +1033,48 @@ static void test_gc_write_failures(void)
     }
     s_quiet = false;
     CHECK(bad == 0, "FlashDB garbage collection: %d of %ld single write failures lose a live KV", bad, total);
+
+    // Reads of the sector holding "keep" failing: (a) once, the k-th of them, the mount's included
+    // (a transient fault: the FAL retries); (b) three times in a row after the mount (a fault that
+    // outlasts the retries), the garbage collector's moves among them.
+    s_rfail_lo = 0x80000;
+    s_rfail_hi = 0x84000;
+    for (int pass = 0; pass < 2; pass++) {
+        s_rfail_times = pass ? 3 : 1;
+        s_count_mount = !pass;
+        restore();
+        s_rcount = 0;
+        s_rfail_at = 1L << 40;  // count only
+        churn(40);
+        long reads = s_rcount;
+        if (pass && getenv("STORE_GC_RDEBUG")) {
+            restore();
+            s_rcount = 0;
+            s_rfail_at = atol(getenv("STORE_GC_RDEBUG"));
+            printf("--- read %ld fails 3 times:\n", s_rfail_at);
+            s_trace_from = 0;
+            churn(40);
+            s_trace_from = -1;
+            s_rfail_at = -1;
+            printf("--- keep intact: %d\n", keep_intact());
+        }
+        int rbad = 0;
+        s_quiet = true;
+        for (long k = 0; k < reads; k++) {
+            restore();
+            s_rcount = 0;
+            s_rfail_at = k;
+            churn(40);
+            s_rfail_at = -1;
+            if (!keep_intact() && rbad++ < 5)
+                printf("  FlashDB: read %ld of %ld failing %d time(s) lost the KV\n", k, reads, s_rfail_times);
+        }
+        s_quiet = false;
+        CHECK(rbad == 0, "FlashDB: %d of %ld read failures (%s) lose a live KV", rbad, reads,
+              pass ? "three in a row, after the mount" : "once, anywhere");
+    }
+    s_rfail_times = 1;
+    s_count_mount = true;
     printf("store: FlashDB churn of %ld operations with garbage collection, a write failing at each\n", total);
     free(s_snap);
 }

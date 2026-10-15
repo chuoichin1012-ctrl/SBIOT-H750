@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Mutation check of the OTA and anti-clone logic: each mutant must make its test fail.
 
-    python3 stm32/firmware/test/host/mutants_ota.py      (from the repository root)
+    python3 stm32/firmware/test/host/mutants_ota.py [KIND...]      (from the repository root)
+
+KIND (install, bind, store, store_small) runs only the mutants of those tests: run the ones the
+change can affect, not all of them.
 
 Builds the mutant's test (test/host/test_install.c, or test_bind.c for the binding) with the host
 flags and runs it quickly (OTA_QUICK=1 skips the install power-cut matrices). Every source file is restored afterwards.
@@ -39,6 +42,9 @@ ARGS = {'install': [], 'bind': [SAMPLE], 'store': [], 'store_small': []}
 # Extra environments to run the test with: a mutant is caught when any run fails.
 RUNS = {'store': [{}, {'STORE_CUTS': '1'}]}
 # (file, original text, mutated text, what the mutant breaks[, test: 'install' by default])
+# Not listed, as equivalent under any real fault: deleting records in store_edge_save's "commit
+# not known" branch. That branch is only reached when the remount fails, which takes failing
+# writes, so the deletes fail too; it stays as a defence.
 M = [
  ('boot/install.c', '        if (p == 0)\n            memset(buf, 0xFF, sizeof IMG_MAGIC);  // the magic is programmed last, on its own\n', '', 'magic programmed with its page'),
  ('boot/install.c', '    if (img_check(dst, dof, in->kick, &back) != IMG_OK || memcmp(back.raw, h->raw, IMG_CORE))\n        return -1;\n', '    (void)back;\n', 'copy not checked'),
@@ -66,31 +72,38 @@ M = [
  ('components/ota/bind.c', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        return BIND_EREAD;', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        memset(rec, 0, BIND_LEN);', 'read error taken for a record', 'bind'),
  ('boot/install.c', ' || !staging_gone(in))  // never installed again', ' || (0 && staging_gone(in)))  // never installed again', 'staging erase not verified'),
  ('components/ota/ota_app.c', ' || spi->read(spi, SPI_STAGING, m, sizeof m) || memcmp(m, erased, sizeof m))', ' || (0 && spi->read(spi, SPI_STAGING, m, sizeof m) && memcmp(m, erased, sizeof m)))', 'upload erase not verified'),
- ('components/store/store.c', '    if (s_gen)\n        delete_records(0, true);\n    else if (has_records())', '    delete_records(0, true);\n    if (has_records())', 'boot deletes records without a manifest', 'store'),
+ ('components/store/store.c', '    else if (s_gen)\n        delete_records(0, true);\n    else if (has_records())', '    else\n        delete_records(0, true);\n    if (s_edge_ok && has_records())', 'boot deletes records without a manifest', 'store'),
  ('components/store/store.c', 'static bool kept(uint32_t g) { return g == s_gen || pin_find(g) >= 0; }', 'static bool kept(uint32_t g) { return g == s_gen; }', 'pinned generation not kept', 'store'),
  ('components/store/store.c', '    if (r == CFG_OK && !kv_write(&s_edge_db, EDGE, manifest, strlen(manifest))) {  // the commit point', '    if (0) {  // the commit point', 'no manifest commit', 'store'),
  ('components/store/store.c', '    delete_records(0, true);      // the old generation unless pinned, and any stray record\n', '', 'old generation never deleted', 'store'),
- ('components/store/store.c', '        if (r != CFG_ABORTED || s_gen == old)\n            delete_records(w.gen, false);', '        (void)old;', 'failed save leaves its records', 'store'),
+ ('components/store/store.c', "            delete_records(w.gen, false);  // the old state stands: this generation's records go", '            ;', 'failed save leaves its records', 'store'),
  ('components/store/store.c', '            if (s_cache[k].off > s_cache[i].off)\n                s_cache[k].off -= s_cache[i].len;\n', '', 'cache offsets not moved', 'store'),
  ('components/store/store.c', '    return s_used - (i >= 0 ? s_cache[i].len : 0) + len <= sizeof s_pool;', '    return s_used + len <= sizeof s_pool;', 'cache counts the old text too', 'store_small'),
  ('components/store/store.c', '            doc = cfg_load(&s_env, name, parsed, err, sizeof err);', '            doc = cJSON_Duplicate(parsed, true);', 'no re-validation at boot', 'store'),
  ('components/store/store.c', '        delete_records(p->gen, false);  // its slot is free now, so kept() no longer holds it', '        ;', 'doomed generation kept after unpin', 'store'),
- ('third_party/flashdb/src/fdb_kvdb.c', '    if (rescan && ++rescans <= 16) { /* SBIOT patch, see check_and_recovery_kv_cb */\n        goto __retry;\n    }\n', '    (void)rescans;\n', 'FlashDB recovery stops early', 'store'),
+ ('third_party/flashdb/src/fdb_kvdb.c', '    if (rs.rescan && !rs.failed && ++rescans <= 16) { /* SBIOT patch, see check_and_recovery_kv_cb */\n        goto __retry;\n    }\n    if (rs.failed || rs.rescan) {', '    (void)rescans;\n    if (rs.failed) {', 'FlashDB recovery stops early', 'store'),
  ('components/store/store.c', '    UNLOCK();\n        bool more = b->n == LOG_BATCH;', '        bool more = b->n == LOG_BATCH;', 'log callback under the lock', 'store'),
  ('third_party/flashdb/src/fdb_kvdb.c', '                    return true;\n                }\n            } else {\n                FDB_DEBUG("KV (%.*s) is garbage NOT need move', '                }\n            } else {\n                FDB_DEBUG("KV (%.*s) is garbage NOT need move', 'FlashDB GC formats after a failed move', 'store'),
  ('third_party/flashdb/src/fdb_kvdb.c', '        result = update_sec_status(db, &sector, kv->len, NULL);\n        if (result != FDB_NO_ERR) {', '        update_sec_status(db, &sector, kv->len, NULL);\n        if (0) {', 'FlashDB move ignores the target sector status', 'store'),
- ('third_party/flashdb/src/fdb_kvdb.c', '    if (rescan && ++rescans <= 16) {', '    if (rescan && ++rescans) {', 'FlashDB rescans without a bound', 'store'),
- ('components/store/store.c', '        fdb_kvdb_deinit(&s_edge_db);\n        memset(&s_edge_db, 0, sizeof s_edge_db);\n        uint32_t c = 0, g = kvdb_open(&s_edge_db, "edge", EDGE_SECTOR) ? manifest_gen(&c) : 0;', '        uint32_t c = 0, g = manifest_gen(&c);', 'no remount after a failed manifest write', 'store'),
+ ('third_party/flashdb/src/fdb_kvdb.c', '    if (rs.rescan && !rs.failed && ++rescans <= 16) {', '    if (rs.rescan && !rs.failed && ++rescans) {', 'FlashDB rescans without a bound', 'store'),
+ ('components/store/store.c', '        fdb_kvdb_deinit(&s_edge_db);\n        memset(&s_edge_db, 0, sizeof s_edge_db);\n        manifest_t m;\n        bool known = edge_mount(&m);', '        manifest_t m = manifest_read(&s_gen, &s_count);\n        bool known = m != MANIFEST_BAD;', 'no remount after a failed manifest write', 'store'),
  ('components/store/store.c', '    edge_writer_t w = {.gen = (top > s_gen ? top : s_gen) + 1};', '    edge_writer_t w = {.gen = s_gen + 1};\n    (void)top;\n    delete_records(w.gen, false);', 'new generation over existing records', 'store'),
  ('components/store/store.c', '    for (int pass = 0; pass < 8; pass++) {', '    for (int pass = 0;; pass++) {', 'cleanup without a bound', 'store'),
- ('components/store/store.c', '{"mqtt", "port1", "port2"};', '{"mqtt", "port1", "mqtt"};', 'no port2 certificates', 'store')
+ ('components/store/store.c', '{"mqtt", "port1", "port2"};', '{"mqtt", "port1", "mqtt"};', 'no port2 certificates', 'store'),
+ ('components/store/fal_nor.c', '#define READ_TRIES 3', '#define READ_TRIES 1', 'FAL does not retry a read', 'store'),
+ ('third_party/flashdb/src/fdb_kvdb.c', '        if (_fdb_read_failed) {', '        if (0) {', 'FlashDB GC formats after a failed read', 'store'),
+ ('third_party/flashdb/src/fdb_kvdb.c', '            if (result == FDB_NO_ERR) { /* SBIOT patch: never copy what could not be read */', '            if (1) {', 'FlashDB move copies what it could not read', 'store'),
+ ('third_party/flashdb/src/fdb_kvdb.c', '    if (rs.failed || rs.rescan) { /* SBIOT patch: the recovery did not finish */', '    if (0) {', 'FlashDB mount succeeds after an unfinished recovery', 'store'),
+ ('components/store/store.c', '    if (!s_edge_ok) {  // nothing is known to be committed: no model, not even the default', '    if (0) {', 'unknown edge state serves a model', 'store'),
 ]
 
 
 def main():
+    kinds = sys.argv[1:]
     subprocess.run(['make', '-s', '-C', os.path.join(FW, 'test/host'), 'build/bind_sample.bin'], check=True)
     caught = 0
-    for path, old, new, what, *test in M:
+    todo = [m for m in M if not kinds or (m[4] if len(m) > 4 else 'install') in kinds]
+    for path, old, new, what, *test in todo:
         path = os.path.join(FW, path)
         src = open(path).read()
         if src.count(old) != 1:
@@ -112,8 +125,8 @@ def main():
         finally:
             open(path, 'w').write(src)
         print('%-36s %s' % (what, res))
-    print('mutants: %d of %d caught' % (caught, len(M)))
-    return 0 if caught == len(M) else 1
+    print('mutants: %d of %d caught' % (caught, len(todo)))
+    return 0 if caught == len(todo) else 1
 
 
 if __name__ == '__main__':

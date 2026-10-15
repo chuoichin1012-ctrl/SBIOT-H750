@@ -254,6 +254,11 @@ extern fdb_err_t _fdb_file_write(fdb_db_t db, uint32_t addr, const void *buf, si
 extern fdb_err_t _fdb_file_erase(fdb_db_t db, uint32_t addr, size_t size);
 #endif /* FDB_USING_FILE_LIBC */
 
+/* SBIOT patch: set by any read that failed; the garbage collector checks it before it formats a
+ * sector, since FlashDB takes most read results as data (a KV that does not read back looks like
+ * garbage) */
+bool _fdb_read_failed;
+
 fdb_err_t _fdb_flash_read(fdb_db_t db, uint32_t addr, void *buf, size_t size)
 {
     fdb_err_t result = FDB_NO_ERR;
@@ -268,6 +273,7 @@ fdb_err_t _fdb_flash_read(fdb_db_t db, uint32_t addr, void *buf, size_t size)
 #ifdef FDB_USING_FAL_MODE
         if (fal_partition_read(db->storage.part, addr, (uint8_t *) buf, size) < 0) {
             result = FDB_READ_ERR;
+            _fdb_read_failed = true;
         }
 #endif
     }

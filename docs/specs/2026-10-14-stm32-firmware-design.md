@@ -625,7 +625,7 @@ Quy tắc riêng của bản STM32:
   - validate lại toàn bộ cấu hình khi khởi động;
   - log TSDB đánh khóa bằng số thứ tự tăng dần.
 - **Cần đo:** thời gian mở DB khi đọc qua SPI. Ước tính khoảng 5.300 lần đọc nhỏ, mỗi lần khoảng 5 µs, tổng chừng 30 ms.
-- **FlashDB 2.2.0 có một file vá** (`third_party/patches/flashdb-2.2.0-sbiot.patch`, Plan 05a), sửa ba lỗi. `master` của upstream vẫn còn cả ba.
+- **FlashDB 2.2.0 có một file vá** (`third_party/patches/flashdb-2.2.0-sbiot.patch`, Plan 05a). `master` của upstream vẫn còn các lỗi này. Ba lỗi chính:
   1. **Vòng khôi phục dừng sớm.** Lúc mount, khi gặp một KV ghi dở (`PRE_WRITE`), FlashDB đánh dấu nó hỏng rồi dừng vòng duyệt khôi phục. Giá trị cũ của chính KV đó (`PRE_DELETE`) vì vậy đọc ra như không tồn tại.
      - Bị ma trận cắt điện bắt được: cắt lúc đang ghi lại manifest trong lúc DB dọn rác.
      - Bản vá: duyệt lại, chỉ sau một lần ghi trạng thái thành công, tối đa 16 lần.
@@ -634,7 +634,16 @@ Quy tắc riêng của bản STM32:
   3. **Không kiểm trạng thái sector đích.** `move_kv` bỏ qua lỗi ghi trạng thái của sector đích, nên KV bị chuyển vào một sector vẫn mang dấu "trống", và lần mount sau bỏ qua sector đó.
      - Bản vá: lỗi này cũng giữ bản gốc.
 
-  Lỗi 2 và 3 bị ma trận "một lần ghi lỗi" của `test_store` bắt được, chạy trên một chuỗi ghi đè có dọn rác.
+  Lỗi 2 và 3 bị ma trận "một lần ghi lỗi" của `test_store` bắt được, chạy trên một chuỗi ghi đè có dọn rác. Cùng file vá còn hai chỗ nữa:
+  - `move_kv` chỉ chép những gì đọc được;
+  - một lần đọc lỗi bất kỳ trong lúc dọn một sector giữ sector đó lại, không format; lỗi đọc có thể khiến một KV trông như rác.
+
+  Khôi phục lúc mount chưa xong thì mount thất bại, không còn trông như đã hoàn tất.
+- **Lớp FAL đọc lại tối đa 3 lần.** FlashDB coi hầu hết kết quả đọc là dữ liệu, mà lỗi đọc thoáng qua trên SPI4 đã từng gặp ở bench của Plan 04b. Lỗi đọc dai dẳng lúc mount (flash hỏng) vẫn nằm ngoài tầm xử lý.
+- **Trạng thái "edge không dùng được":** khi DB `edge` không mount được, manifest có mà không đọc được, hoặc kết quả commit của một lần lưu không xác định được.
+  - `store` không phục vụ model nào, kể cả mặc định: `GET` trả 503, lúc boot thì Edge tắt.
+  - `store` từ chối lưu (500) và không xóa bản ghi nào, cho tới lần boot sau.
+  - DB `cfg` không mount được thì `store_init` thất bại. DB `cert` không mount được thì chỉ chứng chỉ bị ảnh hưởng.
 - **Sau một lần ghi lỗi khi lưu `edgeDevices`, `store` mount lại DB `edge`,** như lần boot sau sẽ làm, rồi lấy generation đã commit từ đó. Lý do: trạng thái trong RAM của FlashDB (cache) có thể khác flash; ví dụ manifest mới đã nằm trong cache mà chưa hợp lệ. Nhờ vậy, model đang phục vụ luôn là model mà lần boot sau tìm thấy.
 - Mỗi DB dùng sector 16 KB. Riêng `edge` chứa vừa bản ghi 8 KB cùng header của nó, và dọn rác mịn trong 256 KB.
 

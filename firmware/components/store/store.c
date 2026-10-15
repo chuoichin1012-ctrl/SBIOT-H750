@@ -20,6 +20,10 @@
 static struct fdb_kvdb s_cfg_db, s_edge_db, s_cert_db;
 static struct fdb_tsdb s_log_db;
 static bool s_mounted, s_log_ok;
+// edge: mounted, and its committed generation known. False after a mount that failed, a manifest
+// that does not read back, or a save whose commit is not known: no model is served and no record
+// deleted until the next boot decides.
+static bool s_edge_ok, s_cert_ok;
 static fdb_time_t s_log_seq;  // TSDB key: last used sequence number
 static uint32_t s_boot;
 static cfg_env_t s_env;
@@ -238,26 +242,43 @@ static bool has_records(void)
     return false;
 }
 
-/** The generation the manifest in flash names, and its count; 0 when absent or unreadable.
- * A fixed buffer: no allocation can fail here. */
-static uint32_t manifest_gen(uint32_t *count)
+typedef enum { MANIFEST_NONE, MANIFEST_OK, MANIFEST_BAD } manifest_t;
+
+/** The manifest in flash: absent, or the generation and count it names, or present but not
+ * readable as one. A fixed buffer: no allocation can fail here. */
+static manifest_t manifest_read(uint32_t *gen, uint32_t *count)
 {
+    struct fdb_kv kv;
+    *gen = *count = 0;
+    if (!fdb_kv_get_obj(&s_edge_db, EDGE, &kv))
+        return MANIFEST_NONE;
     char m[32] = "";
     struct fdb_blob blob;
-    size_t n = fdb_kv_get_blob(&s_edge_db, EDGE, fdb_blob_make(&blob, m, sizeof m - 1));
+    size_t n = kv.value_len < sizeof m ? fdb_blob_read((fdb_db_t)&s_edge_db, fdb_kv_to_blob(&kv, fdb_blob_make(&blob, m, kv.value_len))) : 0;
     m[n < sizeof m ? n : sizeof m - 1] = '\0';
     unsigned long g, c;
     if (sscanf(m, "@%lu,%lu", &g, &c) != 2 || !g || !c)
-        return 0;
-    if (count)
-        *count = (uint32_t)c;
-    return (uint32_t)g;
+        return MANIFEST_BAD;
+    *gen = (uint32_t)g;
+    *count = (uint32_t)c;
+    return MANIFEST_OK;
 }
 
-static void read_manifest(void)
+/** Mounts the edge database and takes the committed generation from it; false: unknown. */
+static bool edge_mount(manifest_t *state)
 {
-    s_count = 0;
-    s_gen = manifest_gen(&s_count);
+    s_gen = s_count = 0;
+    *state = MANIFEST_BAD;
+    if (!kvdb_open(&s_edge_db, "edge", EDGE_SECTOR))
+        return false;
+    *state = manifest_read(&s_gen, &s_count);
+    return *state != MANIFEST_BAD;
+}
+
+static void edge_unknown(const char *why)
+{
+    s_edge_ok = false;
+    store_port_log("edgeDevices unavailable until the next boot: %s", why);
 }
 
 static int pin_find(uint32_t gen)
@@ -312,12 +333,12 @@ store_err_t store_init(const cfg_env_t *env, nor_t *flash)
     s_env = *env;
     fal_nor_set(flash);
     LOCK();
-    if (!kvdb_open(&s_cfg_db, "cfg", CFG_SECTOR) || !kvdb_open(&s_edge_db, "edge", EDGE_SECTOR) ||
-        !kvdb_open(&s_cert_db, "cert", CERT_SECTOR)) {
+    if (!kvdb_open(&s_cfg_db, "cfg", CFG_SECTOR)) {
         UNLOCK();
-        return STORE_EFLASH;
+        return STORE_EFLASH;  // no configs, no boot counter: the caller runs on defaults
     }
     s_mounted = true;
+    s_cert_ok = kvdb_open(&s_cert_db, "cert", CERT_SECTOR);
     uint32_t sec = LOG_SECTOR;
     fdb_tsdb_control(&s_log_db, FDB_TSDB_CTRL_SET_SEC_SIZE, &sec);
     s_log_seq = 0;
@@ -335,10 +356,13 @@ store_err_t store_init(const cfg_env_t *env, nor_t *flash)
     s_boot++;
     store_state_set("boot", &s_boot, sizeof s_boot);
 
-    read_manifest();
+    manifest_t m;
+    s_edge_ok = edge_mount(&m);
+    if (!s_edge_ok)
+        edge_unknown(m == MANIFEST_BAD ? "the manifest does not read back" : "the database does not mount");
     // Orphans of a save cut by a power loss (spec §9.4, step 4). Without a manifest nothing proves
     // a record is an orphan, so none is deleted; the next successful save removes them.
-    if (s_gen)
+    else if (s_gen)
         delete_records(0, true);
     else if (has_records())
         store_port_log("edge records without a manifest: kept until the next save");
@@ -354,7 +378,7 @@ void store_deinit(void)
     LOCK();
     if (s_mounted) {
         fdb_kvdb_deinit(&s_cfg_db);
-        fdb_kvdb_deinit(&s_edge_db);
+        fdb_kvdb_deinit(&s_edge_db);  // FlashDB ignores a database that is not mounted
         fdb_kvdb_deinit(&s_cert_db);
         if (s_log_ok)
             fdb_tsdb_deinit(&s_log_db);
@@ -363,7 +387,7 @@ void store_deinit(void)
     memset(&s_edge_db, 0, sizeof s_edge_db);
     memset(&s_cert_db, 0, sizeof s_cert_db);
     memset(&s_log_db, 0, sizeof s_log_db);
-    s_mounted = s_log_ok = false;
+    s_mounted = s_log_ok = s_edge_ok = s_cert_ok = false;
     s_used = s_ncache = s_nlisteners = 0;
     s_gen = s_count = 0;
     memset(s_pins, 0, sizeof s_pins);
@@ -477,6 +501,11 @@ store_err_t store_edge_save(const char *text, size_t len, char *err, size_t errl
 {
     err[0] = '\0';
     LOCK();
+    if (!s_edge_ok) {
+        UNLOCK();
+        snprintf(err, errlen, "The Edge model storage is unavailable; restart the gateway.");
+        return STORE_EFLASH;
+    }
     // Above the committed generation and above every record in flash, so this save never has to
     // delete anything before it is validated (records of a lost or unreadable manifest survive it).
     uint32_t top = highest_record_gen();
@@ -487,27 +516,34 @@ store_err_t store_edge_save(const char *text, size_t len, char *err, size_t errl
     char manifest[32];
     snprintf(manifest, sizeof manifest, "@%lu,%lu", (unsigned long)w.gen, (unsigned long)w.idx);
     uint32_t old = s_gen;
+    bool wrote = r == CFG_ABORTED;  // a record write failed
     if (r == CFG_OK && !kv_write(&s_edge_db, EDGE, manifest, strlen(manifest))) {  // the commit point
+        r = CFG_ABORTED;
+        wrote = true;
+    }
+    if (wrote) {
         // After a failed write FlashDB's view in RAM (its cache) need not be the flash's: the new
-        // manifest may be in place with the old one not deleted, or cached while it is not valid.
-        // Mount the database again, as the next boot will, and take the committed generation
-        // from there: what this boot serves is then what the next one finds.
+        // manifest may be in place with the old one not deleted, or cached while it is not
+        // valid. Mount the database again, as the next boot will, and take the committed
+        // generation from there: what this boot serves is then what the next one finds.
         fdb_kvdb_deinit(&s_edge_db);
         memset(&s_edge_db, 0, sizeof s_edge_db);
-        uint32_t c = 0, g = kvdb_open(&s_edge_db, "edge", EDGE_SECTOR) ? manifest_gen(&c) : 0;
-        s_gen = g;
-        s_count = c;
-        if (g != w.gen) {
-            r = CFG_ABORTED;
-            if (g)  // the old generation stands: this one's records go (none is read)
-                delete_records(w.gen, false);
-            // g == 0: nothing proves which records are orphans; kept until the next save
+        manifest_t m;
+        bool known = edge_mount(&m);
+        if (known && m == MANIFEST_OK && s_gen == w.gen && s_count == w.idx) {
+            r = CFG_OK;  // the commit is in place after all
+            store_port_log("edgeDevices: a write reported an error, yet generation %lu is committed", (unsigned long)w.gen);
+        } else if (known && ((m == MANIFEST_OK && s_gen == old) || (m == MANIFEST_NONE && !old))) {
+            delete_records(w.gen, false);  // the old state stands: this generation's records go
+        } else {
+            // A mount that failed, a manifest that does not read back, or another generation than
+            // either: nothing proves what is committed. Delete nothing; the next boot decides.
+            edge_unknown("a save's commit is not known");
         }
-        store_port_log("edgeDevices: the manifest write reported an error; generation %lu is committed", (unsigned long)g);
     }
     store_err_t e = from_cfg(r, err, errlen);
     if (e != STORE_OK) {
-        if (r != CFG_ABORTED || s_gen == old)
+        if (!wrote)  // rejected before any write: only this generation's own records, if any
             delete_records(w.gen, false);
         UNLOCK();
         return e;
@@ -529,6 +565,12 @@ void store_edge_pin(store_edge_pin_t *p)
     LOCK();
     p->gen = s_gen;
     p->count = s_gen ? s_count : 1;
+    if (!s_edge_ok) {  // nothing is known to be committed: no model, not even the default
+        p->gen = 0;
+        p->count = 0;
+        UNLOCK();
+        return;
+    }
     if (s_gen) {
         int i = pin_find(s_gen);
         for (int k = 0; i < 0 && k < MAX_PINS; k++)
@@ -618,9 +660,9 @@ store_err_t store_factory_reset(void)
 {
     LOCK();
     store_err_t e = STORE_OK;
-    if (fdb_kv_set_default(&s_cfg_db) != FDB_NO_ERR || fdb_kv_set_default(&s_edge_db) != FDB_NO_ERR ||
-        fdb_kv_set_default(&s_cert_db) != FDB_NO_ERR)
-        e = STORE_EFLASH;
+    if (fdb_kv_set_default(&s_cfg_db) != FDB_NO_ERR || (s_edge_ok && fdb_kv_set_default(&s_edge_db) != FDB_NO_ERR) ||
+        (s_cert_ok && fdb_kv_set_default(&s_cert_db) != FDB_NO_ERR) || !s_edge_ok || !s_cert_ok)
+        e = STORE_EFLASH;  // a database that does not mount cannot be reset here
     s_gen = s_count = 0;
     memset(s_pins, 0, sizeof s_pins);
     store_state_set("boot", &s_boot, sizeof s_boot);  // the boot numbering of the log goes on
@@ -671,6 +713,8 @@ store_err_t store_cert_set(const char *scope, const char *kind, const void *pem,
     char key[24];
     if (!cert_key(scope, kind, key, sizeof key) || len == 0 || len > STORE_CERT_MAX)
         return STORE_EINVALID;
+    if (!s_cert_ok)
+        return STORE_EFLASH;
     LOCK();
     bool ok = kv_write(&s_cert_db, key, pem, len);
     UNLOCK();
@@ -682,7 +726,7 @@ store_err_t store_cert_set(const char *scope, const char *kind, const void *pem,
 char *store_cert_get(const char *scope, const char *kind)
 {
     char key[24];
-    if (!cert_key(scope, kind, key, sizeof key))
+    if (!cert_key(scope, kind, key, sizeof key) || !s_cert_ok)
         return NULL;
     LOCK();
     char *pem = kv_read(&s_cert_db, key, NULL);

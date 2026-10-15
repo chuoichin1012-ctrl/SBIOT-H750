@@ -12,11 +12,18 @@ void fal_nor_set(nor_t *nor) { s_nor = nor; }
 
 static int dev_init(void) { return s_nor ? 0 : -1; }
 
+// FlashDB hardly handles a failed read (a sector header that does not read back can even be
+// formatted at mount), and a read has no side effect: a transient bus fault is retried here.
+#define READ_TRIES 3
+
 static int dev_read(long off, uint8_t *buf, size_t size)
 {
     if (!s_nor || off < 0 || (uint32_t)off + size > FDB_REGION)
         return -1;
-    return s_nor->read(s_nor, (uint32_t)off, buf, (uint32_t)size) ? -1 : (int)size;
+    for (int i = 0; i < READ_TRIES; i++)
+        if (!s_nor->read(s_nor, (uint32_t)off, buf, (uint32_t)size))
+            return (int)size;
+    return -1;
 }
 
 static int dev_write(long off, const uint8_t *buf, size_t size)

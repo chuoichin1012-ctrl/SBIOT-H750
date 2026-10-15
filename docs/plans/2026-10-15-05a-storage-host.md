@@ -66,6 +66,27 @@ While doing 1, a test aimed at FlashDB alone (`test_gc_write_failures`) found tw
 
 Both are now in the one patch file, `flashdb-2.2.0-sbiot.patch`. That matrix and every other pass of `test_store` now pass. Mutants: 7 more, for each new fix.
 
+## Codex round 2 (NOT APPROVED), and the fixes
+
+Again each fix began with a test that failed first.
+
+1. **Read failures during garbage collection lost a KV.** A new matrix (`test_gc_write_failures`, second half) fails reads of the sector holding a kept KV: once at any read, the mount's included (2 of 3618 lost it), and three times in a row after the mount (8 of 3032). Fixes:
+   - **The FAL retries a read three times.** A read has no side effect, and FlashDB treats most read results as data, so a sector header that did not read back could even be formatted at mount.
+   - **`move_kv` copies only what it read.**
+   - **Any failed read flags the garbage collector,** which keeps a sector it was collecting when a read failed. A KV that did not read back looked like garbage, and an early end of the scan skipped KVs.
+2. **An unfinished recovery let the mount succeed.** It now fails the load (`FDB_WRITE_ERR`) when:
+   - a status write failed;
+   - a `PRE_DELETE` move failed for another reason than space;
+   - the 16 rescans ran out.
+
+   The store then marks edge unavailable: no model, not even the default, and saves refused (500) until a reboot. Test: `test_no_endless_loops`, which asserts data and results, not only that it returns.
+3. **An unknown commit could still delete the new generation** (old generation 0). After any failed write in a save, the store remounts and decides:
+   - the new manifest is in place: committed;
+   - the old one, or none when there was none: the new records go;
+   - anything else (mount failed, manifest unreadable, another generation): edge unavailable, nothing deleted, the next boot decides.
+
+   Test: the write-failure matrix also from an empty edge database.
+
 ## Rulings (for review)
 
 1. **Edge sector size 16 KB**, against 64 KB on the ESP32. An 8 KB record and its header fit, and 16 sectors in 256 KB keep the garbage collection fine-grained. Cost if wrong: more sector headers (a few hundred bytes).
@@ -75,6 +96,7 @@ Both are now in the one patch file, `flashdb-2.2.0-sbiot.patch`. That matrix and
 5. **The scratch buffer of `store_set_text`** (`CFG_SMALL_BUF`) comes from `cJSON_malloc`, so it uses the caller's arena scope, or the heap otherwise. The same holds for `store_get`'s tree. `store_get_json` returns a heap copy, keeping the ESP32 contract (`api.c` frees it).
 6. **With no model saved,** a GET pins generation 0, which is one record holding the default text `[]`.
 7. **FlashDB's own messages** go to `printf` (`FDB_PRINT`). On the board, Plan 05b routes them to the log.
+8. **A read that fails persistently at mount is out of reach.** FlashDB's mount takes most read results as data, so a read failing every time while a sector header or a KV is checked can still make FlashDB format that sector. The FAL retry covers transient faults (the bench of Plan 04b saw SPI4 read overruns). A part that fails the same read over and over is a broken flash. Cost if wrong: data loss on such a part. Plan 05b's board driver logs every failed read, so it shows up.
 
 ## Review Focus
 

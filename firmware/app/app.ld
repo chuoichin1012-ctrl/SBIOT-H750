@@ -44,6 +44,8 @@ SECTIONS
     *port.c.obj(.text .text.*)
     *_nano.a:libc_a-memcpy*.o(.text .text.*)  /* libg_nano.a with --specs=nano.specs */
     *_nano.a:libc_a-memset.o(.text .text.*)
+    *stm32h7xx_it.c.obj(.text.ETH_IRQHandler)        /* Plan 06a (spec §5.3) */
+    *stm32h7xx_hal_eth.c.obj(.text.HAL_ETH_IRQHandler)
     *(.itcm_text .itcm_text.*)  /* ISRs tagged by later plans */
     . = ALIGN(4);
   } >ITCM AT> QSPI
@@ -119,7 +121,8 @@ SECTIONS
   } >DTCM
 
   .axi_bss (NOLOAD)    : { . = ALIGN(32); *(.axi_bss .axi_bss.*)       . = ALIGN(32); } >AXI
-  .sram1_bss (NOLOAD)  : { . = ALIGN(32); *(.sram1_bss .sram1_bss.*)   . = ALIGN(32); } >SRAM1
+  /* SRAM1 also takes CubeMX's ETH descriptors (eth.c), which name sections of their own. */
+  .sram1_bss (NOLOAD)  : { . = ALIGN(32); *(.sram1_bss .sram1_bss.*) *(.RxDescripSection) *(.TxDescripSection) . = ALIGN(32); } >SRAM1
   .sram23_bss (NOLOAD) : { . = ALIGN(32); *(.sram23_bss .sram23_bss.*) . = ALIGN(32); } >SRAM23
   .sram4_bss (NOLOAD)  : { . = ALIGN(32); *(.sram4_bss .sram4_bss.*)   . = ALIGN(32); } >SRAM4
   .adc_buf (NOLOAD)    : { . = ALIGN(32); *(.adc_buf .adc_buf.*)       . = ALIGN(32); } >ADCBUF

@@ -96,10 +96,11 @@ if BOOT:
     vps.append(('VP_IWDG1_VS_IWDG', 'IWDG_Activate', 'IWDG1_VS_IWDG'))
 else:
     vps += [('VP_TIM2_VS_ClockSourceINT', 'Internal', 'TIM2_VS_ClockSourceINT'),
-            ('VP_TIM6_VS_ClockSourceINT', 'Enable_Timer', 'TIM6_VS_ClockSourceINT')]
+            ('VP_TIM6_VS_ClockSourceINT', 'Enable_Timer', 'TIM6_VS_ClockSourceINT'),
+            ('VP_RNG_VS_RNG', 'RNG_Activate', 'RNG_VS_RNG')]  # LWIP_RAND, and mbedTLS later (Plan 06a)
 
 ips = ['CORTEX_M7', 'DEBUG', 'MEMORYMAP', 'NVIC', 'QUADSPI', 'RCC', 'SPI4', 'SYS', 'UART7']
-ips += ['IWDG1'] if BOOT else ['ADC3', 'DMA', 'ETH', 'TIM2', 'TIM6', 'USART1', 'USART2', 'USART3']
+ips += ['IWDG1'] if BOOT else ['ADC3', 'DMA', 'ETH', 'RNG', 'TIM2', 'TIM6', 'USART1', 'USART2', 'USART3']
 ips.sort()
 
 L = []
@@ -151,13 +152,22 @@ rcc = dict(HSE_VALUE='25000000', PLLSourceVirtual='RCC_PLLSOURCE_HSE', SYSCLKSou
            USART234578CLockSelection='RCC_USART234578CLKSOURCE_D2PCLK1', Spi45ClockSelection='RCC_SPI45CLKSOURCE_D2PCLK1')
 if not BOOT:
     rcc.update(DIVM2='5', DIVN2='80', DIVP2='20', DIVQ2='4', DIVR2='4', ADCCLockSelection='RCC_ADCCLKSOURCE_PLL2',
-               USART16CLockSelection='RCC_USART16CLKSOURCE_D2PCLK2')
+               USART16CLockSelection='RCC_USART16CLKSOURCE_D2PCLK2',
+               # HSI48 for the RNG: the app switches HSI48 on in HAL_RNG_MspInit (SystemClock_Config is the
+               # bootloader's and is never called in the app).
+               RNGCLockSelection='RCC_RNGCLKSOURCE_HSI48')
 ipp('RCC', rcc)
 # FlashSize 22 (8 MB) for a 4 MB part: ES0396 §2.4.4, a memory-mapped read of the last byte of the
 # FSIZE region returns 0 and a repeated read stalls the AXI bus. MPU region 1 still ends at 4 MB.
 ipp('QUADSPI', dict(ClockPrescaler='1', FlashSize='22', SampleShifting='QSPI_SAMPLE_SHIFTING_HALFCYCLE',
                     ChipSelectHighTime='QSPI_CS_HIGH_TIME_2_CYCLE', FifoThreshold='4', DualFlash='QSPI_DUALFLASH_DISABLE'))
-ipp('UART7', dict(BaudRate='115200', VirtualMode='VM_ASYNC'))
+if BOOT:
+    ipp('UART7', dict(BaudRate='115200', VirtualMode='VM_ASYNC'))
+else:
+    # The app's bench console polls UART7, and tasks above it (tcpip, eth_rx: an MDIO link poll spins
+    # about 130 us) outlast one character (87 us): the 16-byte RX FIFO rides that out (Plan 06a, B1).
+    ipp('UART7', dict(BaudRate='115200', VirtualMode='VM_ASYNC', FIFOMode='FIFOMODE_ENABLE',
+                      UartFIFOMode='UART_FIFOMODE_ENABLE'), ['FIFOMode'])
 # GD25Q32E on SPI4: mode 0, 8-bit frames (the CubeMX default is 4 bits), APB2 120 MHz / 4 = 30 MHz,
 # software chip select on PE4; SCK keeps its idle level between transfers. A receiving master
 # clocks on by itself: auto-suspend stops SCK while the RX FIFO is full, so an interrupt or a task
@@ -195,7 +205,8 @@ if not BOOT:
     # SPI4 data phases by DMA (spec §5.4, Plan 05b): DMA1 stream 0 RX, stream 1 TX, plus the SPI4
     # interrupt (the H7 HAL ends a DMA transfer on SPI's EOT). Priority 6: below FreeRTOS's
     # syscall limit (configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY 5), so the callbacks may notify.
-    for irq in ['DMA1_Stream0', 'DMA1_Stream1', 'SPI4']:
+    # ETH (Plan 06a) at the same priority: its callbacks give eth_rx's semaphore.
+    for irq in ['DMA1_Stream0', 'DMA1_Stream1', 'SPI4', 'ETH']:
         a('NVIC.%s_IRQn=true\\:6\\:0\\:false\\:false\\:true\\:true\\:true\\:true' % irq)
     for k, (stream, direction) in enumerate([('DMA1_Stream0', 'DMA_PERIPH_TO_MEMORY'), ('DMA1_Stream1', 'DMA_MEMORY_TO_PERIPH')]):
         req = 'SPI4_RX' if k == 0 else 'SPI4_TX'
@@ -232,6 +243,7 @@ else:
              (9, 'MX_SPI4_Init', 'SPI4', 'false', 'true'),
              (10, 'MX_TIM6_Init', 'TIM6', 'true', 'true'), (11, 'MX_USART1_UART_Init', 'USART1', 'true', 'true'),
              (12, 'MX_USART2_UART_Init', 'USART2', 'true', 'true'), (13, 'MX_USART3_UART_Init', 'USART3', 'true', 'true'),
+             (14, 'MX_RNG_Init', 'RNG', 'true', 'true'),  # board_rng.c: a failing RNG must not reach Error_Handler
              (0, 'MX_CORTEX_M7_Init', 'CORTEX_M7', 'true', 'true')]
 pm = dict(AskForMigrate='false', BackupPrevious='false', CompilerOptimize='6', ComputerToolchain='false',
           CoupleFile='true', CustomerFirmwarePackage='', DefaultFWLocation='true', DeletePrevious='true',

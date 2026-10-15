@@ -2,10 +2,14 @@
 // init reports the boot, checks the anti-clone record (spec §11.5) and then serves as the UART7
 // bench console: 'i' info, 'r' software reset, 'w' stop the watchdog kicks, 'c' CRC-32 of the
 // image, 'o' the OTA images, 'u' upload an image into staging and reset ('U' without the reset).
-// Later plans replace it.
+// Plan 06a adds the network: 'n' its state, 'N' save a `network` config line, 'L' drop the link for
+// 3 s. Later plans replace it.
 #include "app_main.h"
 #include "bench_ota.h"
 #include "heap_newlib.h"
+#include "board_rng.h"
+#include "cfgmodel.h"
+#include "netmgr.h"
 #include "flash_spi4.h"
 #include "store.h"
 #include "syslog.h"
@@ -51,6 +55,64 @@ static void info(void)
          (unsigned long)wdog_max_gap_us());
 }
 
+// The `network` and `system` configs, read once (spec §9.1), or their defaults.
+static void net_start(const cfg_env_t *env)
+{
+    cJSON *n = store_get("network"), *sys = store_get("system");
+    if (!n)
+        n = cfg_default(env, "network");
+    if (!sys)
+        sys = cfg_default(env, "system");
+    net_cfg_t nc;
+    netcfg_from_json(n, sys, &nc);
+    cJSON_Delete(n);
+    cJSON_Delete(sys);
+    uint8_t uid[12], mac[6];
+    memcpy(uid, (const void *)UID_BASE, sizeof uid);
+    netcfg_mac(uid, mac);
+    if (board_rng_init())
+        blog("app: RNG FAILED\r\n");
+    netmgr_init(&nc, mac);
+}
+
+static const char *ip_str(uint32_t a, char *buf)
+{
+    snprintf(buf, 16, "%lu.%lu.%lu.%lu", (unsigned long)(a >> 24), (unsigned long)(a >> 16 & 255),
+             (unsigned long)(a >> 8 & 255), (unsigned long)(a & 255));
+    return buf;
+}
+
+static void net_report(void)
+{
+    net_status_t st;
+    netmgr_status(&st);
+    char a[16], b[16], c[16], d[16], e[16];
+    blog("app: net %s link %s %d %s, phy %d id %08lx, %s %s mask %s gw %s dns %s %s\r\n", st.added ? "added" : "DOWN",
+         st.eth.up ? "up" : "down", st.eth.speed, st.eth.full_duplex ? "full" : "half", st.eth.phy_addr,
+         (unsigned long)st.eth.phy_id, st.dhcp ? "dhcp" : "static", ip_str(st.ip, a), ip_str(st.mask, b), ip_str(st.gw, c),
+         ip_str(st.dns1, d), ip_str(st.dns2, e));
+    blog("app: net rx_in_use %u rx_starved %u tx_busy_drops %u link_changes %u\r\n", st.eth.rx_in_use, st.eth.rx_starved,
+         st.eth.tx_busy_drops, st.eth.link_changes);
+    blog("app: net pools heap %u/%u err %u, netconn %u/%u, tcp_pcb %u/%u, tcp_seg %u/%u, pbuf_pool %u/%u, udp_pcb %u/%u\r\n",
+         st.heap.used, st.heap.max, st.heap.err, st.netconn.used, st.netconn.max, st.tcp_pcb.used, st.tcp_pcb.max,
+         st.tcp_seg.used, st.tcp_seg.max, st.pbuf_pool.used, st.pbuf_pool.max, st.udp_pcb.used, st.udp_pcb.max);
+}
+
+// Bench: one line of JSON (ended by CR or LF, 2 s per byte at most) saved as `network`. Send it
+// after 'N' has been read: the console polls every 10 ms, longer than the FIFO's 16 bytes last.
+static void net_save_line(void)
+{
+    static char line[512];
+    size_t n = 0;
+    uint8_t c;
+    while (n < sizeof line - 1 && HAL_UART_Receive(&huart7, &c, 1, 2000) == HAL_OK && c != '\r' && c != '\n')
+        line[n++] = (char)c;
+    line[n] = '\0';
+    char err[160];
+    store_err_t r = store_set_text("network", line, n, err, sizeof err);
+    blog("app: network saved: %d %s (applies after a restart)\r\n", r, r ? err : "");
+}
+
 static bool print_log_line(const store_log_meta_t *m, const char *line, size_t len, void *ctx)
 {
     (void)ctx;
@@ -73,9 +135,13 @@ static void init_task(void *arg)
     store_err_t se = store_init(&env, flash_spi4());
     blog("app: store %s in %lu ms, boot %lu, heap free %lu\r\n", se == STORE_OK ? "mounted" : "FAILED",
          (unsigned long)((now_us() - t0) / 1000u), (unsigned long)store_boot_count(), (unsigned long)heap_free_now());
+    net_start(&env);
     info();
     for (;;) {
         uint8_t c;
+        // An overrun stops reception until cleared: the console would go deaf (Plan 06a, B1).
+        if (huart7.Instance->ISR & USART_ISR_ORE)
+            __HAL_UART_CLEAR_FLAG(&huart7, UART_CLEAR_OREF);
         // Sleep while nothing came in: HAL_UART_Receive waits by spinning, which would starve every
         // task below init's priority (syslog, idle) for as long as the console is quiet.
         if (!(huart7.Instance->ISR & USART_ISR_RXNE_RXFNE)) {
@@ -155,6 +221,17 @@ static void init_task(void *arg)
             blog("app: saved bench-%lu: %d in %lu ms %s\r\n", ms, r, (unsigned long)((now_us() - t0) / 1000u), r ? err : "");
             break;
         }
+        case 'n':
+            net_report();
+            break;
+        case 'N':
+            net_save_line();
+            break;
+        case 'L':  // bench: the PHY powered down for 3 s, then up (spec §7.1, link polled each second)
+            blog("app: phy down %d\r\n", eth_drv_phy_power(true));
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            blog("app: phy up %d\r\n", eth_drv_phy_power(false));
+            break;
         case 'u':
         case 'U':
             bench_ota_upload(c == 'u');

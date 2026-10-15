@@ -1,7 +1,8 @@
 // IP101GRI PHY over MDIO (spec §7.1). Shaped after ST's lan8742 component (STM32Cube H7,
 // Drivers/BSP/Components/lan8742): an object holding the bus IO, the address found by a scan,
 // and one status code per link state. It differs where the parts differ:
-// - the IP101 has no SMR register, so the scan looks for a valid PHY ID (registers 2 and 3);
+// - the IP101 has no SMR register, so the scan looks for a valid PHY ID (registers 2 and 3), and
+//   tries address 0 last, since the IP101 answers there too (broadcast);
 // - speed and duplex come from the IEEE registers (BMCR, then BMSR and ANAR & ANLPAR), not a
 //   vendor register.
 // Pure C: the MDIO access is the caller's (HAL_ETH_ReadPHYRegister on the board, a fake in test_ip101).
@@ -52,7 +53,8 @@ typedef enum {
 #define AN_10FULL (1u << 6)
 #define AN_10HALF (1u << 5)
 
-/** Finds the PHY: the lowest address whose ID registers read neither 0x0000 nor 0xFFFF. */
+/** Finds the PHY: the lowest address from 1 to 31, then 0 (broadcast), whose ID registers read neither
+ * 0x0000 nor 0xFFFF. */
 ip101_status_t ip101_init(ip101_t *phy, const ip101_io_t *io);
 /** The link now: down, autoneg pending, or the speed and duplex in use. */
 ip101_status_t ip101_link(ip101_t *phy);

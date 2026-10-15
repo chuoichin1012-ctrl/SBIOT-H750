@@ -107,19 +107,62 @@ The bench PC's Ethernet port is fixed at 192.168.0.10/24, with no DHCP server on
 
 Regression: `store_check.py`, `ota_check.py`.
 
+## Bench findings
+
+- **B1. The polled UART7 console went deaf.**
+  - The tasks above `init` (`tcpip`, `eth_rx`) can hold the CPU for longer than one character at 115200 baud (87 µs): an MDIO link poll spins about 130 µs. The RX register then overran.
+  - Once `ORE` is set, `RXNE` never comes back: the console answered nothing, and an upload stopped at byte 0.
+  - **Fix:**
+    - UART7 in the app gets its 16-byte RX FIFO (`mkioc.py`; the bootloader is unchanged);
+    - the console clears `ORE`;
+    - the bench sends a line after `N` once the console listens, since it polls every 10 ms.
+
+  The serial driver of Plan 07 (DMA, spec §6.5) replaces this console path.
+- **B2. The bench PC renegotiates its link.** In its first autonegotiation, its Intel I219 advertises only 10 Mbit full duplex (`ANLPAR` 4061). About a second later it offers everything (cde1). The board follows: the link comes up at 10, drops, then comes up at 100 full about 8 s after reset. The log line now shows the partner's abilities.
+- **B3. The IP101's MDIO address changes between boots,** 1 on some and 0 on others; 0 is also its broadcast address. The scan now tries 1–31 first, then 0 (`test_ip101`). **For the user:** check the PHYAD strap pins on the board, which seem not to hold a fixed level at reset.
+- **B4. `MX_RNG_Init` is not called,** so `hrng.Instance` was NULL and `HAL_RNG_Init` faulted on the null guard (MemManage, `MMFAR` 0), in a watchdog reset loop. `board_rng_init` now fills the handle itself, as `eth_drv` does for `heth`.
+  - Recovery on the bench, since the broken image was in staging: the same image was rebuilt for its symbols. Through the debugger, `board_rng_init` and `netmgr_init` were made to return at once, then the fix was uploaded over UART7.
+- **B5. Plan 05b's commit left out `boot.c`'s new `spi_nor_init` argument,** so the bootloader on `main` did not build. It is fixed in its own commit, 8e0d626.
+
+## Measurements (`test/bench/net_check.py`, all pass)
+
+- Factory default 192.168.0.7: the link at 100 Mbit full duplex, 20 of 20 pings answered, and 4 of 4 pings of 3000 bytes, fragmented. The PHY ID is 02430c54.
+- A static address from the config after a restart (.77): it answers, .7 does not, and `n` shows the running values.
+- Five link drops (`BMCR.PD` for 3 s): each comes back at 100 Mbit and pings answer. The RX buffers in use return to 4, one per descriptor.
+- A 20 s UDP flood to a closed port: about 228 000 datagrams of 1000 B, about 11 400/s, each costing an ICMP reply.
+  - During it: the wdog gap stays at 200 ms, the console answers, the CPU is about 10 % idle.
+  - After it: pings answer at once, RX buffers return to 4, `rx_starved` 0, `tx_busy_drops` 0.
+- Memory:
+  - SRAM1 101 120 B of 128 KB;
+  - AXI 295 392 B, of which the lwIP pools take 26 351;
+  - DTCM 64 404 B with the 4 KB MSP;
+  - image 179 KB.
+- Regressions:
+  - `store_check.py` passes: 1000 saves, CPU 71 % idle, lowest free heap 247 328 B, against 247 696 in 05b (lwIP's semaphores and mailboxes);
+  - `ota_check.py`: see below.
+  - Host: `test_ip101`, `test_netcfg`, `test_dhcp_dns`.
+
+## Rulings (for review)
+
+1. **Link changes take the lwIP core lock in `eth_rx`** rather than going through `tcpip_callback`. That is the same serialisation, done synchronously, and the ETH start and stop never run beside `low_level_output`. Cost if wrong: none seen.
+2. **CubeMX's `eth.c` is compiled for its `HAL_ETH_MspInit`, handle and descriptors.** `MX_ETH_Init` and `MX_RNG_Init` are never called: both end in `Error_Handler`, a spin with interrupts off. `check_elf` gates that neither is linked.
+3. **A DHCP lease could not be tested on the bench** (no server on the direct link). `test_dhcp_dns` covers lwIP's real client on the host; `net_check.py --dhcp` runs once the board is on a LAN with a server.
+4. **The 4 RX descriptors stay** (CubeMX default): the flood found no starvation and no lost watchdog period.
+5. For 06b: spec §6.4 still mentions closing every client when the password changes (F19). Under the restart rule (§10.1), 06b removes it.
+
 ## Tasks
 
-- [ ] **T1. lwIP vendored** (SHA-256 of the tarball in the README) plus the `sys_thread_new` patch; `lwipopts.h`, `arch/cc.h` and the placement macros; the `FD_SETSIZE` compile unit; CMake. Spec §5.3/§5.6 updated with the table.
-- [ ] **T2. `ip101`:**
+- [x] **T1. lwIP vendored** (SHA-256 of the tarball in the README) plus the `sys_thread_new` patch; `lwipopts.h`, `arch/cc.h` and the placement macros; the `FD_SETSIZE` compile unit; CMake. Spec §5.3/§5.6 updated with the table.
+- [x] **T2. `ip101`:**
   1. `test_ip101` RED, then GREEN, covering: the address scan (none found, found at 1, a read error); link down (BMSR latched: read twice); autoneg not done; 100 full, 100 half, 10 full; autoneg off (forced from BMCR); power down and up.
-- [ ] **T3b. DHCP and DNS on the host** (Codex r1). `test_dhcp_dns` builds lwIP's real DHCP client (`NO_SYS` 1, patch 2 applied) and feeds it DHCP packets it generates. The cases:
+- [x] **T3b. DHCP and DNS on the host** (Codex r1). `test_dhcp_dns` builds lwIP's real DHCP client (`NO_SYS` 1, patch 2 applied) and feeds it DHCP packets it generates. The cases:
   - automatic DNS: the servers of the ACK are applied;
   - a renewal ACK with other servers: applied;
   - an ACK whose option 6 is followed by a malformed option: rejected, and the servers stay as they were;
   - manual DNS: neither an ACK nor a renewal changes it.
 
   RED: with `LWIP_DHCP_DNS_FROM_LEASE` stubbed to 1, the manual case fails.
-- [ ] **T3. `netcfg`:**
+- [x] **T3. `netcfg`:**
   1. `test_netcfg` RED, then GREEN, covering:
      - static complete; static with a bad mask, which falls back to DHCP with DNS by `dnsMode`;
      - DHCP with auto or manual DNS;
@@ -127,7 +170,7 @@ Regression: `store_check.py`, `ota_check.py`.
      - a hostname that is too long or empty (default `sbiot-gw`);
      - missing objects (defaults);
      - the MAC from the UID: fixed vector, bit 1 set, bit 0 clear.
-- [ ] **T4. Board:**
+- [x] **T4. Board:**
   - `mkioc.py`: ETH NVIC at priority 6 and RNG with HSI48; regenerate.
   - `app.ld` maps `.RxDescripSection` and `.TxDescripSection` into `.sram1_bss`, and puts the ETH ISRs in ITCM.
   - `eth_drv.c`, `netmgr.c`, `board_rand32`; console `n`, `N`, `L`.
@@ -136,7 +179,7 @@ Regression: `store_check.py`, `ota_check.py`.
     - every `memp_memory_*_base` is in AXI;
     - `ETH_IRQHandler` is in ITCM;
     - the DTCM budget holds.
-- [ ] **T5. `net_check.py`** passes cases 1–4 (5 when a DHCP LAN is available); regression as above; measurements recorded here.
+- [x] **T5. `net_check.py`** passes cases 1–4 (5 when a DHCP LAN is available); regression as above; measurements recorded here.
 
 ## Codex round 1 (NOT APPROVED), and the fixes
 

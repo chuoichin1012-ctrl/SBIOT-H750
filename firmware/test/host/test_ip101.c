@@ -87,6 +87,14 @@ static void test_scan(void)
     CHECK(ip101_init(&phy, &io) == IP101_OK && phy.addr == 1 && phy.id == 0x02430C54u,
           "found at 1 with its ID (addr %u id %08x)", (unsigned)phy.addr, (unsigned)phy.id);
 
+    // The IP101 also answers at 0, its broadcast address (seen on the board): its strap address wins.
+    bus_with_phy(&b, 1);
+    b.present[0] = 1;
+    memcpy(b.reg[0], b.reg[1], sizeof b.reg[0]);
+    CHECK(ip101_init(&phy, &io) == IP101_OK && phy.addr == 1, "broadcast 0 and strap 1: 1 (got %u)", (unsigned)phy.addr);
+    bus_with_phy(&b, 0);
+    CHECK(ip101_init(&phy, &io) == IP101_OK && phy.addr == 0, "only at 0: 0");
+
     bus_with_phy(&b, 0);
     b.present[0] = 0;
     CHECK(ip101_init(&phy, &io) == IP101_ENOPHY, "no PHY at any address");

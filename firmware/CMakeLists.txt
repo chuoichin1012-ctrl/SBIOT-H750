@@ -22,7 +22,7 @@ set(STRICT -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Werror)
 # HAL modules per image: the ones CubeMX copies for each .ioc.
 set(HAL_COMMON cortex rcc rcc_ex flash flash_ex gpio hsem dma dma_ex mdma pwr pwr_ex exti i2c i2c_ex qspi uart uart_ex)
 set(HAL_BOOT ${HAL_COMMON} iwdg spi spi_ex)
-set(HAL_APP ${HAL_COMMON} adc adc_ex eth eth_ex spi spi_ex tim tim_ex)
+set(HAL_APP ${HAL_COMMON} adc adc_ex eth eth_ex rng rng_ex spi spi_ex tim tim_ex)
 
 function(hal_sources out)
   set(list ${HAL}/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal.c)
@@ -78,6 +78,7 @@ configure_file(components/ota/bind_key.h.in ${CMAKE_BINARY_DIR}/gen/bind_key.h @
 set(OTA ${CMAKE_SOURCE_DIR}/components/ota)
 set(STORE ${CMAKE_SOURCE_DIR}/components/store)
 set(CFGM ${CMAKE_SOURCE_DIR}/components/cfgmodel)
+set(NET ${CMAKE_SOURCE_DIR}/components/netmgr)
 set(PROTO ${CMAKE_SOURCE_DIR}/components/proto)
 set(MONO ${CMAKE_SOURCE_DIR}/third_party/monocypher)
 set(OTA_BOOT ${OTA}/sha256.c ${OTA}/ota_image.c ${OTA}/bind.c)
@@ -97,6 +98,7 @@ hal_sources(APP_HAL ${HAL_APP})
 set(APP_CUBE
   ${CUBE}/app/Src/main.c ${CUBE}/app/Src/gpio.c ${CUBE}/app/Src/tim.c ${CUBE}/app/Src/usart.c ${CUBE}/app/Src/spi.c ${CUBE}/app/Src/dma.c
   ${CUBE}/app/Src/memorymap.c ${CUBE}/app/Src/stm32h7xx_it.c ${CUBE}/app/Src/stm32h7xx_hal_msp.c
+  ${CUBE}/app/Src/eth.c ${CUBE}/app/Src/rng.c  # MspInit, handle and descriptors only: MX_ETH_Init and MX_RNG_Init are never called
   ${SYSTEM_C}
   ${CUBE}/app/startup_stm32h750xx.s)  # vector table only: its weak Reset_Handler is replaced
 set(APP_RTOS
@@ -106,16 +108,22 @@ set(APP_OWN
   app/startup_app.c app/mpu_app.c app/app_main.c app/hal_tick.c app/image_header.c app/bench_ota.c app/flash_spi4.c app/heap_newlib.c ${BOARD}/heap_wrap.c
   ${BOARD}/board_io.c ${BOARD}/now_us.c ${BOARD}/tick64.c ${BOARD}/wdog.c ${BOARD}/blog.c ${BOARD}/crc32.c
   ${BOARD}/syscalls.c ${BOARD}/spi_nor.c ${OTA}/sha256.c ${OTA}/ota_image.c ${OTA}/ota_app.c ${OTA}/bind.c
-  app/store_port.c ${STORE}/store.c ${STORE}/fal_nor.c ${CMAKE_SOURCE_DIR}/components/syslog/syslog.c ${CFGM}/cfgmodel.c ${PROTO}/ipacl.c ${PROTO}/jsonscan.c)
+  app/store_port.c ${STORE}/store.c ${STORE}/fal_nor.c ${CMAKE_SOURCE_DIR}/components/syslog/syslog.c ${CFGM}/cfgmodel.c ${PROTO}/ipacl.c ${PROTO}/jsonscan.c
+  ${BOARD}/board_rng.c ${NET}/ip101.c ${NET}/netcfg.c ${NET}/eth_drv.c ${NET}/netmgr.c app/fdset_check.c)
+# Network (Plan 06a): lwIP 2.2.1 and its FreeRTOS port (third_party/lwip/README.md), built without -Werror.
+set(LWIP ${CMAKE_SOURCE_DIR}/third_party/lwip)
+file(GLOB LWIP_SRC ${LWIP}/src/core/*.c ${LWIP}/src/core/ipv4/*.c ${LWIP}/src/api/*.c)
+list(APPEND LWIP_SRC ${LWIP}/src/netif/ethernet.c ${LWIP}/contrib/ports/freertos/sys_arch.c)
 # Storage (Plan 05b): FlashDB and cJSON are upstream code, built without our -Werror.
 set(FDB ${CMAKE_SOURCE_DIR}/third_party/flashdb)
 set(UPSTREAM_APP ${FDB}/src/fdb.c ${FDB}/src/fdb_kvdb.c ${FDB}/src/fdb_tsdb.c ${FDB}/src/fdb_utils.c
   ${FDB}/port/fal/src/fal.c ${FDB}/port/fal/src/fal_flash.c ${FDB}/port/fal/src/fal_partition.c
-  ${CMAKE_SOURCE_DIR}/third_party/cjson/cJSON.c)
+  ${CMAKE_SOURCE_DIR}/third_party/cjson/cJSON.c ${LWIP_SRC})
 add_executable(app ${APP_CUBE} ${APP_HAL} ${APP_RTOS} ${APP_OWN} ${MONO_SRC} ${UPSTREAM_APP})
 image_includes(app ${CUBE}/app)
 target_include_directories(app PRIVATE app ${RTOS}/include ${RTOS}/portable/GCC/ARM_CM4F ${OTA}/include ${MONO} ${CMAKE_BINARY_DIR}/gen
-  ${CMAKE_SOURCE_DIR}/components/syslog/include ${STORE}/include ${STORE}/port ${FDB}/inc ${FDB}/port/fal/inc ${CFGM}/include ${PROTO}/include ${CMAKE_SOURCE_DIR}/third_party/cjson)
+  ${CMAKE_SOURCE_DIR}/components/syslog/include ${STORE}/include ${STORE}/port ${FDB}/inc ${FDB}/port/fal/inc ${CFGM}/include ${PROTO}/include ${CMAKE_SOURCE_DIR}/third_party/cjson
+  ${NET}/include ${LWIP}/src/include ${LWIP}/contrib/ports/freertos/include)
 set_source_files_properties(${APP_OWN} TARGET_DIRECTORY app PROPERTIES COMPILE_OPTIONS "${STRICT}")
 # The copy loops of Reset_Handler must stay loops: memcpy/memset run from ITCM, which they fill.
 set_property(SOURCE app/startup_app.c TARGET_DIRECTORY app APPEND PROPERTY COMPILE_OPTIONS -fno-tree-loop-distribute-patterns)
@@ -124,7 +132,7 @@ target_link_options(app PRIVATE -T${CMAKE_SOURCE_DIR}/app/app.ld -Wl,-Map=${CMAK
 set_target_properties(app PROPERTIES LINK_DEPENDS ${CMAKE_SOURCE_DIR}/app/app.ld)
 bin_from_elf(app)
 # The app's version, once: compiled in, and written into the image header of app.img (spec §11.1).
-set(APP_VERSION 0.5.0 CACHE STRING "app version major.minor.patch")
+set(APP_VERSION 0.6.0 CACHE STRING "app version major.minor.patch")
 target_compile_definitions(app PRIVATE APP_VERSION="${APP_VERSION}")
 add_custom_command(TARGET app POST_BUILD
   COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/mkimage.py --version ${APP_VERSION} ${CMAKE_BINARY_DIR}/app.bin

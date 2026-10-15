@@ -20,6 +20,8 @@
 #define DEFAULT_RAW_RECVMBOX_SIZE 4
 #define DEFAULT_ACCEPTMBOX_SIZE 8
 #define LWIP_FREERTOS_CHECK_CORE_LOCKING 0
+// lwIP 2.2.1's FreeRTOS port still uses this old name; FreeRTOSConfig.h turns the old names off.
+#define portTICK_RATE_MS portTICK_PERIOD_MS
 void *netmgr_static_thread(void (*fn)(void *), const char *name, unsigned words, void *arg, int prio);
 #define LWIP_FREERTOS_STATIC_THREAD(fn, name, words, arg, prio) netmgr_static_thread((fn), (name), (words), (arg), (prio))
 

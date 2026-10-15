@@ -2,11 +2,15 @@
 #pragma once
 #include <stdint.h>
 #include <stdlib.h>
+// newlib's struct timeval (LWIP_TIMEVAL_PRIVATE 0) and fd_set, in every lwIP file: the same types
+// Mongoose sees (06b). app/fdset_check.c checks FD_SETSIZE against the sockets.
+#include <sys/select.h>
+#include <sys/time.h>
 
 #define LWIP_NO_STDINT_H 0
 #define LWIP_ERRNO_INCLUDE <errno.h>
 #define LWIP_PROVIDE_ERRNO 0
-#define BYTE_ORDER LITTLE_ENDIAN
+// BYTE_ORDER comes from newlib (machine/endian.h): little endian
 
 void netmgr_assert(const char *msg, const char *file, int line);
 #define LWIP_PLATFORM_ASSERT(x) netmgr_assert((x), __FILE__, __LINE__)

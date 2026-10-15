@@ -11,7 +11,9 @@ ip101_status_t ip101_init(ip101_t *phy, const ip101_io_t *io)
 {
     phy->io = *io;
     ip101_status_t none = IP101_ENOPHY;
-    for (uint32_t a = 0; a <= MAX_ADDR; a++) {
+    // 1 to 31 first, then 0: the IP101 also answers at 0, its broadcast address (seen on the board).
+    for (uint32_t i = 1; i <= MAX_ADDR + 1; i++) {
+        uint32_t a = i & MAX_ADDR;
         uint32_t id1, id2;
         if (io->read(io->ctx, a, PHY_ID1, &id1) || io->read(io->ctx, a, PHY_ID2, &id2)) {
             none = IP101_EREAD;  // can't read from this address: go on with the next one

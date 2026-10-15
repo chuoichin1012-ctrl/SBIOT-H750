@@ -905,6 +905,13 @@ static void test_restore_power_losses(void)
 
 // ---- read errors are not proof of a bad image (Codex final review of Plan 04a) -------------------
 
+static void fail_backup_read_once(sim_world_t *w, void *arg)
+{
+    (void)arg;
+    sim_fail(w, 1, DEV_SPI, SPI_BACKUP, SPI_BACKUP + IMG_HDR_SIZE, SIM_READ_EIO);
+    w->fail[1].count = 1;
+}
+
 static void test_image_read_errors(void)
 {
     bench_t b;
@@ -942,6 +949,20 @@ static void test_image_read_errors(void)
     o = boot_until_stable(&b, APP_CONFIRM, 20);
     CHECK(o.kind == OUT_RUN && o.version == 1 && b.retries > 0, "backup unreadable for a while: rescue retries, then restored (kind %d)",
           o.kind);
+    bench_free(&b);
+
+    // RAM path: the backup passed its first check, then its second check (inside the RAM path) hits
+    // a read error once. Not a halt: decide again after a reset, then restore.
+    bench_init(&b, 164);
+    put_image(&b.s, SPI_BACKUP, 1, BODY_V1);
+    record(&b, BR_RESTORE, 1, 1, 0, 0, 0, 0, 1, BODY_V1);
+    start_handoff(&b, 2);
+    sim_fail(&b.w, 0, DEV_SPI, REC_LO, REC_HI, NOR_EIO);
+    b.w.hook = fail_backup_read_once;
+    b.w.hook_at = b.w.ops;  // the failing record write: the backup was checked once already
+    o = boot_until_stable(&b, APP_CONFIRM, 10);
+    CHECK(o.kind == OUT_RUN && o.version == 1 && o.degraded && b.boots == 2,
+          "backup read fails in the RAM path's own check: one more boot, then restored (kind %d, boots %d)", o.kind, b.boots);
     bench_free(&b);
 
     // Row 1 before everything: no readable record and no valid image at all halts at once.

@@ -41,7 +41,8 @@ M = [
  ("boot/install.c", "        if (e)\n            return e;  // a read timeout stays a timeout (row 2)", "        if (e)\n            return NOR_EIO;", "read timeout becomes EIO"),
  ("boot/install.c", "    if (rr < 0)\n        return rec_failed(in);  // the record cannot be read: rows 3-6, never \"no record\"", "    if (rr < 0)\n        rr = BOOTREC_NONE;", "unreadable record = no record"),
  ("boot/install.c", "    if (r == IMG_EREAD) {\n        in->read_error = true;\n        return false;\n    }\n", "", "read error cached as a bad image"),
- ("boot/install.c", "    if (!vq(in) && !vb(in) && !vs(in))\n        return nothing_valid(in);  // row 1 comes before every recovery branch\n", "", "row 1 not first on a record failure")
+ ("boot/install.c", "    if (!vq(in) && !vb(in) && !vs(in))\n        return nothing_valid(in);  // row 1 comes before every recovery branch\n", "", "row 1 not first on a record failure"),
+ ("boot/install.c", "        if (c == IMG_EREAD)\n            in->read_error = true;  // unreadable, not proven bad: nothing_valid() decides again\n", "", "RAM path ignores read errors")
 ]
 
 

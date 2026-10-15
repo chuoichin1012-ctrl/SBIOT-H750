@@ -170,7 +170,10 @@ static install_result_t ram_path(install_t *in)
     const uint32_t sources[2] = {SPI_BACKUP, SPI_STAGING};
     for (int i = 0; i < 2; i++) {
         img_hdr_t h;
-        if (img_check(in->spi, sources[i], in->kick, &h) != IMG_OK)
+        int c = img_check(in->spi, sources[i], in->kick, &h);
+        if (c == IMG_EREAD)
+            in->read_error = true;  // unreadable, not proven bad: nothing_valid() decides again
+        if (c != IMG_OK)
             continue;  // a bad source never gets copied; try the next one
         uint32_t len = IMG_HDR_SIZE + h.size;
         for (uint32_t k = 0; k < checkpoints(len); k++) {

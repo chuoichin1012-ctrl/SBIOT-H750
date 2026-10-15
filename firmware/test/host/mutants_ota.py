@@ -31,8 +31,8 @@ M = [
  ('boot/install.c', '        if (p == 0)\n            memset(buf, 0xFF, sizeof IMG_MAGIC);  // the magic is programmed last, on its own\n', '', 'magic programmed with its page'),
  ('boot/install.c', '    if (img_check(dst, dof, in->kick, &back) != IMG_OK || memcmp(back.raw, h->raw, IMG_CORE))\n        return -1;\n', '    (void)back;\n', 'copy not checked'),
  ('boot/install.c', '        if (img_check(in->spi, SPI_FACTORY, in->kick, &hf) != IMG_OK)\n            return halt(in, WHY_FACTORY_BAD);', '        img_check(in->spi, SPI_FACTORY, in->kick, &hf);', 'Reload skips the factory check'),
- ('boot/install.c', "        if (in->spi->erase_sector(in->spi, SPI_STAGING))  // staging's image is never installed again\n            return halt(in, WHY_STAGING);\n", '', 'Reload leaves staging'),
- ('boot/install.c', "        if (in->spi->erase_sector(in->spi, SPI_STAGING))  // staging's image is never installed again\n            return halt(in, WHY_STAGING);\n        if (copy(in, in->spi, SPI_FACTORY, &hf, in->qspi, QSPI_SLOT))\n            return halt(in, WHY_COPY);\n", "        if (copy(in, in->spi, SPI_FACTORY, &hf, in->qspi, QSPI_SLOT))\n            return halt(in, WHY_COPY);\n        if (in->spi->erase_sector(in->spi, SPI_STAGING))  // staging's image is never installed again\n            return halt(in, WHY_STAGING);\n", 'staging erased after the restore'),
+ ('boot/install.c', "        if (in->spi->erase_sector(in->spi, SPI_STAGING) || !staging_gone(in))  // never installed again\n            return halt(in, WHY_STAGING);\n", '        (void)staging_gone;\n', 'Reload leaves staging'),
+ ('boot/install.c', "        if (in->spi->erase_sector(in->spi, SPI_STAGING) || !staging_gone(in))  // never installed again\n            return halt(in, WHY_STAGING);\n        if (copy(in, in->spi, SPI_FACTORY, &hf, in->qspi, QSPI_SLOT))\n            return halt(in, WHY_COPY);\n", "        if (copy(in, in->spi, SPI_FACTORY, &hf, in->qspi, QSPI_SLOT))\n            return halt(in, WHY_COPY);\n        if (in->spi->erase_sector(in->spi, SPI_STAGING) || !staging_gone(in))  // never installed again\n            return halt(in, WHY_STAGING);\n", 'staging erased after the restore'),
  ('boot/install.c', '!(q && !memcmp(hq.raw, hs.raw, IMG_CORE))', '(in->qspi->read(in->qspi, QSPI_SLOT, hq.raw, IMG_CORE), memcmp(hq.raw, hs.raw, IMG_CORE))', 'headers compared, QSPI body ignored'),
  ('boot/install.c', '!(q && !memcmp(hq.raw, hs.raw, IMG_CORE))', '1', 'staging installed every boot'),
  ('boot/install.c', '    if (q && factory_unseeded(in))', '    if (factory_unseeded(in))', 'seeding from a bad QSPI'),
@@ -51,7 +51,8 @@ M = [
  ('components/ota/bind.c', '        qspi->erase_sector(qspi, QSPI_SLOT + s);', '        (void)s;', 'clone not erased', 'bind'),
  ('components/ota/bind.c', '    return BIND_CLONE;\n}', '    qspi->erase_sector(qspi, QSPI_BIND);\n    return BIND_CLONE;\n}', 'clone erases the record too', 'bind'),
  ('components/ota/bind.c', '        return BIND_ENONE;  // never provisioned', '        return BIND_OK;  // never provisioned', 'unprovisioned board runs', 'bind'),
- ('components/ota/bind.c', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        return BIND_EREAD;', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        memset(rec, 0, BIND_LEN);', 'read error taken for a record', 'bind')
+ ('components/ota/bind.c', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        return BIND_EREAD;', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        memset(rec, 0, BIND_LEN);', 'read error taken for a record', 'bind'),
+ ('boot/install.c', ' || !staging_gone(in))  // never installed again', ' || (0 && staging_gone(in)))  // never installed again', 'staging erase not verified')
 ]
 
 

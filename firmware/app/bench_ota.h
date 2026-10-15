@@ -9,5 +9,6 @@ void bench_ota_init(void);    // SPI4 flash
 void bench_ota_report(void);  // 'o': the images in QSPI, staging and the factory slot
 // 'u': u32 little-endian length, then the image in blocks of up to 4 KB. The app answers
 // "ota: ready <len> <rc>", "ota: <bytes so far>" after each block, "ota: done <rc>"; on rc 0 it
-// resets and the bootloader installs the image.
-void bench_ota_upload(void);
+// resets and the bootloader installs the image. 'U' (bench): the same without the reset, so a
+// test can choose how the next boot happens.
+void bench_ota_upload(bool reset);

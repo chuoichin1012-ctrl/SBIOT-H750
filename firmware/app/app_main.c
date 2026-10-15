@@ -1,7 +1,8 @@
 // Plan 02 app (spec §6.1, §6.3): board_early, then the wdog and init tasks and the scheduler.
 // init reports the boot, checks the anti-clone record (spec §11.5) and then serves as the UART7
 // bench console: 'i' info, 'r' software reset, 'w' stop the watchdog kicks, 'c' CRC-32 of the
-// image, 'o' the OTA images, 'u' upload an image into staging. Later plans replace it.
+// image, 'o' the OTA images, 'u' upload an image into staging and reset ('U' without the reset).
+// Later plans replace it.
 #include "app_main.h"
 #include "bench_ota.h"
 #include <stdbool.h>
@@ -83,7 +84,8 @@ static void init_task(void *arg)
             bench_ota_report();
             break;
         case 'u':
-            bench_ota_upload();
+        case 'U':
+            bench_ota_upload(c == 'u');
             break;
         default:
             break;

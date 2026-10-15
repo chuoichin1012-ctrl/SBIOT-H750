@@ -119,6 +119,12 @@ static const char *why_text(install_why_t w)
     }
 }
 
+// Stands in for a SPI4 that failed its init (spec §6.2): never used, even if the bus answers later.
+static int dead_read(nor_t *n, uint32_t off, void *buf, uint32_t len) { return NOR_EIO; }
+static int dead_erase(nor_t *n, uint32_t off) { return NOR_EIO; }
+static int dead_program(nor_t *n, uint32_t off, const void *buf, uint32_t len) { return NOR_EIO; }
+static nor_t s_dead_spi = {dead_read, dead_erase, dead_program, 0};
+
 static install_result_t run_install(install_t *in, bool reload)
 {
     in->reload = reload;
@@ -161,7 +167,8 @@ void boot_main(void)
     qf_nor_init(&q, &hqspi, board_kick);
     r = spi_nor_init(&s, &hspi4, board_kick);
     log_line("boot: spi4 id %06lx%s\r\n", (unsigned long)spi_nor_jedec(&s), r ? " FAILED" : "");
-    // A failed SPI4 is not fatal: its reads fail, so nothing is installed, seeded or restored.
+    // A failed SPI4 is not fatal, and not used: nothing is installed, seeded or restored.
+    nor_t *spi = r ? &s_dead_spi : &s.nor;
 
     uint8_t uid[BIND_UID_LEN];
     memcpy(uid, (const void *)UID_BASE, sizeof uid);
@@ -174,7 +181,7 @@ void boot_main(void)
 
     // Reload held from power-up: the factory image (spec §11.2 step 1); LED WORK blinks slowly.
     bool reload = reload_pressed() && reload_held(500);
-    install_t in = {.qspi = &q.nor, .spi = &s.nor, .kick = board_kick};
+    install_t in = {.qspi = &q.nor, .spi = spi, .kick = board_kick};
     if (run_install(&in, reload) == INSTALL_JUMP) {
         wait_release();
         start_app();

@@ -87,6 +87,15 @@ static bool factory_unseeded(install_t *in)
     return in->spi->read(in->spi, SPI_FACTORY, m, sizeof m) == NOR_OK && memcmp(m, IMG_MAGIC, sizeof m);
 }
 
+// Staging's magic reads erased: its image can never be installed again. An erase that returned
+// NOR_OK proves nothing alone, since GD25Q32E ignores an erase of a protected sector (§7.15).
+static bool staging_gone(install_t *in)
+{
+    static const uint8_t erased[sizeof IMG_MAGIC] = {0xFF, 0xFF, 0xFF, 0xFF};
+    uint8_t m[sizeof IMG_MAGIC];
+    return in->spi->read(in->spi, SPI_STAGING, m, sizeof m) == NOR_OK && !memcmp(m, erased, sizeof m);
+}
+
 install_result_t install_run(install_t *in)
 {
     img_hdr_t hq, hs, hf;
@@ -96,7 +105,7 @@ install_result_t install_run(install_t *in)
     if (in->reload) {  // restore the factory image
         if (img_check(in->spi, SPI_FACTORY, in->kick, &hf) != IMG_OK)
             return halt(in, WHY_FACTORY_BAD);
-        if (in->spi->erase_sector(in->spi, SPI_STAGING))  // staging's image is never installed again
+        if (in->spi->erase_sector(in->spi, SPI_STAGING) || !staging_gone(in))  // never installed again
             return halt(in, WHY_STAGING);
         if (copy(in, in->spi, SPI_FACTORY, &hf, in->qspi, QSPI_SLOT))
             return halt(in, WHY_COPY);

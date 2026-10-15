@@ -56,7 +56,7 @@ static bool rx(uint8_t *p, uint32_t n, uint32_t ms)
     return HAL_UART_Receive(&huart7, p, (uint16_t)n, ms) == HAL_OK;  // n <= BLOCK
 }
 
-void bench_ota_upload(void)
+void bench_ota_upload(bool reset)
 {
     static uint8_t buf[BLOCK];
     static ota_stage_t st;
@@ -86,7 +86,7 @@ void bench_ota_upload(void)
     }
     r = ota_stage_finish(&st);
     blog("ota: done %d\r\n", r);
-    if (!r) {
+    if (!r && reset) {
         vTaskDelay(pdMS_TO_TICKS(50));
         NVIC_SystemReset();  // the bootloader installs the new image (spec §11.3)
     }

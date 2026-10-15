@@ -317,6 +317,18 @@ static void test_restore(void)
     CHECK(version_at(&b.q, QSPI_SLOT) == 2 && version_at(&b.s, SPI_STAGING) == 2, "QSPI and staging untouched");
     bench_free(&b);
 
+    // GD25Q32E ignores an erase of a protected sector and reports nothing (§7.15): the staging
+    // erase must be seen to have worked, or the next boot would install staging over the factory image.
+    bench_v1(&b, 43);
+    CHECK(upload(&b, 2, BODY_V2) == OTA_OK && boot(&b, false).version == 2, "v2 installed");
+    upload(&b, 3, BODY_V1);  // v3 staged, differs from QSPI
+    sim_fail(&b.w, 0, DEV_SPI, SPI_STAGING, SPI_STAGING + NOR_SECTOR, SIM_ERASE_SILENT);
+    o = boot(&b, true);
+    CHECK(o.kind == OUT_HALT && o.why == WHY_STAGING, "Reload, the staging erase silently ignored: halt (kind %d why %d)", o.kind, o.why);
+    CHECK(version_at(&b.q, QSPI_SLOT) == 2, "before QSPI is touched");
+    sim_fail(&b.w, 0, 0, 0, 0, 0);
+    bench_free(&b);
+
     bench_v1(&b, 42);
     CHECK(upload(&b, 2, BODY_V2) == OTA_OK && boot(&b, false).version == 2, "v2 installed");
     sim_fail(&b.w, 0, DEV_SPI, SPI_STAGING, SPI_STAGING + NOR_SECTOR, NOR_EIO);

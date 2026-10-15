@@ -6,7 +6,8 @@
 // - timeout at operation N: the operation does nothing and returns NOR_ETIMEOUT (a hung device);
 // - up to two failing regions [lo, hi) of device dev, until cleared. code NOR_EIO / NOR_ETIMEOUT:
 //   every erase and program there fails so; SIM_SILENT: programming reports success but changes
-//   nothing; SIM_READ_EIO / SIM_READ_TIMEOUT: reads there fail, erase and program work;
+//   nothing; SIM_ERASE_SILENT: the same for erases (GD25Q32E ignores an erase of a protected
+//   sector, §7.15); SIM_READ_EIO / SIM_READ_TIMEOUT: reads there fail, erase and program work;
 // - power cuts repeated: after the cut at cut_at, cuts_left more, each cut_period operations later;
 // - a hook called once, before operation N or before the first operation on device hook_dev at an
 //   offset >= hook_addr (to change memory or faults at a precise point).
@@ -18,6 +19,7 @@
 #define SIM_SILENT 1        // fail code: a program that reports success but leaves the cells as they were
 #define SIM_READ_EIO 2      // fail code: reads fail with NOR_EIO
 #define SIM_READ_TIMEOUT 3  // fail code: reads fail with NOR_ETIMEOUT
+#define SIM_ERASE_SILENT 4  // fail code: an erase that reports success but changes nothing (a protected sector)
 
 typedef struct sim_world sim_world_t;
 struct sim_world {

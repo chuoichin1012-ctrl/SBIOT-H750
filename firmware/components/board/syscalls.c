@@ -45,3 +45,30 @@ void *_sbrk(ptrdiff_t incr)
     errno = ENOMEM;
     return (void *)-1;
 }
+
+struct stat;
+
+int _fstat(int fd, struct stat *st)
+{
+    (void)fd;
+    (void)st;
+    errno = ENOSYS;
+    return -1;
+}
+
+int _isatty(int fd)
+{
+    (void)fd;
+    errno = ENOSYS;
+    return 0;
+}
+
+int _getpid(void) { return 1; }
+
+int _kill(int pid, int sig)
+{
+    (void)pid;
+    (void)sig;
+    errno = ENOSYS;
+    return -1;
+}

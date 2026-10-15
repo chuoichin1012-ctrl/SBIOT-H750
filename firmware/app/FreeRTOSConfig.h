@@ -20,7 +20,7 @@ extern uint32_t SystemCoreClock;
 #define configUSE_RECURSIVE_MUTEXES 1
 #define configUSE_COUNTING_SEMAPHORES 1
 #define configQUEUE_REGISTRY_SIZE 0
-#define configUSE_NEWLIB_REENTRANT 0  // Plan 05 turns it on with the heap_5 wrapper (spec §5.5)
+#define configUSE_NEWLIB_REENTRANT 1  // newlib state per task (spec §5.5)
 #define configENABLE_BACKWARD_COMPATIBILITY 0
 #define configUSE_IDLE_HOOK 0
 #define configUSE_TICK_HOOK 0
@@ -28,10 +28,15 @@ extern uint32_t SystemCoreClock;
 #define configCHECK_FOR_STACK_OVERFLOW 2
 #define configRECORD_STACK_HIGH_ADDRESS 1
 #define configUSE_TRACE_FACILITY 0
-#define configGENERATE_RUN_TIME_STATS 0
+// CPU time per task in microseconds from TIM2 (now_us), for the bench's idle-time measurement.
+#define configGENERATE_RUN_TIME_STATS 1
+#define configRUN_TIME_COUNTER_TYPE uint64_t
+uint64_t now_us(void);
+#define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS()
+#define portGET_RUN_TIME_COUNTER_VALUE() now_us()
 
 #define configSUPPORT_STATIC_ALLOCATION 1
-#define configSUPPORT_DYNAMIC_ALLOCATION 0
+#define configSUPPORT_DYNAMIC_ALLOCATION 1  // heap_5 (app/heap_newlib.c)
 #define configKERNEL_PROVIDED_STATIC_MEMORY 1  // idle and timer task memory come from the kernel
 
 // Timer task: 2 KB, priority 30; its callbacks only send notifications (spec §6.1).
@@ -69,3 +74,4 @@ extern uint32_t SystemCoreClock;
 #define vPortSVCHandler SVC_Handler
 #define xPortPendSVHandler PendSV_Handler
 #define xPortSysTickHandler SysTick_Handler
+#define INCLUDE_xTaskGetIdleTaskHandle 1  // ulTaskGetIdleRunTimeCounter (bench)

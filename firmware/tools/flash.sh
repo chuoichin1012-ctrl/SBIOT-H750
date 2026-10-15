@@ -4,6 +4,9 @@
 #   stm32/firmware/tools/flash.sh boot|app|both|blank [BUILD_DIR]
 #   stm32/firmware/tools/flash.sh bind KEY|dev [BUILD_DIR]
 # "blank" programs the first 4 KB of the QSPI slot to 0xFF (header and vector table erased).
+# Note: a valid image in staging (SPI4) that differs from the one flashed here is installed by the
+# bootloader at the next boot, over this one (spec §11.2). On the bench, upload the new image over
+# UART7 instead (test/bench/board.py upload) when staging may hold another one.
 # "bind" reads the chip's UID and writes its anti-clone record, signed with the private KEY
 # (tools/provision.py), at QSPI 0x903F0000 (spec §11.5). Do it before RDP Level 1 is set.
 # Bench only: SBIOT_BIND_UID=<24 hex digits> signs for that UID instead, which makes the board look

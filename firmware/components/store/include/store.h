@@ -29,7 +29,7 @@ typedef enum {
  * records of no committed generation, bumps the boot counter, and loads every small config,
  * re-validated (keys added by newer firmware filled in), falling back to its default.
  */
-store_err_t store_init(const cfg_env_t *env, nor_t *flash);
+store_err_t store_init(const cfg_env_t *env, nor_t *flash);  // STORE_EFLASH: no cfg, or read-only (defaults)
 /** Unmounts (host tests: a power cut, then store_init again on the same flash). */
 void store_deinit(void);
 
@@ -96,3 +96,5 @@ void store_log_append(const char *line, size_t len);
 typedef bool (*store_log_fn)(const store_log_meta_t *meta, const char *line, size_t len, void *ctx);
 void store_log_iter(store_log_fn fn, void *ctx);
 uint32_t store_boot_count(void);
+unsigned store_log_failures(void);  // appends refused (read-only, or a FlashDB error)
+bool store_log_ok(void);            // the log TSDB is mounted

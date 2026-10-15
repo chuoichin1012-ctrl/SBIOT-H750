@@ -167,7 +167,7 @@ Không có engine DMA nào đọc hay ghi trực tiếp vào buffer của bên g
 | ETH RX | Zero-copy từ pool pbuf RX đặt trong SRAM1. pbuf được đưa lại vào descriptor chỉ sau khi lwIP đã giải phóng nó (custom pbuf free) |
 | USART1/2/3 TX | `serial_write` chép vào buffer TX non-cacheable của cổng (2 KB, chia theo từng khối) rồi mới khởi động DMA. Chỉ chép tiếp vào buffer khi DMA đã báo xong (TC). Bên gọi (bridge, mqtt_io, console, lte) có thể dùng buffer ở bất kỳ đâu |
 | USART RX | Ring DMA non-cacheable, `serial_rx[n]` chép frame ra ngoài |
-| SPI4 (FAL) | Buffer trung chuyển non-cacheable 4 KB cho cả hai chiều. Buffer của FlashDB không bao giờ đi thẳng tới DMA |
+| SPI4 (FAL) | Buffer trung chuyển non-cacheable 4 KB ở SRAM1 (MPU region 2) cho cả hai chiều. Buffer của FlashDB không bao giờ đi thẳng tới DMA. Chỉ pha dữ liệu ≥ 256 B (một page, một lần đọc 4 KB) mới dùng DMA (DMA1 stream 0 và 1, task chờ bằng semaphore, timeout thì abort); pha nhỏ hơn và lệnh vài byte dùng polling, vì DMA tốn chi phí khởi động. Không cần clean hay invalidate cache, vì buffer non-cacheable; chỉ cần `__DMB()` trước và sau. Trong lúc flash bận, task ngủ một tick mỗi lần hỏi status. Một mutex dùng chung cho mọi thao tác của OTA và FlashDB. Bootloader giữ polling |
 | QSPI | Chỉ bootloader ghi, ở chế độ indirect kèm polling, không dùng DMA |
 | ADC3 | **BDMA** (DMAMUX2, request 17) ghi vòng vào buffer trong region non-cacheable 1 KB của SRAM4 (§6.6). ADC3 cũng có request trên DMAMUX1 (115, tới DMA1/2). Dùng BDMA là **lựa chọn thiết kế**, để ADC không chiếm stream của DMA1/2 và không chiếm SRAM1 |
 
@@ -618,13 +618,19 @@ Quy tắc riêng của bản STM32:
 ### 9.1 FlashDB
 
 - Port FAL cho SPI4: SPI kèm DMA, có lock riêng. `store` khóa mọi lời gọi FlashDB bằng một mutex đệ quy, như bản ESP32.
+- **Cấu hình chỉ được đọc một lần, lúc khởi động** (người dùng, 2026-10-15).
+  - Lưu một cấu hình (`/api/config/*`, `edgeDevices`, chứng chỉ) thì cấu hình được ghi xuống, và `GET` trả về giá trị mới.
+  - Các dịch vụ chỉ áp dụng nó **sau khi khởi động lại gateway**. Không có cấu hình lại khi đang chạy, nên `store` không cần listener cho các dịch vụ.
 - Giữ các quy tắc của bản ESP32:
   - chỉ ghi khi lưu cấu hình. Ngoại lệ là bộ đếm boot `st.boot`, ghi một lần nhỏ ở mỗi lần boot để log có dạng `[boot N …]` (`store.c:219`);
   - trạng thái DO chỉ ghi khi bật `keepOutputs` và có thay đổi;
   - factory reset xóa `cfg`, `edge`, `cert` và giữ lại `log`;
   - validate lại toàn bộ cấu hình khi khởi động;
   - log TSDB đánh khóa bằng số thứ tự tăng dần.
-- **Cần đo:** thời gian mở DB khi đọc qua SPI. Ước tính khoảng 5.300 lần đọc nhỏ, mỗi lần khoảng 5 µs, tổng chừng 30 ms.
+- **Đo trên board (Plan 05b):**
+  - **Thời gian mount:** khoảng 0,2 s khi DB mới. Khi DB `cfg` đầy giá trị cũ thì khoảng 1,8 s; mức này có chặn trên, vì bộ dọn rác giới hạn số KV trong mỗi sector. Ước tính ban đầu (5.300 lần đọc × 5 µs, khoảng 30 ms) là quá lạc quan: mỗi lần đọc nhỏ qua HAL mất khoảng 170 µs. Có thể tối ưu sau, chưa làm.
+  - **Lưu một cấu hình:** trung bình khoảng 12 ms, lâu nhất khoảng 250 ms (khi dọn rác có xóa sector). CPU còn khoảng 70 % idle trong 1.000 lần lưu liên tiếp, và `wdog` vẫn giữ nhịp 200 ms.
+  - **Sector cache của FlashDB** đặt 16, bằng số sector của KVDB lớn nhất. Với giá trị mặc định 8, mỗi lần lưu mất khoảng 210 ms.
 - **FlashDB 2.2.0 có một file vá** (`third_party/patches/flashdb-2.2.0-sbiot.patch`, Plan 05a). `master` của upstream vẫn còn các lỗi này. Ba lỗi chính:
   1. **Vòng khôi phục dừng sớm.** Lúc mount, khi gặp một KV ghi dở (`PRE_WRITE`), FlashDB đánh dấu nó hỏng rồi dừng vòng duyệt khôi phục. Giá trị cũ của chính KV đó (`PRE_DELETE`) vì vậy đọc ra như không tồn tại.
      - Bị ma trận cắt điện bắt được: cắt lúc đang ghi lại manifest trong lúc DB dọn rác.
@@ -1078,6 +1084,7 @@ Ngoài ra, file map của linker phải cho thấy mỗi section nằm trong ng�
   2. nạp bootloader và image QSPI, build với khóa công khai thật (§11.5): `tools/flash.sh both`. Lần boot sau lệnh này gieo firmware gốc (§11.2);
   3. **đặt RDP Level 1, luôn là bước cuối** (`STM32_Programmer_CLI -c port=SWD -ob RDP=0xBB`).
 - Board phát triển dùng `tools/flash.sh bind dev` và firmware build không có `SBIOT_BIND_PUBKEY_FILE`.
+- **Bẫy trên bench:** staging đang giữ một image hợp lệ khác với image vừa nạp vào QSPI qua SWD thì bootloader cài staging đè lên ở lần boot kế tiếp (§11.2). Khi staging có thể đang giữ image khác, hãy upload image mới qua UART7 thay vì nạp qua SWD.
 - Plan 02 dùng loader của nhóm `STM32H750VBT6_GD25Q32ESIG.stldr` (Dev_info: 0x90000000, 4 MB, page 256 B, 1024 sector 4 KB; SHA-256 `5ef2de362969bb2ad9d0c92604e58f27b018614533fe421e6ac5974c9bcb0699`), sau khi chứng minh xóa, ghi và đọc lại trên vùng dự trữ 0x903E0000. Loader này không kick WDI: chỉ an toàn khi R20 chưa lắp. Plan 04b vẫn giữ loader này, vì nó đã nạp được cả image lẫn bản ghi liên kết trên board. Loader build từ mã nguồn (cùng driver QSPI với bootloader, kick WDI và IWDG1 trong các vòng chờ) để lại tới khi lắp R20.
 - Log debug ra UART7, 115200 baud.
 

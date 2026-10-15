@@ -29,6 +29,7 @@ static bool s_edge_ok, s_cert_ok;
 static bool s_ro;
 static fdb_time_t s_log_seq;  // TSDB key: last used sequence number
 static uint32_t s_boot;
+static unsigned s_log_failures;  // lines the log TSDB did not take
 static cfg_env_t s_env;
 
 typedef struct __attribute__((packed)) {
@@ -389,6 +390,10 @@ store_err_t store_init(const cfg_env_t *env, nor_t *flash)
     load_all();
     read_only();  // a read that failed anywhere in the mount or the loads
     UNLOCK();
+    if (s_ro) {  // what the mount read cannot be trusted: defaults are served, nothing is written
+        store_port_log("mounted read-only after a flash read failed: defaults, no writes");
+        return STORE_EFLASH;
+    }
     store_port_log("%u configs loaded, edge generation %lu, boot #%lu", (unsigned)s_ncache, (unsigned long)s_gen,
                    (unsigned long)s_boot);
     return STORE_OK;
@@ -792,6 +797,8 @@ char *store_cert_get(const char *scope, const char *kind)
 // ---- log -------------------------------------------------------------------------------------
 
 uint32_t store_boot_count(void) { return s_boot; }
+unsigned store_log_failures(void) { return s_log_failures; }
+bool store_log_ok(void) { return s_log_ok; }
 
 void store_log_append(const char *line, size_t len)
 {
@@ -805,8 +812,8 @@ void store_log_append(const char *line, size_t len)
     memcpy(rec + sizeof h, line, len);
     struct fdb_blob blob;
     LOCK();
-    if (!read_only())
-        fdb_tsl_append(&s_log_db, fdb_blob_make(&blob, rec, sizeof h + len));
+    if (read_only() || fdb_tsl_append(&s_log_db, fdb_blob_make(&blob, rec, sizeof h + len)) != FDB_NO_ERR)
+        s_log_failures++;
     UNLOCK();
 }
 

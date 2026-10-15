@@ -99,7 +99,7 @@ else:
             ('VP_TIM6_VS_ClockSourceINT', 'Enable_Timer', 'TIM6_VS_ClockSourceINT')]
 
 ips = ['CORTEX_M7', 'DEBUG', 'MEMORYMAP', 'NVIC', 'QUADSPI', 'RCC', 'SPI4', 'SYS', 'UART7']
-ips += ['IWDG1'] if BOOT else ['ADC3', 'ETH', 'TIM2', 'TIM6', 'USART1', 'USART2', 'USART3']
+ips += ['IWDG1'] if BOOT else ['ADC3', 'DMA', 'ETH', 'TIM2', 'TIM6', 'USART1', 'USART2', 'USART3']
 ips.sort()
 
 L = []
@@ -191,6 +191,23 @@ own = 'true' if BOOT else 'false'  # in the app, FreeRTOS owns SVC, PendSV and S
 for irq in ['SVCall', 'PendSV']:
     a('NVIC.%s_IRQn=true\\:0\\:0\\:false\\:false\\:%s\\:false\\:false\\:false' % (irq, own))
 a('NVIC.SysTick_IRQn=true\\:15\\:0\\:false\\:false\\:%s\\:false\\:%s\\:false' % (own, own))
+if not BOOT:
+    # SPI4 data phases by DMA (spec §5.4, Plan 05b): DMA1 stream 0 RX, stream 1 TX, plus the SPI4
+    # interrupt (the H7 HAL ends a DMA transfer on SPI's EOT). Priority 6: below FreeRTOS's
+    # syscall limit (configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY 5), so the callbacks may notify.
+    for irq in ['DMA1_Stream0', 'DMA1_Stream1', 'SPI4']:
+        a('NVIC.%s_IRQn=true\\:6\\:0\\:false\\:false\\:true\\:true\\:true\\:true' % irq)
+    for k, (stream, direction) in enumerate([('DMA1_Stream0', 'DMA_PERIPH_TO_MEMORY'), ('DMA1_Stream1', 'DMA_MEMORY_TO_PERIPH')]):
+        req = 'SPI4_RX' if k == 0 else 'SPI4_TX'
+        a('Dma.Request%d=%s' % (k, req))
+        d = 'Dma.%s.%d.' % (req, k)
+        for key, val in [('Direction', direction), ('FIFOMode', 'DMA_FIFOMODE_DISABLE'), ('Instance', stream),
+                         ('MemDataAlignment', 'DMA_MDATAALIGN_BYTE'), ('MemInc', 'DMA_MINC_ENABLE'), ('Mode', 'DMA_NORMAL'),
+                         ('PeriphDataAlignment', 'DMA_PDATAALIGN_BYTE'), ('PeriphInc', 'DMA_PINC_DISABLE'),
+                         ('Priority', 'DMA_PRIORITY_LOW'),
+                         ('RequestParameters', 'Instance,Direction,PeriphInc,MemInc,PeriphDataAlignment,MemDataAlignment,Mode,Priority,FIFOMode')]:
+            a(d + key + '=' + val)
+    a('Dma.RequestsNb=2')
 a('NVIC.PriorityGroup=NVIC_PRIORITYGROUP_4')
 a('NVIC.ForceEnableDMAVector=true')
 a('board=custom')
@@ -211,9 +228,10 @@ else:
     funcs = [(1, 'SystemClock_Config', 'RCC', 'true', 'false'), (2, 'MX_GPIO_Init', 'GPIO', 'false', 'true'),
              (3, 'MX_TIM2_Init', 'TIM2', 'false', 'true'), (4, 'MX_UART7_Init', 'UART7', 'false', 'true'),
              (5, 'MX_QUADSPI_Init', 'QUADSPI', 'true', 'true'), (6, 'MX_ADC3_Init', 'ADC3', 'true', 'true'),
-             (7, 'MX_ETH_Init', 'ETH', 'true', 'true'), (8, 'MX_SPI4_Init', 'SPI4', 'false', 'true'),
-             (9, 'MX_TIM6_Init', 'TIM6', 'true', 'true'), (10, 'MX_USART1_UART_Init', 'USART1', 'true', 'true'),
-             (11, 'MX_USART2_UART_Init', 'USART2', 'true', 'true'), (12, 'MX_USART3_UART_Init', 'USART3', 'true', 'true'),
+             (7, 'MX_ETH_Init', 'ETH', 'true', 'true'), (8, 'MX_DMA_Init', 'DMA', 'false', 'true'),
+             (9, 'MX_SPI4_Init', 'SPI4', 'false', 'true'),
+             (10, 'MX_TIM6_Init', 'TIM6', 'true', 'true'), (11, 'MX_USART1_UART_Init', 'USART1', 'true', 'true'),
+             (12, 'MX_USART2_UART_Init', 'USART2', 'true', 'true'), (13, 'MX_USART3_UART_Init', 'USART3', 'true', 'true'),
              (0, 'MX_CORTEX_M7_Init', 'CORTEX_M7', 'true', 'true')]
 pm = dict(AskForMigrate='false', BackupPrevious='false', CompilerOptimize='6', ComputerToolchain='false',
           CoupleFile='true', CustomerFirmwarePackage='', DefaultFWLocation='true', DeletePrevious='true',

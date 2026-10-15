@@ -73,6 +73,11 @@ def image(build, version, pad_to=None):
     return out
 
 
+def upload_s(path, extra=8):
+    """Seconds for an upload at 115200 baud (about 11 KB/s with the acknowledgements), plus extra."""
+    return os.path.getsize(path) / 10000.0 + extra
+
+
 def reload_held(boot_elf, seconds):
     """Resets the board and holds Reload (PA8) low for `seconds` from boot_main on: a hardware
     breakpoint at boot_main (after MX_GPIO_Init), PA8 to output low (R136 limits the current), run,
@@ -130,7 +135,8 @@ def main():
     factory = r.get('factory', '').split(' ')[0]
 
     # 2. Upload and install
-    lines = board.upload(image(build, '0.4.1'), 30)
+    img = image(build, '0.4.1')
+    lines = board.upload(img, upload_s(img, 15))
     check('ota: done 0' in texts(lines), 'upload v0.4.1: ota: done 0')
     check('boot: install installed-staging' in texts(lines), 'the next boot installs it')
     check(report().get('qspi', '').startswith('v0.4.1 '), 'v0.4.1 runs')
@@ -141,7 +147,8 @@ def main():
     # reset below starts the install: every reset is timed from the last one, never from the time
     # PowerShell needs to open the port. Spaced 1.5-2.7 s (sleep + the CLI's own latency), shorter
     # than the 3.7 s install, so every reset cuts one.
-    lines = board.upload(image(build, '0.4.2', 300 * 1024), 60, reset=False)
+    img = image(build, '0.4.2', 300 * 1024)
+    lines = board.upload(img, upload_s(img), reset=False)
     check('ota: done 0' in texts(lines), 'upload v0.4.2 (300 KB), not booted: ota: done 0')
     random.seed(4)
 
@@ -167,7 +174,8 @@ def main():
     check(report().get('qspi', '').startswith('v0.4.2 '), 'and v0.4.2 still runs')
 
     # 6b. SPI4 init fails with a new image in staging: SPI4 is not used
-    lines = board.upload(image(build, '0.4.4'), 12, reset=False)
+    img = image(build, '0.4.4')
+    lines = board.upload(img, upload_s(img), reset=False)
     r = report()
     check('ota: done 0' in texts(lines) and r.get('staging', '').startswith('v0.4.4 '), 'v0.4.4 staged, not booted')
     lines = board.listen(8, during=lambda: spi4_init_fails(boot_elf))

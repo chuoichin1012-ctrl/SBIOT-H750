@@ -48,17 +48,23 @@ int net_tcp_connect(const char *host, uint16_t port, uint16_t local_port, uint32
         }
     }
     net_nonblock(fd);
-    int r = lwip_connect(fd, (struct sockaddr *)&to, sizeof to);
-    if (r != 0 && errno == EINPROGRESS) {
+    int r = lwip_connect(fd, (struct sockaddr *)&to, sizeof to), why = r ? errno : 0, err = 0;
+    if (r != 0 && why == EINPROGRESS) {
         fd_set w;
         FD_ZERO(&w);
         FD_SET(fd, &w);
         struct timeval tv = {.tv_sec = timeout_ms / 1000, .tv_usec = (timeout_ms % 1000) * 1000};
-        int err = 0;
         socklen_t el = sizeof err;
         r = lwip_select(fd + 1, NULL, &w, NULL, &tv) == 1 && lwip_getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &el) == 0 && !err ? 0 : -1;
+        if (r)
+            why = err ? err : ETIMEDOUT;
     }
     if (r != 0) {
+        static uint64_t s_logged_us;  // one line a minute: a dead peer is retried every few seconds
+        if (now_us() - s_logged_us > 60000000u || !s_logged_us) {
+            s_logged_us = now_us();
+            SLOG_I("net", "cannot connect to %s:%u (errno %d)", host, port, why);
+        }
         closesocket(fd);
         return -1;
     }

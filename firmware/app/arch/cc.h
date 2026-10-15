@@ -9,7 +9,8 @@
 
 #define LWIP_NO_STDINT_H 0
 #define LWIP_ERRNO_INCLUDE <errno.h>
-#define LWIP_PROVIDE_ERRNO 0
+// No LWIP_PROVIDE_ERRNO at all: lwIP tests it with #ifdef, so even 0 gave it its own errno variable and
+// codes, and the callers (the bridges, Mongoose) read newlib's per-task errno, always 0 (Plan 08a).
 // BYTE_ORDER comes from newlib (machine/endian.h): little endian
 
 void netmgr_assert(const char *msg, const char *file, int line);

@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "memorymap.h"
+#include "spi.h"
 #include "tim.h"
 #include "gpio.h"
 
@@ -88,6 +89,7 @@ int main(void)
   MX_GPIO_Init();
   MX_TIM2_Init();
   MX_UART7_Init();
+  MX_SPI4_Init();
   /* USER CODE BEGIN 2 */
   app_main();
   /* USER CODE END 2 */

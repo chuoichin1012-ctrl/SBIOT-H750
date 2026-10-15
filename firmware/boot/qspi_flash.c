@@ -145,3 +145,67 @@ int qf_memory_mapped(QSPI_HandleTypeDef *h)
     QSPI_MemoryMappedTypeDef m = {.TimeOutActivation = QSPI_TIMEOUT_COUNTER_DISABLE, .TimeOutPeriod = 0};
     return HAL_QSPI_MemoryMapped(h, &c, &m) == HAL_OK ? QF_OK : QF_EHAL;
 }
+
+#define ERASE_MS 600u  // 2 x tSE 300 ms
+#define PROGRAM_MS 6u  // 2 x tPP 2.4 ms, plus one tick of HAL_GetTick resolution
+
+static int nor_code(int qf)
+{
+    return qf == QF_OK ? NOR_OK : qf == QF_ETIMEOUT ? NOR_ETIMEOUT : NOR_EIO;
+}
+
+static int nor_read(nor_t *n, uint32_t off, void *buf, uint32_t len)
+{
+    qf_nor_t *q = (qf_nor_t *)n;
+    if (!len)
+        return NOR_OK;
+    QSPI_CommandTypeDef c = command(0xEB);  // the memory-mapped read, one transfer at a time
+    c.AddressMode = QSPI_ADDRESS_4_LINES;
+    c.Address = off;
+    c.AlternateByteMode = QSPI_ALTERNATE_BYTES_4_LINES;
+    c.AlternateBytesSize = QSPI_ALTERNATE_BYTES_8_BITS;
+    c.AlternateBytes = 0xFF;
+    c.DummyCycles = s_dummy;
+    c.DataMode = QSPI_DATA_4_LINES;
+    c.NbData = len;
+    if (HAL_QSPI_Command(q->h, &c, PHASE_MS) != HAL_OK)
+        return NOR_EIO;
+    return HAL_QSPI_Receive(q->h, buf, PHASE_MS) == HAL_OK ? NOR_OK : NOR_EIO;
+}
+
+static int nor_erase(nor_t *n, uint32_t off)
+{
+    qf_nor_t *q = (qf_nor_t *)n;
+    QSPI_CommandTypeDef c = command(0x20);
+    c.AddressMode = QSPI_ADDRESS_1_LINE;
+    c.Address = off;
+    if (send(q->h, 0x06) || HAL_QSPI_Command(q->h, &c, PHASE_MS) != HAL_OK)
+        return NOR_EIO;
+    return nor_code(wait_ready(q->h, ERASE_MS, q->kick));
+}
+
+static int nor_program(nor_t *n, uint32_t off, const void *buf, uint32_t len)
+{
+    qf_nor_t *q = (qf_nor_t *)n;
+    if (len == 0 || len > NOR_PAGE || off / NOR_PAGE != (off + len - 1) / NOR_PAGE)
+        return NOR_EIO;
+    QSPI_CommandTypeDef c = command(0x02);
+    c.AddressMode = QSPI_ADDRESS_1_LINE;
+    c.Address = off;
+    c.DataMode = QSPI_DATA_1_LINE;
+    c.NbData = len;
+    if (send(q->h, 0x06) || HAL_QSPI_Command(q->h, &c, PHASE_MS) != HAL_OK ||
+        HAL_QSPI_Transmit(q->h, (uint8_t *)buf, PHASE_MS) != HAL_OK)
+        return NOR_EIO;
+    return nor_code(wait_ready(q->h, PROGRAM_MS, q->kick));
+}
+
+void qf_nor_init(qf_nor_t *q, QSPI_HandleTypeDef *h, qf_kick_fn kick)
+{
+    q->nor.read = nor_read;
+    q->nor.erase_sector = nor_erase;
+    q->nor.program = nor_program;
+    q->nor.ctx = q;
+    q->h = h;
+    q->kick = kick;
+}

@@ -329,7 +329,7 @@ static void test_restore(void)
 
 static void test_copy_failures(void)
 {
-    int codes[] = {NOR_EIO, NOR_TIMEOUT, SIM_SILENT};
+    int codes[] = {NOR_EIO, NOR_ETIMEOUT, SIM_SILENT};
     const char *names[] = {"flash error", "deadline", "silent bad program"};
     for (int i = 0; i < 3; i++) {
         bench_t b;

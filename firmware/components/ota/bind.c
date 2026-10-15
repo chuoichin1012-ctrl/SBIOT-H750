@@ -5,7 +5,7 @@
 #include "monocypher-ed25519.h"
 
 static const uint8_t MAGIC[4] = {'S', 'B', 'B', 'D'};
-static const char LABEL[15] = "SBIOT-H750 bind";  // no NUL
+static const char LABEL[15] __attribute__((nonstring)) = "SBIOT-H750 bind";  // no NUL
 
 static bool crc_ok(const uint8_t rec[BIND_LEN])
 {

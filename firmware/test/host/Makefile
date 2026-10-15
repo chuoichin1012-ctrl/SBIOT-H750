@@ -50,7 +50,7 @@ $(BUILD)/test_oom: test_oom.c $(CFG) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $^ -lm -o $@
 
-$(BUILD)/test_board: test_board.c ../../components/board/tick64.c ../../components/board/crc32.c ../../boot/jumpcheck.c
+$(BUILD)/test_board: test_board.c ../../components/board/tick64.c ../../components/board/crc32.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
 

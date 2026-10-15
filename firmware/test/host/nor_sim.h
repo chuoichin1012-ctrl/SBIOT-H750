@@ -3,8 +3,8 @@
 // devices of a world. Faults:
 // - power cut at operation N: that operation is done only partly (a prefix of the page programmed,
 //   a prefix of the sector erased, one byte in between half-done), then longjmp to w->cut_jmp;
-// - timeout at operation N: the operation does nothing and returns NOR_TIMEOUT (a hung device);
-// - up to two failing regions [lo, hi) of device dev, until cleared. code NOR_EIO / NOR_TIMEOUT:
+// - timeout at operation N: the operation does nothing and returns NOR_ETIMEOUT (a hung device);
+// - up to two failing regions [lo, hi) of device dev, until cleared. code NOR_EIO / NOR_ETIMEOUT:
 //   every erase and program there fails so; SIM_SILENT: programming reports success but changes
 //   nothing; SIM_READ_EIO / SIM_READ_TIMEOUT: reads there fail, erase and program work;
 // - power cuts repeated: after the cut at cut_at, cuts_left more, each cut_period operations later;
@@ -17,7 +17,7 @@
 
 #define SIM_SILENT 1        // fail code: a program that reports success but leaves the cells as they were
 #define SIM_READ_EIO 2      // fail code: reads fail with NOR_EIO
-#define SIM_READ_TIMEOUT 3  // fail code: reads fail with NOR_TIMEOUT
+#define SIM_READ_TIMEOUT 3  // fail code: reads fail with NOR_ETIMEOUT
 
 typedef struct sim_world sim_world_t;
 struct sim_world {

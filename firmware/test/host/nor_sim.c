@@ -38,7 +38,7 @@ static int tick(nor_sim_t *s, uint32_t off)
         int c = w->fail[i].code;
         if (w->fail[i].dev == s->id && off >= w->fail[i].lo && off < w->fail[i].hi && c != SIM_READ_EIO &&
             c != SIM_READ_TIMEOUT)
-            return c == NOR_TIMEOUT ? 2 : c == SIM_SILENT ? 4 : 3;
+            return c == NOR_ETIMEOUT ? 2 : c == SIM_SILENT ? 4 : 3;
     }
     return 0;
 }
@@ -54,7 +54,7 @@ static int sim_read(nor_t *n, uint32_t off, void *buf, uint32_t len)
             (c == SIM_READ_EIO || c == SIM_READ_TIMEOUT)) {
             if (s->w->fail[i].count > 0 && --s->w->fail[i].count == 0)
                 s->w->fail[i].dev = 0;
-            return c == SIM_READ_TIMEOUT ? NOR_TIMEOUT : NOR_EIO;
+            return c == SIM_READ_TIMEOUT ? NOR_ETIMEOUT : NOR_EIO;
         }
     }
     memcpy(buf, s->mem + off, len);
@@ -68,7 +68,7 @@ static int sim_erase(nor_t *n, uint32_t off)
         return NOR_EIO;
     int t = tick(s, off);
     if (t == 2)
-        return NOR_TIMEOUT;
+        return NOR_ETIMEOUT;
     if (t == 3)
         return NOR_EIO;
     if (t == 4)
@@ -90,7 +90,7 @@ static int sim_program(nor_t *n, uint32_t off, const void *buf, uint32_t len)
         return NOR_EIO;
     int t = tick(s, off);
     if (t == 2)
-        return NOR_TIMEOUT;
+        return NOR_ETIMEOUT;
     if (t == 3)
         return NOR_EIO;
     if (t == 4)

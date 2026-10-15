@@ -648,6 +648,10 @@ Quy tắc riêng của bản STM32:
   - **phải chịu được** mất điện ở bất kỳ thời điểm nào, và lỗi đọc thoáng qua;
   - **lỗi phần cứng dai dẳng** (flash cứ ghi hoặc đọc lỗi): chỉ cần không làm hỏng thêm. Flash chuyển sang chỉ đọc, `store` từ chối lưu và báo lỗi; không đòi hỏi hoạt động tiếp.
   - Loại sự cố nằm ngoài phạm vi này được ghi vào "giới hạn đã biết", không sửa thêm.
+  - **Giới hạn đã biết** (người dùng chấp nhận, không sửa):
+    - ghi hoặc xóa flash lỗi dai dẳng mà đọc vẫn tốt thì **không** khóa sang chỉ đọc; các lần lưu sau vẫn thử ghi, và báo lỗi khi thất bại;
+    - FlashDB vẫn có thể hành xử chưa tối ưu khi ghi hỏng liên tục;
+    - không tự phục hồi phần cứng hỏng.
 - Mỗi DB dùng sector 16 KB. Riêng `edge` chứa vừa bản ghi 8 KB cùng header của nó, và dọn rác mịn trong 256 KB.
 
 ### 9.2 Vì sao phải xử lý theo node

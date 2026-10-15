@@ -116,6 +116,11 @@ Store mutants: 26 of 26.
 - **Persistent hardware faults** (a flash that keeps failing writes or reads): the storage must only not make things worse. The flash turns read-only, saves are refused and an error is reported; further operation is not required.
 - A fault class outside this scope is recorded under known limitations, not fixed further.
 
+**Known limitations (accepted by the user, not fixed):**
+- **Codex round 5** found that a persistent write or erase failure, with reads still working, does not latch the storage read-only. Later saves still try the flash and report the failure. The user's decision: "Thay vì sửa flashdb, chúng ta chấp nhận lỗi đó, đừng làm dự án phức tạp thêm" (accept it rather than patch FlashDB further).
+- No recovery from a broken flash part.
+- Power loss on the board, and the SPI4 driver, are proven in Plan 05b, not here.
+
 ## Rulings (for review)
 
 1. **Edge sector size 16 KB**, against 64 KB on the ESP32. An 8 KB record and its header fit, and 16 sectors in 256 KB keep the garbage collection fine-grained. Cost if wrong: more sector headers (a few hundred bytes).

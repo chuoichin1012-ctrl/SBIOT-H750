@@ -8,7 +8,7 @@ BUILD := build
 CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c ../../components/proto/jsonscan.c
 ARENA := ../../components/arena/arena.c $(TLSF)/tlsf.c
 
-all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img
+all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install
 	$(BUILD)/test_cfgmodel
 	$(BUILD)/test_proto
 	$(BUILD)/test_jsonscan
@@ -18,6 +18,7 @@ all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/
 	$(BUILD)/test_oom
 	$(BUILD)/test_board
 	$(BUILD)/test_ota $(BUILD)/mkimage_sample.img
+	$(BUILD)/test_install
 
 $(BUILD)/test_cfgmodel: test_cfgmodel.c $(CFG) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
@@ -62,6 +63,14 @@ $(BUILD)/test_ota: test_ota.c nor_sim.c $(OTA)
 $(BUILD)/mkimage_sample.img: ../../tools/mkimage.py ../../tools/test_mkimage.py
 	mkdir -p $(BUILD)
 	python3 ../../tools/test_mkimage.py $@
+
+INSTALL := ../../boot/install.c ../../components/ota/bootrec.c ../../components/ota/handoff.c ../../components/ota/ota_app.c
+
+# About 2 minutes under ASan: two matrices cut power at every one of about 2 500 operations, plus
+# 600 runs with three cuts each. OTA_QUICK=1 skips the matrices (mutants_ota.py uses it).
+$(BUILD)/test_install: test_install.c nor_sim.c $(INSTALL) $(OTA)
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -I../../boot $^ -o $@
 
 clean:
 	rm -rf $(BUILD)

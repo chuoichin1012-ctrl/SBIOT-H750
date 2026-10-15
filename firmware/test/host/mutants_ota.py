@@ -68,15 +68,22 @@ M = [
  ('components/ota/ota_app.c', ' || spi->read(spi, SPI_STAGING, m, sizeof m) || memcmp(m, erased, sizeof m))', ' || (0 && spi->read(spi, SPI_STAGING, m, sizeof m) && memcmp(m, erased, sizeof m)))', 'upload erase not verified'),
  ('components/store/store.c', '    if (s_gen)\n        delete_records(0, true);\n    else if (has_records())', '    delete_records(0, true);\n    if (has_records())', 'boot deletes records without a manifest', 'store'),
  ('components/store/store.c', 'static bool kept(uint32_t g) { return g == s_gen || pin_find(g) >= 0; }', 'static bool kept(uint32_t g) { return g == s_gen; }', 'pinned generation not kept', 'store'),
- ('components/store/store.c', '    if (r == CFG_OK && !kv_write(&s_edge_db, EDGE, manifest, strlen(manifest)))  // the commit point\n        r = CFG_ABORTED;\n', '', 'no manifest commit', 'store'),
+ ('components/store/store.c', '    if (r == CFG_OK && !kv_write(&s_edge_db, EDGE, manifest, strlen(manifest))) {  // the commit point', '    if (0) {  // the commit point', 'no manifest commit', 'store'),
  ('components/store/store.c', '    delete_records(0, true);      // the old generation unless pinned, and any stray record\n', '', 'old generation never deleted', 'store'),
- ('components/store/store.c', '    if (e != STORE_OK) {\n        delete_records(w.gen, false);', '    if (e != STORE_OK) {', 'failed save leaves its records', 'store'),
+ ('components/store/store.c', '        if (r != CFG_ABORTED || s_gen == old)\n            delete_records(w.gen, false);', '        (void)old;', 'failed save leaves its records', 'store'),
  ('components/store/store.c', '            if (s_cache[k].off > s_cache[i].off)\n                s_cache[k].off -= s_cache[i].len;\n', '', 'cache offsets not moved', 'store'),
  ('components/store/store.c', '    return s_used - (i >= 0 ? s_cache[i].len : 0) + len <= sizeof s_pool;', '    return s_used + len <= sizeof s_pool;', 'cache counts the old text too', 'store_small'),
  ('components/store/store.c', '            doc = cfg_load(&s_env, name, parsed, err, sizeof err);', '            doc = cJSON_Duplicate(parsed, true);', 'no re-validation at boot', 'store'),
  ('components/store/store.c', '        delete_records(p->gen, false);  // its slot is free now, so kept() no longer holds it', '        ;', 'doomed generation kept after unpin', 'store'),
- ('third_party/flashdb/src/fdb_kvdb.c', '    if (rescan) { /* SBIOT patch, see check_and_recovery_kv_cb */\n        goto __retry;\n    }\n', '', 'FlashDB recovery stops early', 'store'),
- ('components/store/store.c', '    UNLOCK();\n        bool more = b->n == LOG_BATCH;', '        bool more = b->n == LOG_BATCH;', 'log callback under the lock', 'store')
+ ('third_party/flashdb/src/fdb_kvdb.c', '    if (rescan && ++rescans <= 16) { /* SBIOT patch, see check_and_recovery_kv_cb */\n        goto __retry;\n    }\n', '    (void)rescans;\n', 'FlashDB recovery stops early', 'store'),
+ ('components/store/store.c', '    UNLOCK();\n        bool more = b->n == LOG_BATCH;', '        bool more = b->n == LOG_BATCH;', 'log callback under the lock', 'store'),
+ ('third_party/flashdb/src/fdb_kvdb.c', '                    return true;\n                }\n            } else {\n                FDB_DEBUG("KV (%.*s) is garbage NOT need move', '                }\n            } else {\n                FDB_DEBUG("KV (%.*s) is garbage NOT need move', 'FlashDB GC formats after a failed move', 'store'),
+ ('third_party/flashdb/src/fdb_kvdb.c', '        result = update_sec_status(db, &sector, kv->len, NULL);\n        if (result != FDB_NO_ERR) {', '        update_sec_status(db, &sector, kv->len, NULL);\n        if (0) {', 'FlashDB move ignores the target sector status', 'store'),
+ ('third_party/flashdb/src/fdb_kvdb.c', '    if (rescan && ++rescans <= 16) {', '    if (rescan && ++rescans) {', 'FlashDB rescans without a bound', 'store'),
+ ('components/store/store.c', '        fdb_kvdb_deinit(&s_edge_db);\n        memset(&s_edge_db, 0, sizeof s_edge_db);\n        uint32_t c = 0, g = kvdb_open(&s_edge_db, "edge", EDGE_SECTOR) ? manifest_gen(&c) : 0;', '        uint32_t c = 0, g = manifest_gen(&c);', 'no remount after a failed manifest write', 'store'),
+ ('components/store/store.c', '    edge_writer_t w = {.gen = (top > s_gen ? top : s_gen) + 1};', '    edge_writer_t w = {.gen = s_gen + 1};\n    (void)top;\n    delete_records(w.gen, false);', 'new generation over existing records', 'store'),
+ ('components/store/store.c', '    for (int pass = 0; pass < 8; pass++) {', '    for (int pass = 0;; pass++) {', 'cleanup without a bound', 'store'),
+ ('components/store/store.c', '{"mqtt", "port1", "port2"};', '{"mqtt", "port1", "mqtt"};', 'no port2 certificates', 'store')
 ]
 
 

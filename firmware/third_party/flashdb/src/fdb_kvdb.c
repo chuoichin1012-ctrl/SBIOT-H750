@@ -1036,7 +1036,11 @@ static fdb_err_t move_kv(fdb_kvdb_t db, fdb_kv_t kv)
         size_t len, size, kv_len = kv->len;
 
         /* update the new KV sector status first */
-        update_sec_status(db, &sector, kv->len, NULL);
+        result = update_sec_status(db, &sector, kv->len, NULL);
+        if (result != FDB_NO_ERR) { /* SBIOT patch: a KV in a sector still marked empty is lost */
+            FDB_INFO("Error: Moving the KV (%.*s) failed, its source is kept.\n", kv->name_len, kv->name);
+            return result;
+        }
 
         _fdb_write_status((fdb_db_t)db, kv_addr, status_table, FDB_KV_STATUS_NUM, FDB_KV_PRE_WRITE, false);
         kv_len -= KV_MAGIC_OFFSET;
@@ -1048,8 +1052,18 @@ static fdb_err_t move_kv(fdb_kvdb_t db, fdb_kv_t kv)
             }
             _fdb_flash_read((fdb_db_t)db, kv->addr.start + KV_MAGIC_OFFSET + len, (uint32_t *) buf, FDB_WG_ALIGN(size));
             result = _fdb_flash_write((fdb_db_t)db, kv_addr + KV_MAGIC_OFFSET + len, (uint32_t *) buf, size, true);
+            if (result != FDB_NO_ERR) { /* SBIOT patch: a failed copy must not stand for the KV */
+                break;
+            }
         }
-        _fdb_write_status((fdb_db_t)db, kv_addr, status_table, FDB_KV_STATUS_NUM, FDB_KV_WRITE, true);
+        if (result == FDB_NO_ERR) { /* SBIOT patch: the move counts only once its status says so */
+            result = _fdb_write_status((fdb_db_t)db, kv_addr, status_table, FDB_KV_STATUS_NUM, FDB_KV_WRITE, true);
+        }
+        if (result != FDB_NO_ERR) {
+            /* SBIOT patch: keep the source (now PRE_DELETE: recovered at the next load) */
+            FDB_INFO("Error: Moving the KV (%.*s) failed, its source is kept.\n", kv->name_len, kv->name);
+            return result;
+        }
 
 #ifdef FDB_KV_USING_CACHE
         update_sector_empty_addr_cache(db, FDB_ALIGN_DOWN(kv_addr, db_sec_size(db)),
@@ -1128,6 +1142,9 @@ static bool do_gc(kv_sec_info_t sector, void *arg1, void *arg2)
                 /* move the KV to new space */
                 if (move_kv(db, &kv) != FDB_NO_ERR) {
                     FDB_INFO("Error: Moved the KV (%.*s) for GC failed.\n", kv.name_len, kv.name);
+                    /* SBIOT patch: never format a sector with a KV that was not moved; it stays
+                     * DIRTY_GC, so the next GC (or the next load) collects it again */
+                    return true;
                 }
             } else {
                 FDB_DEBUG("KV (%.*s) is garbage NOT need move, collect it.\n", kv.name_len, kv.name);
@@ -1610,10 +1627,12 @@ static bool check_and_recovery_kv_cb(fdb_kv_t kv, void *arg1, void *arg2)
         uint8_t status_table[KV_STATUS_TABLE_SIZE];
         /* the KV has not write finish, change the status to error */
         //TODO Draw the state replacement diagram of exception handling
-        _fdb_write_status((fdb_db_t)db, kv->addr.start, status_table, FDB_KV_STATUS_NUM, FDB_KV_ERR_HDR, true);
         /* SBIOT patch: the iteration stops here, so scan again: a PRE_DELETE KV further on (the old
-         * value of the KV this write was replacing) must still be recovered in this load */
-        *(bool *)arg2 = true;
+         * value of the KV this write was replacing) must still be recovered in this load. Only when
+         * the status write worked; _fdb_kv_load bounds the rescans for a write that silently does not */
+        if (_fdb_write_status((fdb_db_t)db, kv->addr.start, status_table, FDB_KV_STATUS_NUM, FDB_KV_ERR_HDR, true) == FDB_NO_ERR) {
+            *(bool *)arg2 = true;
+        }
         return true;
     } else if (kv->crc_is_ok && kv->status == FDB_KV_WRITE) {
 #ifdef FDB_KV_USING_CACHE
@@ -1637,6 +1656,7 @@ static fdb_err_t _fdb_kv_load(fdb_kvdb_t db)
     struct kvdb_sec_info sector;
     size_t check_failed_count = 0;
     bool rescan;
+    size_t rescans = 0;
 
     db->in_recovery_check = true;
     /* check all sector header */
@@ -1661,7 +1681,7 @@ __retry:
         gc_collect(db);
         goto __retry;
     }
-    if (rescan) { /* SBIOT patch, see check_and_recovery_kv_cb */
+    if (rescan && ++rescans <= 16) { /* SBIOT patch, see check_and_recovery_kv_cb */
         goto __retry;
     }
 

@@ -3,6 +3,8 @@
 // A reboot is store_deinit + store_init on the same flash; a power cut is a longjmp out of an erase
 // or program, then that reboot. Every case checks that the store's lock is balanced afterwards.
 #include <setjmp.h>
+#include <signal.h>
+#include <unistd.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,12 +62,18 @@ static int (*s_sim_erase)(nor_t *, uint32_t);
 
 static int (*s_sim_program)(nor_t *, uint32_t, const void *, uint32_t);
 static long s_trace_from = -1;  // STORE_TRACE=<op>: print the operations from there on
+static long s_fail_op = -1;     // that erase or program fails once with NOR_EIO, doing nothing
 
 static int counting_erase(nor_t *n, uint32_t off)
 {
     s_erases++;
     if (s_trace_from >= 0 && s_w.ops >= s_trace_from)
         printf("    op %ld: erase 0x%05x\n", s_w.ops, (unsigned)off);
+    if (s_w.ops == s_fail_op) {
+        s_fail_op = -1;
+        s_w.ops++;
+        return NOR_EIO;
+    }
     return s_sim_erase(n, off);
 }
 
@@ -75,6 +83,11 @@ static int tracing_program(nor_t *n, uint32_t off, const void *buf, uint32_t len
         const uint8_t *b = buf;
         printf("    op %ld: program 0x%05x len %u: %02x %02x %02x %02x\n", s_w.ops, (unsigned)off, (unsigned)len, b[0],
                len > 1 ? b[1] : 0, len > 2 ? b[2] : 0, len > 3 ? b[3] : 0);
+    }
+    if (s_w.ops == s_fail_op) {
+        s_fail_op = -1;
+        s_w.ops++;
+        return NOR_EIO;
     }
     return s_sim_program(n, off, buf, len);
 }
@@ -341,6 +354,16 @@ static void test_certs_and_factory_reset(void)
     CHECK(got && !strcmp(got, pem), "cert reads back NUL-terminated");
     free(got);
     CHECK(store_cert_get("mqtt", "key") == NULL, "absent cert");
+    const char *kinds[] = {"ca", "cert", "key"};
+    for (int i = 0; i < 3; i++)
+        CHECK(store_cert_set("port2", kinds[i], pem, strlen(pem)) == STORE_OK, "port2 %s accepted (spec §10.2)", kinds[i]);
+    reboot();
+    store_subscribe(listener, &s_heard);
+    for (int i = 0; i < 3; i++) {
+        char *c = store_cert_get("port2", kinds[i]);
+        CHECK(c && !strcmp(c, pem), "port2 %s kept across a reboot", kinds[i]);
+        free(c);
+    }
     CHECK(store_cert_set("ftp", "ca", pem, 5) == STORE_EINVALID && store_cert_set("mqtt", "pin", pem, 5) == STORE_EINVALID,
           "unknown scope or kind");
     char *big = calloc(1, STORE_CERT_MAX + 1);
@@ -564,8 +587,95 @@ static void test_no_manifest_keeps_records(void)
     CHECK(edge_keys("ed.3.") == 1, "no manifest: the boot does not delete records");
     char err[200], *m = edge_model(4, 2, 1);
     CHECK(store_edge_save(m, strlen(m), err, sizeof err) == STORE_OK, "a save");
-    CHECK(edge_keys("ed.3.") == 0 && edge_keys("ed.1.") == 1, "the save removes the stray record and keeps its own");
+    CHECK(edge_keys("ed.3.") == 0 && edge_keys("ed.4.") == 1, "the save (generation 4, above the stray) removes the stray and keeps its own");
     free(m);
+}
+
+// The manifest lost behind the store's back (or unreadable): a rejected POST must not touch the
+// records, and the next generation is numbered above every record in flash.
+static void test_lost_manifest(void)
+{
+    flash_new(16);
+    reboot();
+    char err[200], *m = edge_model(4, 2, 1);
+    store_edge_save(m, strlen(m), err, sizeof err);
+    store_deinit();
+    struct fdb_kvdb db = {0};
+    uint32_t sec = 16 * 1024;
+    fdb_kvdb_control(&db, FDB_KVDB_CTRL_SET_SEC_SIZE, &sec);
+    fdb_kvdb_init(&db, "edge", "edge", NULL, NULL);
+    fdb_kv_del(&db, "edgeDevices");
+    fdb_kvdb_deinit(&db);
+    reboot();
+    int had = edge_keys("ed.1.");
+    CHECK(had == 1, "generation 1's record still there without its manifest (%d)", had);
+    CHECK(store_edge_save("[", 1, err, sizeof err) == STORE_EINVALID && edge_keys("ed.1.") == 1, "a rejected POST leaves it");
+    char *m2 = edge_model(4, 2, 2);
+    CHECK(store_edge_save(m2, strlen(m2), err, sizeof err) == STORE_OK, "a valid POST");
+    store_edge_pin_t p;
+    store_edge_pin(&p);
+    store_edge_unpin(&p);
+    CHECK(p.gen == 2 && edge_keys("ed.1.") == 0, "is generation 2, above the records found (%u)", (unsigned)p.gen);
+    free(m), free(m2);
+}
+
+static void on_alarm(int sig)
+{
+    (void)sig;
+    printf("FAIL: the store hung (a loop that never ends while it holds the lock)\ntest_store: FAILED\n");
+    _exit(1);
+}
+
+// Deletes and status writes that report success and change nothing (SIM_SILENT): every loop of
+// the store and of FlashDB's recovery must still end.
+static void test_no_endless_loops(void)
+{
+    signal(SIGALRM, on_alarm);
+    flash_new(17);
+    reboot();
+    char err[200], *m = edge_model(4, 2, 1);
+    store_edge_save(m, strlen(m), err, sizeof err);
+    store_deinit();  // twenty stray records, written in one go: more than one cleanup pass
+    struct fdb_kvdb db = {0};
+    uint32_t sec = 16 * 1024;
+    fdb_kvdb_control(&db, FDB_KVDB_CTRL_SET_SEC_SIZE, &sec);
+    fdb_kvdb_init(&db, "edge", "edge", NULL, NULL);
+    for (int i = 0; i < 20; i++) {
+        char key[24];
+        struct fdb_blob blob;
+        snprintf(key, sizeof key, "ed.9.%d", i);
+        fdb_kv_set_blob(&db, key, fdb_blob_make(&blob, "stray", 5));
+    }
+    fdb_kvdb_deinit(&db);
+    sim_fail(&s_w, 0, 2, 0x40000, 0x80000, SIM_SILENT);
+    alarm(20);
+    reboot();  // the boot cleanup cannot delete them
+    char *m2 = edge_model(4, 2, 2);
+    store_edge_save(m2, strlen(m2), err, sizeof err);  // nor can the save's cleanup
+    alarm(0);
+    sim_fail(&s_w, 0, 0, 0, 0, 0);
+    CHECK(1, "returned");
+
+    // A KV left half-written by a cut, then status writes that silently fail: FlashDB's
+    // recovery scan (patched to rescan) must give up after a bound, not loop.
+    flash_new(18);
+    reboot();
+    store_edge_save(m, strlen(m), err, sizeof err);
+    store_deinit();
+    s_w.ops = 0;
+    s_w.cut_at = 10;  // inside the data of the first record: a KV left PRE_WRITE
+    if (!setjmp(s_jb)) {
+        reboot();
+        store_edge_save(m2, strlen(m2), err, sizeof err);
+    }
+    s_w.cut_at = -1;
+    sim_fail(&s_w, 0, 2, 0x40000, 0x80000, SIM_SILENT);
+    alarm(20);
+    reboot();
+    alarm(0);
+    sim_fail(&s_w, 0, 0, 0, 0, 0);
+    CHECK(1, "FlashDB's recovery returned");
+    free(m), free(m2);
 }
 
 static void test_orphans(void)
@@ -737,6 +847,142 @@ static void test_power_cuts(void)
     free(ma), free(wa), free(mb), free(wb), free(s_snap);
 }
 
+// A write failing once (NOR_EIO, nothing written) at every operation of an edge save: whatever
+// the save answers, the model it leaves in RAM is the one the reboot finds, and it is exactly the
+// old or the new one (a commit that FlashDB reports as failed must not lose the new records).
+static void test_write_failures(void)
+{
+    s_snap = malloc(0x100000);
+    flash_new(22);
+    reboot();
+    char err[200];
+    char *ma = edge_model(14, 4, 1), *wa = edge_oracle(ma), *mb = edge_model(16, 4, 2), *wb = edge_oracle(mb);
+    for (int i = 0; i < 40; i++) {  // as in test_power_cuts: the measured save collects garbage
+        char *m = edge_model(16, 4, 50 + i);
+        store_edge_save(m, strlen(m), err, sizeof err);
+        free(m);
+        store_edge_save(ma, strlen(ma), err, sizeof err);
+        store_deinit();
+        snapshot();
+        reboot();
+        if (erases_in_save(mb) > 0)
+            break;
+        store_deinit();
+        restore();
+        reboot();
+    }
+    store_deinit();
+    restore();
+    reboot();
+    s_w.ops = 0;
+    store_edge_save(mb, strlen(mb), err, sizeof err);
+    long total = s_w.ops;
+    int bad = 0;
+    s_quiet = true;
+    for (long op = 0; op < total; op++) {
+        store_deinit();
+        restore();
+        reboot();
+        s_w.ops = 0;
+        s_fail_op = op;
+        store_err_t r = store_edge_save(mb, strlen(mb), err, sizeof err);
+        s_fail_op = -1;
+        char *before = edge_now();
+        reboot();
+        char *after = edge_now();
+        bool ok = before && after && !strcmp(before, after) && (!strcmp(after, wa) || !strcmp(after, wb)) &&
+                  (r != STORE_OK || !strcmp(after, wb));
+        if (!ok && bad++ < 5)
+            printf("  write fails at op %ld of %ld: save %d, before %s, after %s\n", op, total, r,
+                   before ? (!strcmp(before, wa) ? "old" : !strcmp(before, wb) ? "new" : "OTHER") : "none",
+                   after ? (!strcmp(after, wa) ? "old" : !strcmp(after, wb) ? "new" : "OTHER") : "none");
+        free(before), free(after);
+    }
+    s_quiet = false;
+    CHECK(bad == 0, "edge save: %d of %ld single write failures end inconsistent", bad, total);
+    free(ma), free(wa), free(mb), free(wb), free(s_snap);
+}
+
+// FlashDB itself: a KV written once ("keep") while another is rewritten until the garbage
+// collector has to move "keep". A write failing once at any operation of that churn must never
+// lose "keep": a failed move used to be logged, and its sector erased all the same.
+static bool keep_intact(void)
+{
+    struct fdb_kvdb db = {0};
+    uint32_t sec = 16 * 1024;
+    fdb_kvdb_control(&db, FDB_KVDB_CTRL_SET_SEC_SIZE, &sec);
+    if (fdb_kvdb_init(&db, "cert", "cert", NULL, NULL) != FDB_NO_ERR)
+        return false;
+    char v[64] = "";
+    struct fdb_blob blob;
+    size_t n = fdb_kv_get_blob(&db, "keep", fdb_blob_make(&blob, v, sizeof v - 1));
+    fdb_kvdb_deinit(&db);
+    return n == 17 && !memcmp(v, "a value to keep!!", 17);
+}
+
+static long churn(int writes)
+{
+    struct fdb_kvdb db = {0};
+    uint32_t sec = 16 * 1024;
+    fdb_kvdb_control(&db, FDB_KVDB_CTRL_SET_SEC_SIZE, &sec);
+    fdb_kvdb_init(&db, "cert", "cert", NULL, NULL);
+    static char big[6000];
+    long moves = 0;
+    for (int i = 0; i < writes; i++) {
+        memset(big, 'a' + i % 26, sizeof big);
+        struct fdb_blob blob;
+        long e0 = s_erases;
+        fdb_kv_set_blob(&db, "churn", fdb_blob_make(&blob, big, sizeof big));
+        moves += s_erases - e0;
+    }
+    fdb_kvdb_deinit(&db);
+    return moves;
+}
+
+static void test_gc_write_failures(void)
+{
+    s_snap = malloc(0x100000);
+    flash_new(23);
+    store_deinit();
+    struct fdb_kvdb db = {0};
+    uint32_t sec = 16 * 1024;
+    fdb_kvdb_control(&db, FDB_KVDB_CTRL_SET_SEC_SIZE, &sec);
+    fdb_kvdb_init(&db, "cert", "cert", NULL, NULL);
+    struct fdb_blob blob;
+    fdb_kv_set_blob(&db, "keep", fdb_blob_make(&blob, "a value to keep!!", 17));
+    fdb_kvdb_deinit(&db);
+    snapshot();
+    s_w.ops = 0;
+    long erases = churn(40);
+    long total = s_w.ops;
+    CHECK(erases > 0 && keep_intact(), "the churn collects garbage (%ld erases) and keeps the KV", erases);
+    if (getenv("STORE_GC_DEBUG")) {  // one failing op, traced, with FlashDB's messages
+        long op = atol(getenv("STORE_GC_DEBUG"));
+        restore();
+        s_w.ops = 0;
+        s_fail_op = op;
+        s_trace_from = op - 6;
+        churn(40);
+        s_trace_from = -1;
+        printf("--- keep intact after: %d\n", keep_intact());
+    }
+    int bad = 0;
+    s_quiet = true;
+    for (long op = 0; op < total; op++) {
+        restore();
+        s_w.ops = 0;
+        s_fail_op = op;
+        churn(40);
+        s_fail_op = -1;
+        if (!keep_intact() && bad++ < 5)
+            printf("  FlashDB: a write failing at op %ld of %ld lost the KV\n", op, total);
+    }
+    s_quiet = false;
+    CHECK(bad == 0, "FlashDB garbage collection: %d of %ld single write failures lose a live KV", bad, total);
+    printf("store: FlashDB churn of %ld operations with garbage collection, a write failing at each\n", total);
+    free(s_snap);
+}
+
 static void test_small_power_cuts(void)
 {
     s_snap = malloc(0x100000);
@@ -840,11 +1086,14 @@ static void test_log(void)
 
 int main(void)
 {
+    setvbuf(stdout, NULL, _IONBF, 0);  // a hang is reported by the alarm with _exit: nothing buffered may be lost
     // Power cuts longjmp out of the store while it holds heap memory (a real one clears the RAM),
     // so the Makefile runs them in a second pass, STORE_CUTS=1, without leak detection.
     if (getenv("STORE_CUTS")) {
         test_small_power_cuts();
         test_power_cuts();
+        test_write_failures();
+        test_gc_write_failures();
     } else {
         test_first_boot();
         test_set_get();
@@ -856,6 +1105,8 @@ int main(void)
         test_pinning();
         test_pin_through_gc();
         test_no_manifest_keeps_records();
+        test_lost_manifest();
+        test_no_endless_loops();
         test_orphans();
         test_log();
 #if STORE_CACHE_SIZE < 5000

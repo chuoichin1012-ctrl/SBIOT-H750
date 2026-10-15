@@ -189,10 +189,12 @@ static int pin_find(uint32_t gen);
 /** A record of generation g is kept: the committed one, or one a GET still reads. */
 static bool kept(uint32_t g) { return g == s_gen || pin_find(g) >= 0; }
 
-/** Deletes every record whose generation is `gen`, or (unkept) every record kept() does not keep. */
+/** Deletes every record whose generation is `gen`, or (unkept) every record kept() does not keep.
+ * At most 8 passes of 16: more records than the database can hold, so a flash whose deletes do
+ * not take (an erase-protected or failing part) cannot keep it here, holding the lock. */
 static void delete_records(uint32_t gen, bool unkept)
 {
-    for (;;) {  // collect, then delete: never delete under the iterator
+    for (int pass = 0; pass < 8; pass++) {  // collect, then delete: never delete under the iterator
         char doomed[16][FDB_KV_NAME_MAX];
         int n = 0;
         struct fdb_kv_iterator it;
@@ -209,6 +211,21 @@ static void delete_records(uint32_t gen, bool unkept)
         if (n < 16)
             return;
     }
+    store_port_log("edge records left after 8 cleanup passes: the flash does not delete");
+}
+
+/** The highest generation of any record in flash (0: none). */
+static uint32_t highest_record_gen(void)
+{
+    uint32_t top = 0;
+    struct fdb_kv_iterator it;
+    fdb_kv_iterator_init(&s_edge_db, &it);
+    while (fdb_kv_iterate(&s_edge_db, &it)) {
+        uint32_t g = key_gen(it.curr_kv.name);
+        if (g > top)
+            top = g;
+    }
+    return top;
 }
 
 static bool has_records(void)
@@ -221,16 +238,26 @@ static bool has_records(void)
     return false;
 }
 
+/** The generation the manifest in flash names, and its count; 0 when absent or unreadable.
+ * A fixed buffer: no allocation can fail here. */
+static uint32_t manifest_gen(uint32_t *count)
+{
+    char m[32] = "";
+    struct fdb_blob blob;
+    size_t n = fdb_kv_get_blob(&s_edge_db, EDGE, fdb_blob_make(&blob, m, sizeof m - 1));
+    m[n < sizeof m ? n : sizeof m - 1] = '\0';
+    unsigned long g, c;
+    if (sscanf(m, "@%lu,%lu", &g, &c) != 2 || !g || !c)
+        return 0;
+    if (count)
+        *count = (uint32_t)c;
+    return (uint32_t)g;
+}
+
 static void read_manifest(void)
 {
-    s_gen = s_count = 0;
-    char *m = kv_read(&s_edge_db, EDGE, NULL);
-    unsigned long g, c;
-    if (m && sscanf(m, "@%lu,%lu", &g, &c) == 2 && g && c) {
-        s_gen = (uint32_t)g;
-        s_count = (uint32_t)c;
-    }
-    free(m);
+    s_count = 0;
+    s_gen = manifest_gen(&s_count);
 }
 
 static int pin_find(uint32_t gen)
@@ -450,22 +477,41 @@ store_err_t store_edge_save(const char *text, size_t len, char *err, size_t errl
 {
     err[0] = '\0';
     LOCK();
-    edge_writer_t w = {.gen = s_gen + 1 ? s_gen + 1 : 1};
-    delete_records(w.gen, false);  // never mix with records left under this number
+    // Above the committed generation and above every record in flash, so this save never has to
+    // delete anything before it is validated (records of a lost or unreadable manifest survive it).
+    uint32_t top = highest_record_gen();
+    edge_writer_t w = {.gen = (top > s_gen ? top : s_gen) + 1};
     cfg_result_t r = cfg_edge_text(&s_env, text, len, true, CFG_EDGE_MAX, emit, &w, err, errlen);
     if (r == CFG_OK && w.fill && !flush(&w))
         r = CFG_ABORTED;
     char manifest[32];
     snprintf(manifest, sizeof manifest, "@%lu,%lu", (unsigned long)w.gen, (unsigned long)w.idx);
-    if (r == CFG_OK && !kv_write(&s_edge_db, EDGE, manifest, strlen(manifest)))  // the commit point
-        r = CFG_ABORTED;
+    uint32_t old = s_gen;
+    if (r == CFG_OK && !kv_write(&s_edge_db, EDGE, manifest, strlen(manifest))) {  // the commit point
+        // After a failed write FlashDB's view in RAM (its cache) need not be the flash's: the new
+        // manifest may be in place with the old one not deleted, or cached while it is not valid.
+        // Mount the database again, as the next boot will, and take the committed generation
+        // from there: what this boot serves is then what the next one finds.
+        fdb_kvdb_deinit(&s_edge_db);
+        memset(&s_edge_db, 0, sizeof s_edge_db);
+        uint32_t c = 0, g = kvdb_open(&s_edge_db, "edge", EDGE_SECTOR) ? manifest_gen(&c) : 0;
+        s_gen = g;
+        s_count = c;
+        if (g != w.gen) {
+            r = CFG_ABORTED;
+            if (g)  // the old generation stands: this one's records go (none is read)
+                delete_records(w.gen, false);
+            // g == 0: nothing proves which records are orphans; kept until the next save
+        }
+        store_port_log("edgeDevices: the manifest write reported an error; generation %lu is committed", (unsigned long)g);
+    }
     store_err_t e = from_cfg(r, err, errlen);
     if (e != STORE_OK) {
-        delete_records(w.gen, false);
+        if (r != CFG_ABORTED || s_gen == old)
+            delete_records(w.gen, false);
         UNLOCK();
         return e;
     }
-    uint32_t old = s_gen;
     s_gen = w.gen;
     s_count = w.idx;
     int p = old ? pin_find(old) : -1;
@@ -607,10 +653,10 @@ size_t store_state_get(const char *key, void *data, size_t len)
 
 static bool cert_key(const char *scope, const char *kind, char *out, size_t len)
 {
-    static const char *const scopes[] = {"mqtt", "port1"};
+    static const char *const scopes[] = {"mqtt", "port1", "port2"};  // port2 has TLS on the STM32 (spec §10.2)
     static const char *const kinds[] = {"ca", "cert", "key"};
     bool sok = false, kok = false;
-    for (size_t i = 0; i < 2; i++)
+    for (size_t i = 0; i < 3; i++)
         sok |= scope && strcmp(scope, scopes[i]) == 0;
     for (size_t i = 0; i < 3; i++)
         kok |= kind && strcmp(kind, kinds[i]) == 0;

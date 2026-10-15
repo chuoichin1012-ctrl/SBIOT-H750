@@ -36,9 +36,35 @@ As with Plans 02 and 04b, the code was written and run before this document. The
 - **B1. FlashDB 2.2.0 loses the old value of a KV whose rewrite was cut.**
   - How it was found: the power-cut matrix on a save that collects garbage. A cut while the manifest's name or value was being programmed (operations 83 and 84 of 89) left no manifest after the reboot, so the store showed the default model.
   - Cause: `_fdb_kv_load` → `check_and_recovery_kv_cb` marks the half-written KV (`PRE_WRITE`) as `ERR_HDR` and returns `true`, which stops the scan. The old value (`PRE_DELETE`) lies further on and is never recovered in that load, and lookups only see `WRITE` KVs. Upstream `master` has the same code.
-  - Patch (`third_party/patches/flashdb-2.2.0-recovery-rescan.patch`): scan again until no half-written KV is left. With it, all 89 cut points and 150 runs with three cuts end on the old or the new model.
+  - Patch (`third_party/patches/flashdb-2.2.0-sbiot.patch`): scan again until no half-written KV is left. With it, all 89 cut points and 150 runs with three cuts end on the old or the new model.
 - **B2. The store made B1 worse.** Its boot cleanup deleted every `ed.*` record not of the manifest's generation. With the manifest missing, that meant all of them, so even the next boot, where FlashDB would have recovered the manifest, could not get the model back. Now a boot without a manifest deletes nothing, and the next successful save removes whatever it does not keep (`test_no_manifest_keeps_records`, RED then GREEN).
 - **B3. A power cut leaks memory in the simulation.** The `longjmp` leaves the store holding heap blocks; a real cut clears the RAM. The cut matrices therefore run in a second pass (`STORE_CUTS=1`) without leak detection. The cases run first, with it.
+
+## Codex round 1 (NOT APPROVED), and the fixes
+
+Every fix began with a test that failed first.
+
+1. **A commit FlashDB reports as failed can still be in place.** A write failing once at each of the 89 operations of an edge save (`test_write_failures`) found two cases.
+   - At operation 86, the new manifest is written but deleting the old one fails, so the model is lost after the reboot.
+   - At operation 85, the new manifest's final status write fails. A read-back then saw the new manifest through FlashDB's cache, so the store deleted the old model.
+
+   Fix: after a failed manifest write, the store mounts the edge database again, as the next boot will, and takes the committed generation from there. The model served is then always the one the next boot finds.
+2. **An unreadable or lost manifest let the next POST delete the model** before validating it. Fixes:
+   - the new generation is numbered above every record in flash, so a save never deletes anything before its commit;
+   - the manifest is read into a fixed buffer, so no allocation can fail there.
+
+   Test: `test_lost_manifest`.
+3. **Endless loops holding the lock**, with deletes or status writes that silently change nothing (`test_no_endless_loops`, with an `alarm` guard).
+   - The store's cleanup now runs at most 8 passes of 16.
+   - FlashDB's rescan (the patch) runs only after a status write that worked, and at most 16 times.
+4. **`port2` certificates** (spec §10.2) are accepted and kept across a reboot.
+5. **Spec §5.3 budget:** the AXI static total now includes the 8 KB record buffer.
+
+While doing 1, a test aimed at FlashDB alone (`test_gc_write_failures`) found two more FlashDB faults. A live KV written once, while another KV is rewritten 40 times through garbage collection, was lost to one failing write at 7 of 1347 operations:
+- **B4. `move_kv` ignored a failed copy and a failed final status write** and deleted the source, and `do_gc` then formatted the sector.
+- **B5. `move_kv` ignored a failed status write of its target sector,** so the KV landed in a sector still marked empty, which the next load skips.
+
+Both are now in the one patch file, `flashdb-2.2.0-sbiot.patch`. That matrix and every other pass of `test_store` now pass. Mutants: 7 more, for each new fix.
 
 ## Rulings (for review)
 
@@ -67,7 +93,7 @@ As with Plans 02 and 04b, the code was written and run before this document. The
 
 | Path | Responsibility |
 |---|---|
-| `stm32/firmware/third_party/flashdb/*`, `third_party/patches/flashdb-2.2.0-recovery-rescan.patch` | FlashDB 2.2.0, the patch, provenance |
+| `stm32/firmware/third_party/flashdb/*`, `third_party/patches/flashdb-2.2.0-sbiot.patch` | FlashDB 2.2.0, the patch, provenance |
 | `stm32/firmware/components/store/{include/store.h,include/store_port.h,include/fal_nor.h}` | API, port, FAL device |
 | `stm32/firmware/components/store/{store.c,fal_nor.c,port/fdb_cfg.h,port/fal_cfg.h}` | The store, FAL over `nor_t`, configuration |
 | `stm32/firmware/test/host/test_store.c`, `test/host/Makefile` | Cases, power-cut matrices; `test_store_small` |

@@ -146,7 +146,7 @@ Mọi thao tác trên slot **xóa** theo sector 4 KB và **ghi** theo page 256 B
 |---|---|---|---|
 | ITCM | 64 KB | Code nóng chép từ QSPI lúc khởi động: kernel FreeRTOS, các ISR (ETH, USART, DMA, TIM), `memcpy`/`memset`, lõi bignum của mbedTLS | Section `.itcm_text` |
 | DTCM | 128 KB | MSP 4 KB, `.data`/`.bss` nhỏ, stack tĩnh của mọi task **trừ** `web` và `edge_tcpN` (khoảng 95 KB theo §6.1, kể cả `init`, timer và `cmux_rx`), TCB. Tổng DTCM ≤ 120 KB, kiểm bằng file map của linker | ETH và DMA1/2 không truy cập được vùng này. §5.4 bảo đảm không DMA nào đọc hay ghi trực tiếp ở đây |
-| AXI SRAM (D1) | 512 KB | **Tĩnh** (các section, tổng khoảng 185 KB): arena JSON 64 KB (§9.3), buffer văn bản Edge 48 KB (§9.3), mô hình Edge lúc chạy và cache giá trị khoảng 20 KB, cache văn bản cấu hình của `store` 20 KB cộng bộ đệm bản ghi Edge 8 KB, stack của `web` và `edge_tcpN` khoảng 33 KB. **Heap** (`heap_5`, vùng heap duy nhất) **256 KB**, dự kiến dùng bên trong như sau: 3 phiên TLS khoảng 105 KB cộng đỉnh lúc handshake khoảng 30 KB, Mongoose khoảng 40 KB, buffer report ≤ 26 KB (§9.4), buffer mạng coreMQTT 2 × 4 KB, các cấp phát nhỏ lúc chạy khoảng 20 KB, tổng khoảng 229 KB. **Mỗi allocation chỉ tính một lần**, hoặc ở phần tĩnh, hoặc ở phần heap | Cacheable (write-back). Phần AXI chưa cấp khoảng 71 KB. Phần heap còn dư khoảng 27 KB, kiểm bằng §12.3 |
+| AXI SRAM (D1) | 512 KB | **Tĩnh** (các section, tổng khoảng 193 KB): arena JSON 64 KB (§9.3), buffer văn bản Edge 48 KB (§9.3), mô hình Edge lúc chạy và cache giá trị khoảng 20 KB, cache văn bản cấu hình của `store` 20 KB cộng bộ đệm bản ghi Edge 8 KB, stack của `web` và `edge_tcpN` khoảng 33 KB. **Heap** (`heap_5`, vùng heap duy nhất) **256 KB**, dự kiến dùng bên trong như sau: 3 phiên TLS khoảng 105 KB cộng đỉnh lúc handshake khoảng 30 KB, Mongoose khoảng 40 KB, buffer report ≤ 26 KB (§9.4), buffer mạng coreMQTT 2 × 4 KB, các cấp phát nhỏ lúc chạy khoảng 20 KB, tổng khoảng 229 KB. **Mỗi allocation chỉ tính một lần**, hoặc ở phần tĩnh, hoặc ở phần heap | Cacheable (write-back). Phần AXI chưa cấp khoảng 63 KB. Phần heap còn dư khoảng 27 KB, kiểm bằng §12.3 |
 | SRAM1 (D2) | 128 KB | Descriptor, buffer RX và buffer TX của ETH, heap `MEM` của lwIP 64 KB, pool pbuf, ring DMA RX và buffer TX của USART1/2/3, buffer trung chuyển SPI4. Số lượng và kích thước chốt trong bảng pool lwIP (§5.6) | **Non-cacheable qua MPU.** Startup bật clock SRAM D2 trước khi khởi tạo `.data` |
 | SRAM2+3 (D2) | 160 KB | Ring serial → mạng 2 × 8 KB, `bufferOffline` 2 × 32 KB, outbox MQTT 64 KB. Còn 16 KB cho metadata và căn lề | Cacheable |
 | SRAM4 (D3) | 64 KB | Ring syslog 32 KB, ring của `mqtt_io` 2 × 12 KB, **buffer BDMA của ADC3** (800 B) trong region non-cacheable 1 KB riêng ở 0x3800FC00 (§6.6). Còn khoảng 7 KB | Region 1 KB của ADC đặt non-cacheable qua MPU, phần còn lại cacheable |
@@ -625,10 +625,17 @@ Quy tắc riêng của bản STM32:
   - validate lại toàn bộ cấu hình khi khởi động;
   - log TSDB đánh khóa bằng số thứ tự tăng dần.
 - **Cần đo:** thời gian mở DB khi đọc qua SPI. Ước tính khoảng 5.300 lần đọc nhỏ, mỗi lần khoảng 5 µs, tổng chừng 30 ms.
-- **FlashDB 2.2.0 có một bản vá** (`third_party/patches/flashdb-2.2.0-recovery-rescan.patch`, Plan 05a).
-  - Lỗi: lúc mount, khi gặp một KV ghi dở (`PRE_WRITE`), FlashDB đánh dấu nó hỏng rồi **dừng vòng duyệt khôi phục**. Giá trị cũ của chính KV đó (`PRE_DELETE`, nằm sau trong vòng duyệt) vì vậy không được khôi phục, và đọc ra như không tồn tại.
-  - Ma trận cắt điện của `test_store` bắt được lỗi này khi cắt điện lúc đang ghi lại manifest, trong lúc DB đầy tới mức phải dọn rác. Kết quả là mất manifest. `master` của upstream vẫn còn lỗi này.
-  - Bản vá: duyệt lại cho tới khi không còn KV ghi dở.
+- **FlashDB 2.2.0 có một file vá** (`third_party/patches/flashdb-2.2.0-sbiot.patch`, Plan 05a), sửa ba lỗi. `master` của upstream vẫn còn cả ba.
+  1. **Vòng khôi phục dừng sớm.** Lúc mount, khi gặp một KV ghi dở (`PRE_WRITE`), FlashDB đánh dấu nó hỏng rồi dừng vòng duyệt khôi phục. Giá trị cũ của chính KV đó (`PRE_DELETE`) vì vậy đọc ra như không tồn tại.
+     - Bị ma trận cắt điện bắt được: cắt lúc đang ghi lại manifest trong lúc DB dọn rác.
+     - Bản vá: duyệt lại, chỉ sau một lần ghi trạng thái thành công, tối đa 16 lần.
+  2. **Chuyển KV thất bại vẫn bị coi là xong.** Khi dọn rác, `move_kv` bỏ qua lỗi chép và lỗi ghi trạng thái, vẫn xóa bản gốc, rồi `do_gc` format sector. Chỉ một lần ghi lỗi là mất một KV còn sống.
+     - Bản vá: giữ bản gốc, và không format sector đó.
+  3. **Không kiểm trạng thái sector đích.** `move_kv` bỏ qua lỗi ghi trạng thái của sector đích, nên KV bị chuyển vào một sector vẫn mang dấu "trống", và lần mount sau bỏ qua sector đó.
+     - Bản vá: lỗi này cũng giữ bản gốc.
+
+  Lỗi 2 và 3 bị ma trận "một lần ghi lỗi" của `test_store` bắt được, chạy trên một chuỗi ghi đè có dọn rác.
+- **Sau một lần ghi lỗi khi lưu `edgeDevices`, `store` mount lại DB `edge`,** như lần boot sau sẽ làm, rồi lấy generation đã commit từ đó. Lý do: trạng thái trong RAM của FlashDB (cache) có thể khác flash; ví dụ manifest mới đã nằm trong cache mà chưa hợp lệ. Nhờ vậy, model đang phục vụ luôn là model mà lần boot sau tìm thấy.
 - Mỗi DB dùng sector 16 KB. Riêng `edge` chứa vừa bản ghi 8 KB cùng header của nó, và dọn rác mịn trong 256 KB.
 
 ### 9.2 Vì sao phải xử lý theo node

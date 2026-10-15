@@ -1,0 +1,730 @@
+#include "store.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "fal_nor.h"
+#include "flashdb.h"
+#include "store_port.h"
+
+#define MAX_CONFIGS 16
+#define MAX_LISTENERS 12
+#define MAX_PINS 4
+
+// Sector sizes: a KV value must fit in one sector, so 16 KB holds an 8 KB edge record with room
+// to spare and keeps FlashDB's garbage collection fine-grained in each 256 KB database.
+#define CFG_SECTOR (16 * 1024)
+#define EDGE_SECTOR (16 * 1024)
+#define CERT_SECTOR (16 * 1024)
+#define LOG_SECTOR (16 * 1024)
+
+static struct fdb_kvdb s_cfg_db, s_edge_db, s_cert_db;
+static struct fdb_tsdb s_log_db;
+static bool s_mounted, s_log_ok;
+static fdb_time_t s_log_seq;  // TSDB key: last used sequence number
+static uint32_t s_boot;
+static cfg_env_t s_env;
+
+typedef struct __attribute__((packed)) {
+    int64_t wall_ms;
+    uint32_t boot;
+    uint32_t uptime_ms;
+} log_hdr_t;
+
+// The text cache: every small config's compact JSON, back to back in one region.
+static char s_pool[STORE_CACHE_SIZE];
+static size_t s_used;
+static struct {
+    const char *name;
+    size_t off, len;
+} s_cache[MAX_CONFIGS];
+static size_t s_ncache;
+
+// edgeDevices: the committed generation, and the generations GETs still read.
+static uint32_t s_gen, s_count;  // s_gen 0: no model saved
+static struct {
+    uint32_t gen, count;
+    int readers;
+    bool doomed;  // superseded: deleted when the last reader unpins
+} s_pins[MAX_PINS];
+static char s_chunk[STORE_EDGE_RECORD];  // the record being filled by store_edge_save
+
+static struct {
+    store_listener_t fn;
+    void *ctx;
+} s_listeners[MAX_LISTENERS];
+static size_t s_nlisteners;
+
+#define LOCK() store_port_lock()
+#define UNLOCK() store_port_unlock()
+#define EDGE "edgeDevices"
+
+// ---- FlashDB helpers -------------------------------------------------------------------------
+
+static bool kvdb_open(fdb_kvdb_t db, const char *part, uint32_t sector)
+{
+    fdb_kvdb_control(db, FDB_KVDB_CTRL_SET_SEC_SIZE, &sector);
+    fdb_err_t e = fdb_kvdb_init(db, part, part, NULL, NULL);
+    if (e != FDB_NO_ERR)
+        store_port_log("KVDB %s init failed (%d)", part, e);
+    return e == FDB_NO_ERR;
+}
+
+/** A KV value in a fresh NUL-terminated heap buffer, or NULL when absent. */
+static char *kv_read(fdb_kvdb_t db, const char *key, size_t *len_out)
+{
+    struct fdb_kv kv;
+    if (!fdb_kv_get_obj(db, key, &kv))
+        return NULL;
+    char *buf = malloc(kv.value_len + 1);
+    if (!buf)
+        return NULL;
+    struct fdb_blob blob;
+    size_t n = fdb_blob_read((fdb_db_t)db, fdb_kv_to_blob(&kv, fdb_blob_make(&blob, buf, kv.value_len)));
+    buf[n] = '\0';
+    if (len_out)
+        *len_out = n;
+    return buf;
+}
+
+static bool kv_write(fdb_kvdb_t db, const char *key, const void *data, size_t len)
+{
+    struct fdb_blob blob;
+    fdb_err_t e = fdb_kv_set_blob(db, key, fdb_blob_make(&blob, data, len));
+    if (e != FDB_NO_ERR)
+        store_port_log("writing %s (%u bytes) failed: FlashDB error %d", key, (unsigned)len, e);
+    return e == FDB_NO_ERR;
+}
+
+// ---- the text cache --------------------------------------------------------------------------
+
+static int cache_find(const char *name)
+{
+    for (size_t i = 0; i < s_ncache; i++)
+        if (!strcmp(s_cache[i].name, name))
+            return (int)i;
+    return -1;
+}
+
+static bool cache_fits(const char *name, size_t len)
+{
+    int i = cache_find(name);
+    return s_used - (i >= 0 ? s_cache[i].len : 0) + len <= sizeof s_pool;
+}
+
+/** Replaces (or adds) name's text; the caller checked cache_fits. */
+static void cache_put(const char *name, const char *text, size_t len)
+{
+    int i = cache_find(name);
+    if (i < 0) {
+        i = (int)s_ncache++;
+        s_cache[i].name = name;
+    } else {  // close the gap of the old text
+        size_t end = s_cache[i].off + s_cache[i].len;
+        memmove(s_pool + s_cache[i].off, s_pool + end, s_used - end);
+        for (size_t k = 0; k < s_ncache; k++)
+            if (s_cache[k].off > s_cache[i].off)
+                s_cache[k].off -= s_cache[i].len;
+        s_used -= s_cache[i].len;
+    }
+    memcpy(s_pool + s_used, text, len);
+    s_cache[i].off = s_used;
+    s_cache[i].len = len;
+    s_used += len;
+}
+
+/** Loads one small config from flash, re-validated, or its default. */
+static void load(const char *name)
+{
+    char err[96] = "";
+    cJSON *doc = NULL;
+    char *raw = kv_read(&s_cfg_db, name, NULL);
+    if (raw) {
+        cJSON *parsed = cJSON_Parse(raw);
+        // Re-validating fills keys added by newer firmware and drops removed ones.
+        if (parsed)
+            doc = cfg_load(&s_env, name, parsed, err, sizeof err);
+        if (!doc)
+            store_port_log("%s: stored copy unusable (%s), using defaults", name, err);
+        cJSON_Delete(parsed);
+        free(raw);
+    }
+    if (!doc)
+        doc = cfg_default(&s_env, name);
+    char *text = doc ? cJSON_PrintUnformatted(doc) : NULL;
+    cJSON_Delete(doc);
+    if (text && cache_fits(name, strlen(text)))
+        cache_put(name, text, strlen(text));
+    else
+        store_port_log("%s: no memory for its text", name);
+    cJSON_free(text);
+}
+
+static void load_all(void)
+{
+    s_used = s_ncache = 0;
+    const char *names[MAX_CONFIGS];
+    size_t n = cfg_names(&s_env, names, MAX_CONFIGS);
+    for (size_t i = 0; i < n; i++)
+        if (strcmp(names[i], EDGE))
+            load(names[i]);
+}
+
+// ---- edgeDevices records -----------------------------------------------------------------------
+
+static void record_key(char *key, size_t size, uint32_t gen, uint32_t i)
+{
+    snprintf(key, size, "ed.%lu.%lu", (unsigned long)gen, (unsigned long)i);
+}
+
+/** The generation of an "ed.<g>.<i>" key, or 0 when the name is not one. */
+static uint32_t key_gen(const char *name)
+{
+    unsigned long g, i;
+    char tail;
+    return sscanf(name, "ed.%lu.%lu%c", &g, &i, &tail) == 2 ? (uint32_t)g : 0;
+}
+
+static int pin_find(uint32_t gen);
+
+/** A record of generation g is kept: the committed one, or one a GET still reads. */
+static bool kept(uint32_t g) { return g == s_gen || pin_find(g) >= 0; }
+
+/** Deletes every record whose generation is `gen`, or (unkept) every record kept() does not keep. */
+static void delete_records(uint32_t gen, bool unkept)
+{
+    for (;;) {  // collect, then delete: never delete under the iterator
+        char doomed[16][FDB_KV_NAME_MAX];
+        int n = 0;
+        struct fdb_kv_iterator it;
+        fdb_kv_iterator_init(&s_edge_db, &it);
+        while (n < 16 && fdb_kv_iterate(&s_edge_db, &it)) {
+            if (strncmp(it.curr_kv.name, "ed.", 3))
+                continue;
+            uint32_t g = key_gen(it.curr_kv.name);
+            if (unkept ? !kept(g) : g == gen)
+                snprintf(doomed[n++], FDB_KV_NAME_MAX, "%s", it.curr_kv.name);
+        }
+        for (int i = 0; i < n; i++)
+            fdb_kv_del(&s_edge_db, doomed[i]);
+        if (n < 16)
+            return;
+    }
+}
+
+static bool has_records(void)
+{
+    struct fdb_kv_iterator it;
+    fdb_kv_iterator_init(&s_edge_db, &it);
+    while (fdb_kv_iterate(&s_edge_db, &it))
+        if (key_gen(it.curr_kv.name))
+            return true;
+    return false;
+}
+
+static void read_manifest(void)
+{
+    s_gen = s_count = 0;
+    char *m = kv_read(&s_edge_db, EDGE, NULL);
+    unsigned long g, c;
+    if (m && sscanf(m, "@%lu,%lu", &g, &c) == 2 && g && c) {
+        s_gen = (uint32_t)g;
+        s_count = (uint32_t)c;
+    }
+    free(m);
+}
+
+static int pin_find(uint32_t gen)
+{
+    for (int i = 0; i < MAX_PINS; i++)
+        if (s_pins[i].readers && s_pins[i].gen == gen)
+            return i;
+    return -1;
+}
+
+typedef struct {
+    uint32_t gen, idx;
+    size_t fill;
+    bool failed;
+} edge_writer_t;
+
+static bool flush(edge_writer_t *w)
+{
+    char key[FDB_KV_NAME_MAX];
+    record_key(key, sizeof key, w->gen, w->idx);
+    if (!kv_write(&s_edge_db, key, s_chunk, w->fill)) {
+        w->failed = true;
+        return false;
+    }
+    w->idx++;
+    w->fill = 0;
+    return true;
+}
+
+static bool emit(void *ctx, const char *text, size_t len)
+{
+    edge_writer_t *w = ctx;
+    while (len) {
+        size_t n = sizeof s_chunk - w->fill < len ? sizeof s_chunk - w->fill : len;
+        memcpy(s_chunk + w->fill, text, n);
+        w->fill += n;
+        text += n;
+        len -= n;
+        if (w->fill == sizeof s_chunk && !flush(w))
+            return false;
+    }
+    return true;
+}
+
+// ---- init ------------------------------------------------------------------------------------
+
+/** TSDB "time": a sequence number, so keys always grow across reboots. */
+static fdb_time_t next_seq(void) { return ++s_log_seq; }
+
+store_err_t store_init(const cfg_env_t *env, nor_t *flash)
+{
+    s_env = *env;
+    fal_nor_set(flash);
+    LOCK();
+    if (!kvdb_open(&s_cfg_db, "cfg", CFG_SECTOR) || !kvdb_open(&s_edge_db, "edge", EDGE_SECTOR) ||
+        !kvdb_open(&s_cert_db, "cert", CERT_SECTOR)) {
+        UNLOCK();
+        return STORE_EFLASH;
+    }
+    s_mounted = true;
+    uint32_t sec = LOG_SECTOR;
+    fdb_tsdb_control(&s_log_db, FDB_TSDB_CTRL_SET_SEC_SIZE, &sec);
+    s_log_seq = 0;
+    s_log_ok = fdb_tsdb_init(&s_log_db, "log", "log", next_seq, sizeof(log_hdr_t) + STORE_LOG_LINE_MAX, NULL) == FDB_NO_ERR;
+    if (s_log_ok) {
+        bool rollover = true;  // overwrite the oldest lines when full
+        fdb_tsdb_control(&s_log_db, FDB_TSDB_CTRL_SET_ROLLOVER, &rollover);
+        fdb_tsdb_control(&s_log_db, FDB_TSDB_CTRL_GET_LAST_TIME, &s_log_seq);  // continue the sequence
+    } else {
+        store_port_log("log TSDB init failed; persistent log disabled");
+    }
+    // One small write per boot: gives log lines a boot number when the clock is unset (spec §9.1).
+    s_boot = 0;
+    store_state_get("boot", &s_boot, sizeof s_boot);
+    s_boot++;
+    store_state_set("boot", &s_boot, sizeof s_boot);
+
+    read_manifest();
+    // Orphans of a save cut by a power loss (spec §9.4, step 4). Without a manifest nothing proves
+    // a record is an orphan, so none is deleted; the next successful save removes them.
+    if (s_gen)
+        delete_records(0, true);
+    else if (has_records())
+        store_port_log("edge records without a manifest: kept until the next save");
+    load_all();
+    UNLOCK();
+    store_port_log("%u configs loaded, edge generation %lu, boot #%lu", (unsigned)s_ncache, (unsigned long)s_gen,
+                   (unsigned long)s_boot);
+    return STORE_OK;
+}
+
+void store_deinit(void)
+{
+    LOCK();
+    if (s_mounted) {
+        fdb_kvdb_deinit(&s_cfg_db);
+        fdb_kvdb_deinit(&s_edge_db);
+        fdb_kvdb_deinit(&s_cert_db);
+        if (s_log_ok)
+            fdb_tsdb_deinit(&s_log_db);
+    }
+    memset(&s_cfg_db, 0, sizeof s_cfg_db);
+    memset(&s_edge_db, 0, sizeof s_edge_db);
+    memset(&s_cert_db, 0, sizeof s_cert_db);
+    memset(&s_log_db, 0, sizeof s_log_db);
+    s_mounted = s_log_ok = false;
+    s_used = s_ncache = s_nlisteners = 0;
+    s_gen = s_count = 0;
+    memset(s_pins, 0, sizeof s_pins);
+    UNLOCK();
+}
+
+const cfg_env_t *store_env(void) { return &s_env; }
+
+bool store_known(const char *name) { return name && cfg_known(&s_env, name); }
+
+// ---- small configs ---------------------------------------------------------------------------
+
+char *store_get_json(const char *name)
+{
+    if (!name)
+        return NULL;
+    LOCK();
+    int i = cache_find(name);
+    char *s = i >= 0 ? malloc(s_cache[i].len + 1) : NULL;
+    if (s) {
+        memcpy(s, s_pool + s_cache[i].off, s_cache[i].len);
+        s[s_cache[i].len] = '\0';
+    }
+    UNLOCK();
+    return s;
+}
+
+cJSON *store_get(const char *name)
+{
+    if (!name)
+        return NULL;
+    LOCK();
+    int i = cache_find(name);
+    cJSON *doc = i >= 0 ? cJSON_ParseWithLength(s_pool + s_cache[i].off, s_cache[i].len) : NULL;
+    UNLOCK();
+    return doc;
+}
+
+void store_subscribe(store_listener_t fn, void *ctx)
+{
+    if (s_nlisteners < MAX_LISTENERS) {
+        s_listeners[s_nlisteners].fn = fn;
+        s_listeners[s_nlisteners].ctx = ctx;
+        s_nlisteners++;
+    }
+}
+
+static void notify(const char *name)
+{
+    for (size_t i = 0; i < s_nlisteners; i++)
+        s_listeners[i].fn(name, s_listeners[i].ctx);
+}
+
+static store_err_t from_cfg(cfg_result_t r, char *err, size_t errlen)
+{
+    switch (r) {
+    case CFG_OK:
+        return STORE_OK;
+    case CFG_INVALID:
+        return STORE_EINVALID;
+    case CFG_TOO_LARGE:
+        return STORE_ETOOLARGE;
+    case CFG_ABORTED:
+        snprintf(err, errlen, "The settings could not be written to flash.");
+        return STORE_EFLASH;
+    default:
+        snprintf(err, errlen, "The gateway does not have enough free memory to check these settings.");
+        return STORE_ENOMEM;
+    }
+}
+
+store_err_t store_set_text(const char *name, const char *text, size_t len, char *err, size_t errlen)
+{
+    err[0] = '\0';
+    if (!store_known(name) || !strcmp(name, EDGE)) {
+        snprintf(err, errlen, "Unknown settings \"%s\".", name ? name : "");
+        return STORE_ENOTFOUND;
+    }
+    char *out = cJSON_malloc(CFG_SMALL_BUF);  // the caller's allocator: its arena scope, or the heap
+    if (!out)
+        return from_cfg(CFG_NO_MEMORY, err, errlen);
+    LOCK();
+    int i = cache_find(name);
+    cJSON *cur = i >= 0 ? cJSON_ParseWithLength(s_pool + s_cache[i].off, s_cache[i].len) : NULL;
+    store_err_t e = cur ? from_cfg(cfg_validate_text(&s_env, name, text, len, cur, out, CFG_SMALL_BUF, err, errlen), err, errlen)
+                        : from_cfg(CFG_NO_MEMORY, err, errlen);
+    cJSON_Delete(cur);
+    size_t n = e == STORE_OK ? strlen(out) : 0;
+    if (e == STORE_OK && !cache_fits(name, n)) {
+        snprintf(err, errlen, "The settings do not fit in the gateway's memory.");
+        e = STORE_ETOOLARGE;
+    }
+    if (e == STORE_OK && !kv_write(&s_cfg_db, name, out, n)) {
+        snprintf(err, errlen, "The settings could not be written to flash.");
+        e = STORE_EFLASH;
+    }
+    if (e == STORE_OK)
+        cache_put(name, out, n);
+    UNLOCK();
+    cJSON_free(out);
+    if (e == STORE_OK) {
+        store_port_log("%s saved", name);
+        notify(name);
+    }
+    return e;
+}
+
+// ---- edgeDevices -------------------------------------------------------------------------------
+
+store_err_t store_edge_save(const char *text, size_t len, char *err, size_t errlen)
+{
+    err[0] = '\0';
+    LOCK();
+    edge_writer_t w = {.gen = s_gen + 1 ? s_gen + 1 : 1};
+    delete_records(w.gen, false);  // never mix with records left under this number
+    cfg_result_t r = cfg_edge_text(&s_env, text, len, true, CFG_EDGE_MAX, emit, &w, err, errlen);
+    if (r == CFG_OK && w.fill && !flush(&w))
+        r = CFG_ABORTED;
+    char manifest[32];
+    snprintf(manifest, sizeof manifest, "@%lu,%lu", (unsigned long)w.gen, (unsigned long)w.idx);
+    if (r == CFG_OK && !kv_write(&s_edge_db, EDGE, manifest, strlen(manifest)))  // the commit point
+        r = CFG_ABORTED;
+    store_err_t e = from_cfg(r, err, errlen);
+    if (e != STORE_OK) {
+        delete_records(w.gen, false);
+        UNLOCK();
+        return e;
+    }
+    uint32_t old = s_gen;
+    s_gen = w.gen;
+    s_count = w.idx;
+    int p = old ? pin_find(old) : -1;
+    if (p >= 0)
+        s_pins[p].doomed = true;  // a GET still reads it: deleted at its last unpin
+    delete_records(0, true);      // the old generation unless pinned, and any stray record
+    UNLOCK();
+    store_port_log("edgeDevices saved: generation %lu, %lu records", (unsigned long)w.gen, (unsigned long)w.idx);
+    notify(EDGE);
+    return STORE_OK;
+}
+
+void store_edge_pin(store_edge_pin_t *p)
+{
+    LOCK();
+    p->gen = s_gen;
+    p->count = s_gen ? s_count : 1;
+    if (s_gen) {
+        int i = pin_find(s_gen);
+        for (int k = 0; i < 0 && k < MAX_PINS; k++)
+            if (!s_pins[k].readers) {
+                i = k;
+                s_pins[k].gen = s_gen;
+                s_pins[k].count = s_count;
+                s_pins[k].doomed = false;
+            }
+        if (i >= 0)
+            s_pins[i].readers++;
+        else
+            p->count = 0;  // MAX_PINS generations in use: the caller answers busy
+    }
+    UNLOCK();
+}
+
+void store_edge_unpin(const store_edge_pin_t *p)
+{
+    if (!p->gen || !p->count)
+        return;
+    LOCK();
+    int i = pin_find(p->gen);
+    if (i >= 0 && --s_pins[i].readers == 0 && s_pins[i].doomed)
+        delete_records(p->gen, false);  // its slot is free now, so kept() no longer holds it
+    UNLOCK();
+}
+
+static size_t default_edge(char *buf, size_t cap)
+{
+    cJSON *d = cfg_default(&s_env, EDGE);
+    char *s = d ? cJSON_PrintUnformatted(d) : NULL;
+    cJSON_Delete(d);
+    size_t n = s ? strlen(s) : 0;
+    if (n >= cap)
+        n = 0;
+    if (n)
+        memcpy(buf, s, n + 1);
+    cJSON_free(s);
+    return n;
+}
+
+size_t store_edge_record(const store_edge_pin_t *p, uint32_t i, char *buf, size_t cap)
+{
+    if (i >= p->count)
+        return 0;
+    if (!p->gen)
+        return default_edge(buf, cap);
+    char key[FDB_KV_NAME_MAX];
+    record_key(key, sizeof key, p->gen, i);
+    struct fdb_kv kv;
+    struct fdb_blob blob;
+    LOCK();
+    size_t n = 0;
+    if (fdb_kv_get_obj(&s_edge_db, key, &kv) && kv.value_len <= cap)
+        n = fdb_blob_read((fdb_db_t)&s_edge_db, fdb_kv_to_blob(&kv, fdb_blob_make(&blob, buf, kv.value_len)));
+    UNLOCK();
+    return n;
+}
+
+size_t store_edge_text(char *buf, size_t cap)
+{
+    store_edge_pin_t p;
+    store_edge_pin(&p);
+    size_t total = 0;
+    for (uint32_t i = 0; i < p.count; i++) {
+        if (cap - total <= STORE_EDGE_RECORD && i + 1 < p.count) {
+            total = 0;  // cannot hold the next full record and a NUL
+            break;
+        }
+        size_t n = store_edge_record(&p, i, buf + total, cap - total - 1);
+        if (!n) {
+            total = 0;
+            break;
+        }
+        total += n;
+    }
+    store_edge_unpin(&p);
+    if (total)
+        buf[total] = '\0';
+    return total;
+}
+
+// ---- factory reset, state, certificates ---------------------------------------------------------
+
+store_err_t store_factory_reset(void)
+{
+    LOCK();
+    store_err_t e = STORE_OK;
+    if (fdb_kv_set_default(&s_cfg_db) != FDB_NO_ERR || fdb_kv_set_default(&s_edge_db) != FDB_NO_ERR ||
+        fdb_kv_set_default(&s_cert_db) != FDB_NO_ERR)
+        e = STORE_EFLASH;
+    s_gen = s_count = 0;
+    memset(s_pins, 0, sizeof s_pins);
+    store_state_set("boot", &s_boot, sizeof s_boot);  // the boot numbering of the log goes on
+    load_all();
+    UNLOCK();
+    store_port_log("factory settings restored");
+    return e;
+}
+
+store_err_t store_state_set(const char *key, const void *data, size_t len)
+{
+    char k[FDB_KV_NAME_MAX];
+    snprintf(k, sizeof k, "st.%s", key);
+    LOCK();
+    bool ok = kv_write(&s_cfg_db, k, data, len);
+    UNLOCK();
+    return ok ? STORE_OK : STORE_EFLASH;
+}
+
+size_t store_state_get(const char *key, void *data, size_t len)
+{
+    char k[FDB_KV_NAME_MAX];
+    snprintf(k, sizeof k, "st.%s", key);
+    struct fdb_blob blob;
+    LOCK();
+    size_t n = fdb_kv_get_blob(&s_cfg_db, k, fdb_blob_make(&blob, data, len));
+    UNLOCK();
+    return n;
+}
+
+static bool cert_key(const char *scope, const char *kind, char *out, size_t len)
+{
+    static const char *const scopes[] = {"mqtt", "port1"};
+    static const char *const kinds[] = {"ca", "cert", "key"};
+    bool sok = false, kok = false;
+    for (size_t i = 0; i < 2; i++)
+        sok |= scope && strcmp(scope, scopes[i]) == 0;
+    for (size_t i = 0; i < 3; i++)
+        kok |= kind && strcmp(kind, kinds[i]) == 0;
+    if (!sok || !kok)
+        return false;
+    snprintf(out, len, "%s.%s", scope, kind);
+    return true;
+}
+
+store_err_t store_cert_set(const char *scope, const char *kind, const void *pem, size_t len)
+{
+    char key[24];
+    if (!cert_key(scope, kind, key, sizeof key) || len == 0 || len > STORE_CERT_MAX)
+        return STORE_EINVALID;
+    LOCK();
+    bool ok = kv_write(&s_cert_db, key, pem, len);
+    UNLOCK();
+    if (ok)
+        notify(scope);  // the owning module reconnects with new material
+    return ok ? STORE_OK : STORE_EFLASH;
+}
+
+char *store_cert_get(const char *scope, const char *kind)
+{
+    char key[24];
+    if (!cert_key(scope, kind, key, sizeof key))
+        return NULL;
+    LOCK();
+    char *pem = kv_read(&s_cert_db, key, NULL);
+    UNLOCK();
+    return pem;
+}
+
+// ---- log -------------------------------------------------------------------------------------
+
+uint32_t store_boot_count(void) { return s_boot; }
+
+void store_log_append(const char *line, size_t len)
+{
+    if (!s_log_ok || len == 0)
+        return;
+    if (len > STORE_LOG_LINE_MAX)
+        len = STORE_LOG_LINE_MAX;
+    uint8_t rec[sizeof(log_hdr_t) + STORE_LOG_LINE_MAX];
+    log_hdr_t h = {.wall_ms = store_port_wall_ms(), .boot = s_boot, .uptime_ms = store_port_uptime_ms()};
+    memcpy(rec, &h, sizeof h);
+    memcpy(rec + sizeof h, line, len);
+    struct fdb_blob blob;
+    LOCK();
+    fdb_tsl_append(&s_log_db, fdb_blob_make(&blob, rec, sizeof h + len));
+    UNLOCK();
+}
+
+// The log is read in batches: the lock is held only while a batch is copied out of flash, never
+// while the caller sends it (an HTTP client can be slow, and the same lock guards every save).
+#define LOG_BATCH 32
+
+typedef struct {
+    store_log_meta_t meta;
+    uint16_t len;
+    char text[STORE_LOG_LINE_MAX + 1];
+} log_line_t;
+
+typedef struct {
+    log_line_t lines[LOG_BATCH];
+    int n;
+    fdb_time_t last;  // sequence number of the last record copied
+    uint8_t rec[sizeof(log_hdr_t) + STORE_LOG_LINE_MAX + 1];
+} log_batch_t;
+
+static bool batch_cb(fdb_tsl_t tsl, void *arg)
+{
+    log_batch_t *b = arg;
+    b->last = tsl->time;
+    struct fdb_blob blob;
+    size_t n = tsl->log_len > sizeof(log_hdr_t) + STORE_LOG_LINE_MAX ? sizeof(log_hdr_t) + STORE_LOG_LINE_MAX : tsl->log_len;
+    n = fdb_blob_read((fdb_db_t)&s_log_db, fdb_tsl_to_blob(tsl, fdb_blob_make(&blob, b->rec, n)));
+    if (n < sizeof(log_hdr_t))
+        return false;  // not a record of this format; skip it
+    log_hdr_t h;
+    memcpy(&h, b->rec, sizeof h);
+    log_line_t *l = &b->lines[b->n++];
+    l->meta = (store_log_meta_t){.wall_ms = h.wall_ms, .boot = h.boot, .uptime_ms = h.uptime_ms};
+    l->len = (uint16_t)(n - sizeof h);
+    memcpy(l->text, b->rec + sizeof h, l->len);
+    l->text[l->len] = '\0';
+    return b->n == LOG_BATCH;  // FlashDB stops when the callback returns true
+}
+
+void store_log_iter(store_log_fn fn, void *ctx)
+{
+    if (!s_log_ok)
+        return;
+    log_batch_t *b = malloc(sizeof *b);
+    if (!b)
+        return;
+    fdb_time_t from = 0;  // sequence numbers start at 1
+    for (;;) {
+        b->n = 0;
+        LOCK();
+        fdb_time_t to = s_log_seq;
+        if (from <= to)
+            fdb_tsl_iter_by_time(&s_log_db, from, to, batch_cb, b);
+        UNLOCK();
+        bool more = b->n == LOG_BATCH;
+        for (int i = 0; i < b->n; i++) {
+            if (!fn(&b->lines[i].meta, b->lines[i].text, b->lines[i].len, ctx)) {
+                more = false;
+                break;
+            }
+        }
+        if (!more)
+            break;
+        from = b->last + 1;
+    }
+    free(b);
+}

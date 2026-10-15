@@ -23,9 +23,21 @@ BUILD = {
             'third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c '
             'components/board/crc32.c -o ' + EXE,
 }
+FDB = ('third_party/flashdb/src/fdb.c third_party/flashdb/src/fdb_kvdb.c third_party/flashdb/src/fdb_tsdb.c '
+       'third_party/flashdb/src/fdb_utils.c third_party/flashdb/port/fal/src/fal.c '
+       'third_party/flashdb/port/fal/src/fal_flash.c third_party/flashdb/port/fal/src/fal_partition.c')
+STORE = (CC.replace('-Werror ', '') + '-Wno-implicit-function-declaration -Icomponents/store/include -Icomponents/store/port '
+         '-Ithird_party/flashdb/inc -Ithird_party/flashdb/port/fal/inc -Icomponents/cfgmodel/include '
+         '-Icomponents/proto/include -Ithird_party/cjson test/host/test_store.c test/host/nor_sim.c '
+         'components/store/store.c components/store/fal_nor.c components/cfgmodel/cfgmodel.c components/proto/ipacl.c '
+         'components/proto/jsonscan.c third_party/cjson/cJSON.c ' + FDB + ' -lm -o ' + EXE)
+BUILD['store'] = STORE
+BUILD['store_small'] = STORE.replace('test/host/test_store.c', '-DSTORE_CACHE_SIZE=3800u test/host/test_store.c')
 # test_bind reads the records tools/test_provision.py signs (main() writes them first).
 SAMPLE = os.path.join(FW, 'test/host/build/bind_sample.bin')
-ARGS = {'install': [], 'bind': [SAMPLE]}
+ARGS = {'install': [], 'bind': [SAMPLE], 'store': [], 'store_small': []}
+# Extra environments to run the test with: a mutant is caught when any run fails.
+RUNS = {'store': [{}, {'STORE_CUTS': '1'}]}
 # (file, original text, mutated text, what the mutant breaks[, test: 'install' by default])
 M = [
  ('boot/install.c', '        if (p == 0)\n            memset(buf, 0xFF, sizeof IMG_MAGIC);  // the magic is programmed last, on its own\n', '', 'magic programmed with its page'),
@@ -53,7 +65,18 @@ M = [
  ('components/ota/bind.c', '        return BIND_ENONE;  // never provisioned', '        return BIND_OK;  // never provisioned', 'unprovisioned board runs', 'bind'),
  ('components/ota/bind.c', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        return BIND_EREAD;', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        memset(rec, 0, BIND_LEN);', 'read error taken for a record', 'bind'),
  ('boot/install.c', ' || !staging_gone(in))  // never installed again', ' || (0 && staging_gone(in)))  // never installed again', 'staging erase not verified'),
- ('components/ota/ota_app.c', ' || spi->read(spi, SPI_STAGING, m, sizeof m) || memcmp(m, erased, sizeof m))', ' || (0 && spi->read(spi, SPI_STAGING, m, sizeof m) && memcmp(m, erased, sizeof m)))', 'upload erase not verified')
+ ('components/ota/ota_app.c', ' || spi->read(spi, SPI_STAGING, m, sizeof m) || memcmp(m, erased, sizeof m))', ' || (0 && spi->read(spi, SPI_STAGING, m, sizeof m) && memcmp(m, erased, sizeof m)))', 'upload erase not verified'),
+ ('components/store/store.c', '    if (s_gen)\n        delete_records(0, true);\n    else if (has_records())', '    delete_records(0, true);\n    if (has_records())', 'boot deletes records without a manifest', 'store'),
+ ('components/store/store.c', 'static bool kept(uint32_t g) { return g == s_gen || pin_find(g) >= 0; }', 'static bool kept(uint32_t g) { return g == s_gen; }', 'pinned generation not kept', 'store'),
+ ('components/store/store.c', '    if (r == CFG_OK && !kv_write(&s_edge_db, EDGE, manifest, strlen(manifest)))  // the commit point\n        r = CFG_ABORTED;\n', '', 'no manifest commit', 'store'),
+ ('components/store/store.c', '    delete_records(0, true);      // the old generation unless pinned, and any stray record\n', '', 'old generation never deleted', 'store'),
+ ('components/store/store.c', '    if (e != STORE_OK) {\n        delete_records(w.gen, false);', '    if (e != STORE_OK) {', 'failed save leaves its records', 'store'),
+ ('components/store/store.c', '            if (s_cache[k].off > s_cache[i].off)\n                s_cache[k].off -= s_cache[i].len;\n', '', 'cache offsets not moved', 'store'),
+ ('components/store/store.c', '    return s_used - (i >= 0 ? s_cache[i].len : 0) + len <= sizeof s_pool;', '    return s_used + len <= sizeof s_pool;', 'cache counts the old text too', 'store_small'),
+ ('components/store/store.c', '            doc = cfg_load(&s_env, name, parsed, err, sizeof err);', '            doc = cJSON_Duplicate(parsed, true);', 'no re-validation at boot', 'store'),
+ ('components/store/store.c', '        delete_records(p->gen, false);  // its slot is free now, so kept() no longer holds it', '        ;', 'doomed generation kept after unpin', 'store'),
+ ('third_party/flashdb/src/fdb_kvdb.c', '    if (rescan) { /* SBIOT patch, see check_and_recovery_kv_cb */\n        goto __retry;\n    }\n', '', 'FlashDB recovery stops early', 'store'),
+ ('components/store/store.c', '    UNLOCK();\n        bool more = b->n == LOG_BATCH;', '        bool more = b->n == LOG_BATCH;', 'log callback under the lock', 'store')
 ]
 
 
@@ -71,10 +94,14 @@ def main():
             if b.returncode:
                 res = 'BUILD ERROR (fix the mutant): ' + (b.stderr.splitlines() or [''])[0]
             else:
-                env = dict(os.environ, OTA_QUICK='1', ASAN_OPTIONS='detect_leaks=0')
-                r = subprocess.run([EXE] + ARGS[test[0] if test else 'install'], capture_output=True, text=True, timeout=600, env=env)
-                res = 'caught' if r.returncode else 'SURVIVED'
-                caught += r.returncode != 0
+                kind = test[0] if test else 'install'
+                fail = False
+                for extra in RUNS.get(kind, [{}]):
+                    env = dict(os.environ, OTA_QUICK='1', ASAN_OPTIONS='detect_leaks=0', **extra)
+                    r = subprocess.run([EXE] + ARGS[kind], capture_output=True, text=True, errors='replace', timeout=600, env=env)
+                    fail = fail or r.returncode != 0
+                res = 'caught' if fail else 'SURVIVED'
+                caught += fail
         finally:
             open(path, 'w').write(src)
         print('%-36s %s' % (what, res))

@@ -1,0 +1,91 @@
+# Plan 05a: storage logic on FlashDB, host first
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** `components/store` runs on FlashDB over any `nor_t`. It keeps:
+- every small config as compact text in a 20 KB cache;
+- `edgeDevices` in 8 KB records by generation, with commit, cleanup and GET pinning (spec §9.4);
+- certificates, runtime state and the persistent log.
+
+It is proven on the host against the NOR simulator with power cuts.
+
+**Architecture:**
+- **`third_party/flashdb`:** FlashDB 2.2.0, as the ESP32 firmware uses it, plus one patch (B1).
+- **`components/store`:**
+  - `fal_nor.c`: a FAL device over a `nor_t`, limited to FlashDB's 1 MB at offset 0;
+  - `port/{fdb_cfg,fal_cfg}.h`: the FlashDB configuration and the four partitions of spec §5.2;
+  - `store.c`: ported from `firmware/components/store/store.c`. The platform supplies `store_port.h`: a recursive lock, the clocks, and a log line.
+- **The text cache:** one 20 KB region. Saving a config moves the others to close the gap, then appends the new text.
+- **`edgeDevices`:**
+  - `store_edge_save` runs `cfg_edge_text` (strict) and writes its output into 8 KB records `ed.<g>.<i>` through a static 8 KB buffer;
+  - the manifest `@<g>,<count>` is the commit point;
+  - afterwards every record that is neither the new generation nor pinned is deleted;
+  - a GET pins a generation (`store_edge_pin` / `store_edge_record` / `store_edge_unpin`), and a superseded pinned generation is deleted at its last unpin.
+- **Board side:** Plan 05b provides the FAL flash (SPI4 with DMA and a bounce buffer), the FreeRTOS port, `syslog` and the heap wrapper.
+
+**Tech Stack:** C11, gcc with ASan/UBSan, GNU make, FlashDB 2.2.0, cJSON 1.7.19, the Plan 03 text pipeline (`cfg_validate_text`, `cfg_edge_text`).
+
+**Spec:** `stm32/docs/specs/2026-10-14-stm32-firmware-design.md` §5.3 (static budget), §5.5 (`store` text cache), §9.1 (FlashDB, the patch), §9.4 (records, commit, cleanup, pinning), §12.1 ("Store Edge" row). **Roadmap:** row 05, split into 05a (host) and 05b (board).
+
+## How this plan was made
+
+As with Plans 02 and 04b, the code was written and run before this document. The tests were written first, against the new `store.h`; mutants then proved them. The tasks record what was done.
+
+## Findings
+
+- **B1. FlashDB 2.2.0 loses the old value of a KV whose rewrite was cut.**
+  - How it was found: the power-cut matrix on a save that collects garbage. A cut while the manifest's name or value was being programmed (operations 83 and 84 of 89) left no manifest after the reboot, so the store showed the default model.
+  - Cause: `_fdb_kv_load` → `check_and_recovery_kv_cb` marks the half-written KV (`PRE_WRITE`) as `ERR_HDR` and returns `true`, which stops the scan. The old value (`PRE_DELETE`) lies further on and is never recovered in that load, and lookups only see `WRITE` KVs. Upstream `master` has the same code.
+  - Patch (`third_party/patches/flashdb-2.2.0-recovery-rescan.patch`): scan again until no half-written KV is left. With it, all 89 cut points and 150 runs with three cuts end on the old or the new model.
+- **B2. The store made B1 worse.** Its boot cleanup deleted every `ed.*` record not of the manifest's generation. With the manifest missing, that meant all of them, so even the next boot, where FlashDB would have recovered the manifest, could not get the model back. Now a boot without a manifest deletes nothing, and the next successful save removes whatever it does not keep (`test_no_manifest_keeps_records`, RED then GREEN).
+- **B3. A power cut leaks memory in the simulation.** The `longjmp` leaves the store holding heap blocks; a real cut clears the RAM. The cut matrices therefore run in a second pass (`STORE_CUTS=1`) without leak detection. The cases run first, with it.
+
+## Rulings (for review)
+
+1. **Edge sector size 16 KB**, against 64 KB on the ESP32. An 8 KB record and its header fit, and 16 sectors in 256 KB keep the garbage collection fine-grained. Cost if wrong: more sector headers (a few hundred bytes).
+2. **A static 8 KB record buffer** in the store, instead of a block from the arena. Plan 03 measured the Edge pipeline close to the arena's size. §5.3 is updated. Cost if wrong: 8 KB of AXI.
+3. **At most 4 pinned generations.** A further GET gets `count = 0`, which the web layer answers with 503 (§9.4). Cost if wrong: a 503 under an unusual load of slow GETs during repeated saves.
+4. **The text cache is 20 KB, as in spec §5.3.** The defaults take 3.7 KB. A save that does not fit is 413, with cache and flash unchanged (`test_cache_full`, built with a 3800-byte cache). Cost if wrong: very long publish/subscribe/linkage lists hit 413.
+5. **The scratch buffer of `store_set_text`** (`CFG_SMALL_BUF`) comes from `cJSON_malloc`, so it uses the caller's arena scope, or the heap otherwise. The same holds for `store_get`'s tree. `store_get_json` returns a heap copy, keeping the ESP32 contract (`api.c` frees it).
+6. **With no model saved,** a GET pins generation 0, which is one record holding the default text `[]`.
+7. **FlashDB's own messages** go to `printf` (`FDB_PRINT`). On the board, Plan 05b routes them to the log.
+
+## Review Focus
+
+1. **A power cut at any point of an edge save,** including during garbage collection and during the manifest rewrite. Afterwards the model must be exactly the old one or exactly the new one, with no stray records, and the store must keep working. Pinned by the matrix (89 cut points, garbage collection asserted), 150 runs with three cuts, and a save after each.
+2. **GET against POST:**
+   - a pinned generation stays whole through new saves and through 30 saves that keep collecting garbage;
+   - it is deleted at the last unpin;
+   - pins do not survive a reboot.
+
+   Pinned by `test_pinning` and `test_pin_through_gc`.
+3. **A rejected save changes nothing:** invalid, not JSON, too many points, or a cache that is full. The committed text, the generation and the flash all stay the same. Pinned by `test_edge_save_and_read`, `test_set_get` and `test_cache_full`.
+4. **The cache's moves:** after a save, every other config's text is intact (`test_set_get`).
+5. **Re-validation at boot:** a copy from older firmware gets the missing keys, and an unusable copy falls back to the default (`test_revalidate_at_boot`).
+
+## Files
+
+| Path | Responsibility |
+|---|---|
+| `stm32/firmware/third_party/flashdb/*`, `third_party/patches/flashdb-2.2.0-recovery-rescan.patch` | FlashDB 2.2.0, the patch, provenance |
+| `stm32/firmware/components/store/{include/store.h,include/store_port.h,include/fal_nor.h}` | API, port, FAL device |
+| `stm32/firmware/components/store/{store.c,fal_nor.c,port/fdb_cfg.h,port/fal_cfg.h}` | The store, FAL over `nor_t`, configuration |
+| `stm32/firmware/test/host/test_store.c`, `test/host/Makefile` | Cases, power-cut matrices; `test_store_small` |
+| `stm32/firmware/test/host/mutants_ota.py` | 11 store mutants, among them the FlashDB patch |
+
+## Tasks
+
+### Task 1: FlashDB
+
+- [x] Vendored from the 2.2.0 tag (SHA-256 recorded in `third_party/flashdb/README.md`). `src`, `inc` and `port/fal` are identical to the ESP32 copy.
+
+### Task 2: store and its tests
+
+- [x] `store.h` written, then `test_store.c` against it, then `store.c` and `fal_nor.c`.
+- [x] `STORE_QUICK=1 build/test_store`: the cases pass. The one first failure was in the test itself: a 128-point model is invalid, not too large.
+- [x] The cut pass with garbage collection failed at operations 83 and 84 (B1, B2). Fixed: the FlashDB patch, and the boot cleanup no longer runs without a manifest. Then `test_store: ok` in both passes and in `test_store_small`.
+
+### Task 3: mutants and the whole suite
+
+- [x] `python3 stm32/firmware/test/host/mutants_ota.py` → `mutants: 37 of 37 caught` (26 earlier, plus 11 store mutants, among them the FlashDB patch).
+- [x] `make -C stm32/firmware/test/host` → every suite ok.

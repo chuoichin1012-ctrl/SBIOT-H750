@@ -146,7 +146,7 @@ Mọi thao tác trên slot **xóa** theo sector 4 KB và **ghi** theo page 256 B
 |---|---|---|---|
 | ITCM | 64 KB | Code nóng chép từ QSPI lúc khởi động: kernel FreeRTOS, các ISR (ETH, USART, DMA, TIM), `memcpy`/`memset`, lõi bignum của mbedTLS | Section `.itcm_text` |
 | DTCM | 128 KB | MSP 4 KB, `.data`/`.bss` nhỏ, stack tĩnh của mọi task **trừ** `web` và `edge_tcpN` (khoảng 95 KB theo §6.1, kể cả `init`, timer và `cmux_rx`), TCB. Tổng DTCM ≤ 120 KB, kiểm bằng file map của linker | ETH và DMA1/2 không truy cập được vùng này. §5.4 bảo đảm không DMA nào đọc hay ghi trực tiếp ở đây |
-| AXI SRAM (D1) | 512 KB | **Tĩnh** (các section, tổng khoảng 185 KB): arena JSON 64 KB (§9.3), buffer văn bản Edge 48 KB (§9.3), mô hình Edge lúc chạy và cache giá trị khoảng 20 KB, cache văn bản cấu hình của `store` khoảng 20 KB, stack của `web` và `edge_tcpN` khoảng 33 KB. **Heap** (`heap_5`, vùng heap duy nhất) **256 KB**, dự kiến dùng bên trong như sau: 3 phiên TLS khoảng 105 KB cộng đỉnh lúc handshake khoảng 30 KB, Mongoose khoảng 40 KB, buffer report ≤ 26 KB (§9.4), buffer mạng coreMQTT 2 × 4 KB, các cấp phát nhỏ lúc chạy khoảng 20 KB, tổng khoảng 229 KB. **Mỗi allocation chỉ tính một lần**, hoặc ở phần tĩnh, hoặc ở phần heap | Cacheable (write-back). Phần AXI chưa cấp khoảng 71 KB. Phần heap còn dư khoảng 27 KB, kiểm bằng §12.3 |
+| AXI SRAM (D1) | 512 KB | **Tĩnh** (các section, tổng khoảng 185 KB): arena JSON 64 KB (§9.3), buffer văn bản Edge 48 KB (§9.3), mô hình Edge lúc chạy và cache giá trị khoảng 20 KB, cache văn bản cấu hình của `store` 20 KB cộng bộ đệm bản ghi Edge 8 KB, stack của `web` và `edge_tcpN` khoảng 33 KB. **Heap** (`heap_5`, vùng heap duy nhất) **256 KB**, dự kiến dùng bên trong như sau: 3 phiên TLS khoảng 105 KB cộng đỉnh lúc handshake khoảng 30 KB, Mongoose khoảng 40 KB, buffer report ≤ 26 KB (§9.4), buffer mạng coreMQTT 2 × 4 KB, các cấp phát nhỏ lúc chạy khoảng 20 KB, tổng khoảng 229 KB. **Mỗi allocation chỉ tính một lần**, hoặc ở phần tĩnh, hoặc ở phần heap | Cacheable (write-back). Phần AXI chưa cấp khoảng 71 KB. Phần heap còn dư khoảng 27 KB, kiểm bằng §12.3 |
 | SRAM1 (D2) | 128 KB | Descriptor, buffer RX và buffer TX của ETH, heap `MEM` của lwIP 64 KB, pool pbuf, ring DMA RX và buffer TX của USART1/2/3, buffer trung chuyển SPI4. Số lượng và kích thước chốt trong bảng pool lwIP (§5.6) | **Non-cacheable qua MPU.** Startup bật clock SRAM D2 trước khi khởi tạo `.data` |
 | SRAM2+3 (D2) | 160 KB | Ring serial → mạng 2 × 8 KB, `bufferOffline` 2 × 32 KB, outbox MQTT 64 KB. Còn 16 KB cho metadata và căn lề | Cacheable |
 | SRAM4 (D3) | 64 KB | Ring syslog 32 KB, ring của `mqtt_io` 2 × 12 KB, **buffer BDMA của ADC3** (800 B) trong region non-cacheable 1 KB riêng ở 0x3800FC00 (§6.6). Còn khoảng 7 KB | Region 1 KB của ADC đặt non-cacheable qua MPU, phần còn lại cacheable |
@@ -208,7 +208,9 @@ Nhờ quy tắc này, stack và buffer trong DTCM hay AXI đều an toàn với 
 | `iomgr` (JSON của IO) | `web`, `io` | Theo task gọi |
 
 - **`store` lưu cache bằng văn bản, không bằng cây.** Bản ESP32 giữ lâu dài một cây cJSON cho mỗi cấu hình (`s_cache`), cách này không đứng được nếu không có PSRAM.
-  - Bản STM32 giữ văn bản JSON compact của từng cấu hình nhỏ, tổng khoảng 20 KB trong AXI, có mutex của `store`.
+  - Bản STM32 giữ văn bản JSON compact của từng cấu hình nhỏ, tổng **20 KB** trong AXI, có mutex của `store`. Văn bản mặc định của mọi cấu hình chỉ chiếm khoảng 3,7 KB.
+    - Một lần lưu mà làm cache vượt 20 KB thì trả 413 `{ "error": "The settings do not fit in the gateway's memory." }`. Khi đó cả cache lẫn flash giữ nguyên.
+    - Ghi bản ghi `edgeDevices` dùng một bộ đệm tĩnh 8 KB riêng của `store`, không lấy từ arena. Lý do: arena đã gần đầy với đỉnh của pipeline Edge.
   - `store_get_json` **giữ nguyên hợp đồng của bản ESP32**: trả về một bản sao cấp từ heap, bên gọi sở hữu và tự giải phóng. Lý do: `api.c` gọi `free()` trên kết quả.
   - `store_get` parse văn bản ra cây, dùng bộ cấp phát của task gọi.
   - `edgeDevices` không được cache: khi cần thì đọc lại từ các bản ghi trong flash (§9.4).
@@ -623,6 +625,11 @@ Quy tắc riêng của bản STM32:
   - validate lại toàn bộ cấu hình khi khởi động;
   - log TSDB đánh khóa bằng số thứ tự tăng dần.
 - **Cần đo:** thời gian mở DB khi đọc qua SPI. Ước tính khoảng 5.300 lần đọc nhỏ, mỗi lần khoảng 5 µs, tổng chừng 30 ms.
+- **FlashDB 2.2.0 có một bản vá** (`third_party/patches/flashdb-2.2.0-recovery-rescan.patch`, Plan 05a).
+  - Lỗi: lúc mount, khi gặp một KV ghi dở (`PRE_WRITE`), FlashDB đánh dấu nó hỏng rồi **dừng vòng duyệt khôi phục**. Giá trị cũ của chính KV đó (`PRE_DELETE`, nằm sau trong vòng duyệt) vì vậy không được khôi phục, và đọc ra như không tồn tại.
+  - Ma trận cắt điện của `test_store` bắt được lỗi này khi cắt điện lúc đang ghi lại manifest, trong lúc DB đầy tới mức phải dọn rác. Kết quả là mất manifest. `master` của upstream vẫn còn lỗi này.
+  - Bản vá: duyệt lại cho tới khi không còn KV ghi dở.
+- Mỗi DB dùng sector 16 KB. Riêng `edge` chứa vừa bản ghi 8 KB cùng header của nó, và dọn rác mịn trong 256 KB.
 
 ### 9.2 Vì sao phải xử lý theo node
 
@@ -714,8 +721,10 @@ Có hai vùng tĩnh riêng trong AXI, vì chúng có vòng đời khác nhau.
 **Commit và dọn dẹp** (FlashDB không có giao dịch nhiều key, nên tính nguyên tử dựa vào thứ tự sau):
 1. Ghi đủ các bản ghi `ed.<g>.*`.
 2. Ghi manifest `edgeDevices = @<g>,<count>`. **Đây là điểm commit.**
-3. Xóa các key `ed.<gen>.*` của generation cũ, như `store.c:141`. Nếu đang có `GET` đọc generation cũ thì chờ `GET` đó xong mới xóa (xem bên dưới).
+3. Xóa mọi key `ed.*` không thuộc generation mới và không đang bị một `GET` ghim. Như vậy là xóa generation cũ (nếu không ai đọc), cùng mọi bản ghi lạc còn sót. Generation cũ mà đang bị ghim thì được xóa ở lần bỏ ghim cuối (xem bên dưới).
 4. **Lúc boot**, xóa mọi key `ed.*` không thuộc generation của manifest. Đó là bản ghi mồ côi do mất điện giữa bước 1 và 2, hoặc giữa bước 2 và 3.
+   - **Không có manifest thì không xóa gì**, vì không có gì chứng minh các bản ghi đó là mồ côi; lần lưu thành công kế tiếp sẽ dọn chúng ở bước 3.
+   - Ở bước 1, các key `ed.<g>.*` cũ của chính số generation sắp ghi cũng được xóa trước, để không bao giờ lẫn với bản ghi còn sót.
 
 Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một generation đầy đủ.
 
@@ -723,6 +732,8 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
 - `GET` **ghim** generation đọc được từ manifest lúc bắt đầu, bằng một bộ đếm người đọc của `store`.
 - Gửi tuần tự các bản ghi của generation đó bằng `mg_http_write_chunk`. Chỉ gửi bản ghi kế tiếp khi `c->send.len` < 4 KB.
 - Xong, hoặc connection đóng, thì bỏ ghim.
+- `store` giữ tối đa 4 generation bị ghim cùng lúc. Vượt quá thì `GET` trả 503.
+- Khi chưa lưu model nào, `GET` gửi văn bản mặc định (`[]`) như một bản ghi duy nhất.
 - Có test: `GET` chạy xen với `POST`, và trong lúc FlashDB đang dọn rác.
 
 **Khởi động:**

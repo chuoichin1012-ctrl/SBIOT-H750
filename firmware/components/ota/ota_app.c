@@ -9,17 +9,11 @@ static int fail(ota_stage_t *st, int e)
     return st->error;
 }
 
-int ota_stage_begin(ota_stage_t *st, nor_t *spi, const handoff_t *ho, uint32_t total)
+int ota_stage_begin(ota_stage_t *st, nor_t *spi, uint32_t total)
 {
     memset(st, 0, sizeof *st);
     st->spi = spi;
     st->total = total;
-    bootrec_t r;
-    int rr = bootrec_read(spi, &r);
-    if (rr < 0)
-        return fail(st, OTA_EFLASH);  // the boot state is unknown: never start an upload
-    if (ho->degraded || (rr == BOOTREC_VALID && r.state != BR_CONFIRMED))
-        return fail(st, OTA_EBUSY);
     if (total > SLOT_SIZE)
         return fail(st, OTA_ETOOBIG);
     if (total < IMG_HDR_SIZE + 8)
@@ -93,43 +87,5 @@ int ota_stage_finish(ota_stage_t *st)
         return fail(st, OTA_EIMAGE);
     if (r != IMG_OK || memcmp(back.raw, st->hdr.raw, IMG_CORE))
         return fail(st, OTA_EFLASH);
-    bootrec_t rec;
-    int rr = bootrec_read(st->spi, &rec);
-    if (rr < 0)
-        return fail(st, OTA_EFLASH);
-    if (rr == BOOTREC_NONE)
-        memset(&rec, 0, sizeof rec);
-    rec.state = BR_PENDING;
-    rec.offset = rec.attempts = rec.verify_fail = rec.trial = 0;
-    rec.reason = RSN_NONE;
-    memcpy(rec.staging, st->hdr.raw, IMG_CORE);
-    return bootrec_write(st->spi, &rec) == NOR_OK ? OTA_OK : fail(st, OTA_EFLASH);
-}
-
-int ota_confirm(nor_t *spi)
-{
-    bootrec_t r;
-    if (bootrec_read(spi, &r) != BOOTREC_VALID)
-        return OTA_EFLASH;
-    if (r.state == BR_CONFIRMED)
-        return OTA_OK;
-    if (r.state != BR_TRIAL)
-        return OTA_EBUSY;
-    r.state = BR_CONFIRMED;
-    r.offset = r.attempts = r.verify_fail = 0;
-    r.reason = RSN_CONFIRMED;
-    return bootrec_write(spi, &r) == NOR_OK ? OTA_OK : OTA_EFLASH;
-}
-
-int ota_rollback(nor_t *spi)
-{
-    bootrec_t r;
-    if (bootrec_read(spi, &r) != BOOTREC_VALID)
-        return OTA_EFLASH;
-    if (r.state != BR_TRIAL)
-        return OTA_EBUSY;
-    r.state = BR_RESTORE;
-    r.offset = r.attempts = r.verify_fail = 0;
-    r.reason = RSN_APP_ROLLBACK;
-    return bootrec_write(spi, &r) == NOR_OK ? OTA_OK : OTA_EFLASH;
+    return OTA_OK;
 }

@@ -64,10 +64,10 @@ $(BUILD)/mkimage_sample.img: ../../tools/mkimage.py ../../tools/test_mkimage.py
 	mkdir -p $(BUILD)
 	python3 ../../tools/test_mkimage.py $@
 
-INSTALL := ../../boot/install.c ../../components/ota/bootrec.c ../../components/ota/handoff.c ../../components/ota/ota_app.c
+INSTALL := ../../boot/install.c ../../components/ota/ota_app.c
 
-# About 2 minutes under ASan: two matrices cut power at every one of about 2 500 operations, plus
-# 600 runs with three cuts each. OTA_QUICK=1 skips the matrices (mutants_ota.py uses it).
+# Under ASan: three matrices cut power at every operation of an install, a restore and a seeding, plus
+# 300 runs with up to three cuts each. OTA_QUICK=1 skips the matrices (mutants_ota.py uses it).
 $(BUILD)/test_install: test_install.c nor_sim.c $(INSTALL) $(OTA)
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -I../../boot $^ -o $@

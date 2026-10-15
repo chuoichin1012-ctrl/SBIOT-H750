@@ -4,7 +4,7 @@
     python3 stm32/firmware/test/host/mutants_ota.py      (from the repository root)
 
 Builds test/host/test_install.c once per mutant with the host flags and runs it quickly
-(OTA_QUICK=1 skips the two power-cut matrices). Every source file is restored afterwards.
+(OTA_QUICK=1 skips the power-cut matrices). Every source file is restored afterwards.
 Prints one line per mutant and "mutants: N of N caught"; exits 1 when one survives.
 """
 import os
@@ -20,29 +20,20 @@ BUILD = ('gcc -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsani
          '-o ' + EXE)
 # (file, original text, mutated text, what the mutant breaks)
 M = [
- ("boot/install.c", "if (r->trial + 1 > 3) {", "if (r->trial + 1 > 4) {", "4 trials"),
- ("boot/install.c", "            enter_restore(in, RSN_TRIAL_IMAGE_BAD);  // never jump into a bad image, even in TRIAL\n            break;", "            ;", "TRIAL runs a bad image"),
- ("boot/install.c", "        if (!vs(in)) {\n            set_state(in, BR_CONFIRMED, RSN_STAGING_BAD);", "        if (0) {\n            set_state(in, BR_CONFIRMED, RSN_STAGING_BAD);", "PENDING skips the staging check"),
- ("boot/install.c", "            if (!vb(in)) {  // checked before QSPI is erased", "            if (0) {  // checked before QSPI is erased", "RESTORE skips the backup check"),
- ("boot/install.c", "        in->rec.attempts++;\n", "", "attempts not counted"),
- ("boot/install.c", "    if (vq(in)) {\n        in->rows |= INSTALL_ROW(4);", "    if (0) {\n        in->rows |= INSTALL_ROW(4);", "no row 4"),
- ("boot/install.c", "        in->ho->ram_fail++;  // counted before anything else", "        (void)0;", "ram_fail not counted"),
- ("boot/install.c", "        if (memcmp(buf, back, n))\n            return COPY_MISMATCH;", "", "no read-back compare"),
- ("boot/install.c", "        if (vb(in) && !memcmp(in->hb.raw, r->backup, IMG_CORE)) {", "        if (1) {", "BACKUP not verified"),
- ("boot/install.c", "        if (vq(in) && !memcmp(in->hq.raw, r->staging, IMG_CORE)) {", "        if (1) {", "VERIFY passes everything"),
- ("boot/install.c", "        if (r->state == BR_WRITE && exhausted && vb(in)) {", "        if (0) {", "no row 8"),
- ("components/ota/bootrec.c", "    return (int32_t)(a - b) > 0;", "    return a > b;", "seq without wrap-around"),
- ("components/ota/bootrec.c", "        e = spi->program(spi, slot + NOR_PAGE, b + NOR_PAGE, NOR_PAGE);  // the CRC page last", "        e = 0;", "CRC page never written"),
- ("components/ota/ota_image.c", "    if (memcmp(sha, hdr.sha256, 32))\n        return IMG_ESHA;", "", "SHA not checked"),
- ("components/ota/ota_app.c", "    if (ho->degraded || (rr == BOOTREC_VALID && r.state != BR_CONFIRMED))", "    if (0 && (ho->degraded || (rr == BOOTREC_VALID && r.state != BR_CONFIRMED)))", "OTA not refused in TRIAL"),
- ("components/ota/ota_app.c", "    if (memcmp(sha, st->hdr.sha256, 32))\n        return fail(st, OTA_EIMAGE);", "", "stage SHA not checked"),
- ("boot/install.c", "    } else if (vq(in)) {\n        set_state(in, BR_CONFIRMED, RSN_RESCUE_RETRY);", "    } else if (0) {\n        set_state(in, BR_CONFIRMED, RSN_RESCUE_RETRY);", "rescue retry halts with QSPI good"),
- ("boot/install.c", "    if (!put(in))\n        return rec_failed(in);\n    return decide(in);\n}", "    if (!put(in))\n        return ram_path(in);\n    return decide(in);\n}", "rescue retry skips rows 3-4"),
- ("boot/install.c", "        if (e)\n            return e;  // a read timeout stays a timeout (row 2)", "        if (e)\n            return NOR_EIO;", "read timeout becomes EIO"),
- ("boot/install.c", "    if (rr < 0)\n        return rec_failed(in);  // the record cannot be read: rows 3-6, never \"no record\"", "    if (rr < 0)\n        rr = BOOTREC_NONE;", "unreadable record = no record"),
- ("boot/install.c", "    if (r == IMG_EREAD) {\n        in->read_error = true;\n        return false;\n    }\n", "", "read error cached as a bad image"),
- ("boot/install.c", "    if (!vq(in) && !vb(in) && !vs(in))\n        return nothing_valid(in);  // row 1 comes before every recovery branch\n", "", "row 1 not first on a record failure"),
- ("boot/install.c", "        if (c == IMG_EREAD)\n            in->read_error = true;  // unreadable, not proven bad: nothing_valid() decides again\n", "", "RAM path ignores read errors")
+ ('boot/install.c', '        if (p == 0)\n            memset(buf, 0xFF, sizeof MAGIC);  // the magic is programmed last, on its own\n', '', 'magic programmed with its page'),
+ ('boot/install.c', '    if (img_check(dst, dof, in->kick, &back) != IMG_OK || memcmp(back.raw, h->raw, IMG_CORE))\n        return -1;\n', '    (void)back;\n', 'copy not checked'),
+ ('boot/install.c', '        if (img_check(in->spi, SPI_FACTORY, in->kick, &hf) != IMG_OK)\n            return halt(in, WHY_FACTORY_BAD);', '        img_check(in->spi, SPI_FACTORY, in->kick, &hf);', 'Reload skips the factory check'),
+ ('boot/install.c', "        if (in->spi->erase_sector(in->spi, SPI_STAGING))  // staging's image is never installed again\n            return halt(in, WHY_STAGING);\n", '', 'Reload leaves staging'),
+ ('boot/install.c', "        if (in->spi->erase_sector(in->spi, SPI_STAGING))  // staging's image is never installed again\n            return halt(in, WHY_STAGING);\n        if (copy(in, in->spi, SPI_FACTORY, &hf, in->qspi, QSPI_SLOT))\n            return halt(in, WHY_COPY);\n", "        if (copy(in, in->spi, SPI_FACTORY, &hf, in->qspi, QSPI_SLOT))\n            return halt(in, WHY_COPY);\n        if (in->spi->erase_sector(in->spi, SPI_STAGING))  // staging's image is never installed again\n            return halt(in, WHY_STAGING);\n", 'staging erased after the restore'),
+ ('boot/install.c', '!(q && !memcmp(hq.raw, hs.raw, IMG_CORE))', '(in->qspi->read(in->qspi, QSPI_SLOT, hq.raw, IMG_CORE), memcmp(hq.raw, hs.raw, IMG_CORE))', 'headers compared, QSPI body ignored'),
+ ('boot/install.c', '!(q && !memcmp(hq.raw, hs.raw, IMG_CORE))', '1', 'staging installed every boot'),
+ ('boot/install.c', '    if (q && factory_unseeded(in))', '    if (factory_unseeded(in))', 'seeding from a bad QSPI'),
+ ('boot/install.c', '    if (q && factory_unseeded(in))', '    if (q && (factory_unseeded(in) || 1))', 'seeding every boot'),
+ ('boot/install.c', '== NOR_OK && memcmp(m, MAGIC, sizeof m)', '!= NOR_OK || memcmp(m, MAGIC, sizeof m)', 'unreadable factory taken for unseeded'),
+ ('boot/install.c', '    if (q && factory_unseeded(in))  // once, at the first boot after production\n        in->did |= copy(in, in->qspi, QSPI_SLOT, &hq, in->spi, SPI_FACTORY) ? DID_SEED_FAIL : DID_SEED;\n\n    if (img_check(in->spi, SPI_STAGING, in->kick, &hs) == IMG_OK && !(q && !memcmp(hq.raw, hs.raw, IMG_CORE))) {\n        if (copy(in, in->spi, SPI_STAGING, &hs, in->qspi, QSPI_SLOT))\n            return halt(in, WHY_COPY);\n        in->did |= DID_INSTALL;\n        return INSTALL_JUMP;\n    }\n', '    if (img_check(in->spi, SPI_STAGING, in->kick, &hs) == IMG_OK && !(q && !memcmp(hq.raw, hs.raw, IMG_CORE))) {\n        if (copy(in, in->spi, SPI_STAGING, &hs, in->qspi, QSPI_SLOT))\n            return halt(in, WHY_COPY);\n        in->did |= DID_INSTALL;\n        q = img_check(in->qspi, QSPI_SLOT, in->kick, &hq) == IMG_OK;\n        if (q && factory_unseeded(in))\n            in->did |= copy(in, in->qspi, QSPI_SLOT, &hq, in->spi, SPI_FACTORY) ? DID_SEED_FAIL : DID_SEED;\n        return INSTALL_JUMP;\n    }\n    if (q && factory_unseeded(in))\n        in->did |= copy(in, in->qspi, QSPI_SLOT, &hq, in->spi, SPI_FACTORY) ? DID_SEED_FAIL : DID_SEED;\n', 'install before seeding'),
+ ('components/ota/ota_image.c', '    if (memcmp(sha, hdr.sha256, 32))\n        return IMG_ESHA;', '', 'SHA not checked'),
+ ('components/ota/ota_app.c', '    if (memcmp(sha, st->hdr.sha256, 32))\n        return fail(st, OTA_EIMAGE);', '', 'stage SHA not checked'),
+ ('components/ota/ota_app.c', '    if (r != IMG_OK || memcmp(back.raw, st->hdr.raw, IMG_CORE))\n        return fail(st, OTA_EFLASH);', '', 'staging not read back')
 ]
 
 

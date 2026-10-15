@@ -5,6 +5,8 @@
 #include <string.h>
 #include "FreeRTOS.h"
 #include "heap_newlib.h"
+#include "io_core.h"
+#include "iomgr.h"
 #include "netmgr.h"
 #include "serial.h"
 #include "store.h"
@@ -195,6 +197,14 @@ static void status_get(struct mg_connection *c)
     cJSON *st = cJSON_AddObjectToObject(mem, "stackMin");
     cJSON_AddStringToObject(st, "task", worst);
     cJSON_AddNumberToObject(st, "words", n ? words : 0);
+    io_status_t ios;
+    iomgr_status(&ios);
+    cJSON_AddBoolToObject(o, "aiCalibrated", ios.ai_calibrated);
+    cJSON *adc = cJSON_AddObjectToObject(mem, "adc");
+    cJSON_AddNumberToObject(adc, "irqs", ios.adc_irqs);
+    cJSON_AddNumberToObject(adc, "late", ios.adc_late);
+    cJSON_AddNumberToObject(adc, "errors", ios.adc_errors);
+    cJSON_AddNumberToObject(adc, "recoveries", ios.adc_recoveries);
     cJSON *uart = cJSON_AddArrayToObject(mem, "uart");
     for (int p = 1; p <= store_env()->uart_count; p++) {
         serial_counters_t sc;
@@ -247,6 +257,25 @@ static void time_post(struct mg_connection *c, struct mg_http_message *hm)
         api_ok(c);
 }
 
+// {"do": index, "value": true|false|0|1} (as on the ESP32).
+static void io_post(struct mg_connection *c, struct mg_http_message *hm)
+{
+    cJSON *b = cJSON_ParseWithLength(hm->body.buf, hm->body.len);
+    const cJSON *d = cJSON_GetObjectItemCaseSensitive(b, "do"), *v = cJSON_GetObjectItemCaseSensitive(b, "value");
+    bool ao = cJSON_GetObjectItemCaseSensitive(b, "ao") != NULL;
+    int r = -1;
+    int i = cJSON_IsNumber(d) ? io_index(d->valuedouble, IO_DO) : -1;  // never truncated: 1.9 is no output
+    if (!ao && i >= 0 && (cJSON_IsBool(v) || cJSON_IsNumber(v)))
+        r = iomgr_do_set(i, cJSON_IsTrue(v) || (cJSON_IsNumber(v) && v->valuedouble != 0));
+    cJSON_Delete(b);
+    if (ao)
+        api_error(c, 400, "This gateway has no analog outputs.");
+    else if (r)
+        api_error(c, 400, "Send {\"do\": index, \"value\": true|false} with an existing output.");
+    else
+        api_ok(c);
+}
+
 void api_handle(struct mg_connection *c, struct mg_http_message *hm)
 {
     char name[16];
@@ -262,8 +291,10 @@ void api_handle(struct mg_connection *c, struct mg_http_message *hm)
             config_get(c, name);
         else
             config_post(c, name, hm);
-    } else if (is(hm, "GET", "/api/io") || is(hm, "POST", "/api/io"))
-        api_error(c, 503, "The IO module starts with a later firmware.");  // Plan 07 (ruling 2)
+    } else if (is(hm, "GET", "/api/io"))
+        api_json(c, 200, iomgr_state_json());
+    else if (is(hm, "POST", "/api/io"))
+        io_post(c, hm);
     else if (is(hm, "POST", "/api/time"))
         time_post(c, hm);
     else if (is(hm, "POST", "/api/restart")) {

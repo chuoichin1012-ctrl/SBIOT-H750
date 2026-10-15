@@ -1,3 +1,4 @@
+import type { ComponentChildren } from 'preact';
 import { useMemo, useState } from 'preact/hooks';
 import * as api from '../lib/api';
 import { ioPoints, range, useDevice } from '../lib/device';
@@ -6,7 +7,7 @@ import { useSaver } from '../lib/save';
 import type { DeviceInfo, Values } from '../lib/types';
 import { EN_DIS, ON_OFF, type FieldDef } from '../lib/validate';
 import { attempt, toast } from '../components/feedback';
-import { Button, ItemList, Notice, PageHeader, Panel, Pending, SaveBar, Stale, Tabs } from '../components/ui';
+import { Button, ItemList, PageHeader, Panel, Pending, SaveBar, Stale, Tabs } from '../components/ui';
 import { Fields, TextInput } from '../components/form';
 
 const TIMERS = 6;
@@ -59,17 +60,83 @@ function functionDefs(d: DeviceInfo) {
   return { general, outputs, inputs, analog, timers, all: [...general, ...outputs, ...inputs, ...analog, ...timers.flat()] };
 }
 
+// ---- IO control --------------------------------------------------------------------
+
+const POLL_MS = 1000;
+
+function Card(props: { children: ComponentChildren; on?: boolean }) {
+  return (
+    <div class={`rounded-panel border p-4 transition-colors ${props.on ? 'border-led-ok/60 bg-led-ok/[0.06]' : 'border-line bg-surface'}`}>
+      {props.children}
+    </div>
+  );
+}
+
+function DoCard(props: { name: string; on: boolean; busy: boolean; onSwitch: (on: boolean) => void }) {
+  const { name, on, busy } = props;
+  return (
+    <Card on={on}>
+      <div class="flex items-center justify-between gap-3">
+        <div>
+          <div class="text-[13px] font-semibold tracking-wide text-muted">{name}</div>
+          <div class={`text-[20px] leading-tight font-semibold ${on ? 'text-led-ok' : 'text-ink'}`}>{on ? 'ON' : 'OFF'}</div>
+        </div>
+        <button
+          type="button" role="switch" aria-checked={on} aria-label={`${name} relay`} disabled={busy}
+          onClick={() => props.onSwitch(!on)}
+          class={`relative h-8 w-16 shrink-0 rounded-full border transition-colors disabled:cursor-wait disabled:opacity-60 ${on ? 'border-led-ok bg-led-ok' : 'border-line bg-led-off/40'}`}
+        >
+          <span class={`absolute top-0.5 size-6.5 rounded-full bg-white shadow transition-[left] ${on ? 'left-8.5' : 'left-0.5'}`} />
+        </button>
+      </div>
+    </Card>
+  );
+}
+
+function DiCard(props: { name: string; active: boolean }) {
+  const { name, active } = props;
+  return (
+    <Card on={active}>
+      <div class="flex items-center gap-4">
+        <span aria-hidden="true"
+          class={`inline-block size-9 shrink-0 rounded-full border-2 transition-colors ${active ? 'border-led-ok bg-led-ok shadow-[0_0_12px_2px_var(--color-led-ok)]' : 'border-led-off bg-canvas'}`} />
+        <div>
+          <div class="text-[13px] font-semibold tracking-wide text-muted">{name}</div>
+          <div class={`text-[20px] leading-tight font-semibold ${active ? 'text-led-ok' : 'text-ink'}`}>{active ? 'Active' : 'Inactive'}</div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/** An analog input in µA, as the API and Edge give it. */
+function AiCard(props: { name: string; ua: number }) {
+  return (
+    <Card>
+      <div class="text-[13px] font-semibold tracking-wide text-muted">{props.name}</div>
+      <div class="num text-[26px] leading-tight font-semibold">
+        {props.ua.toLocaleString('en-US').replace(/,/g, ' ')}<span class="ml-1 text-[15px] font-medium text-muted">µA</span>
+      </div>
+    </Card>
+  );
+}
+
 function Control() {
   const d = useDevice();
   const io = useAsync(api.readIo);
+  const [busy, setBusy] = useState<number | null>(null);
   const [aoDraft, setAoDraft] = useState<Record<number, string>>({});
-  useInterval(io.reload, 2000);
+  useInterval(io.reload, POLL_MS);
 
   if (!io.data) return <Pending error={io.error} retry={io.reload} />;
   const s = io.data;
 
   const switchDo = async (i: number, on: boolean) => {
-    if (await attempt(() => api.writeDo(i, on).then(() => true), `DO${i + 1} switched ${on ? 'on' : 'off'}.`)) io.reload();
+    setBusy(i);
+    const ok = await attempt(() => api.writeDo(i, on).then(() => true), `DO${i + 1} switched ${on ? 'on' : 'off'}.`);
+    if (ok) io.setData({ ...s, do: s.do.map((v, k) => (k === i ? on : v)) });  // at once; the next poll confirms
+    setBusy(null);
+    io.reload();
   };
 
   const writeAo = (i: number) => {
@@ -81,40 +148,45 @@ function Control() {
   return (
     <>
       <Stale error={io.error} />
-      <div class="grid gap-x-4 md:grid-cols-2">
-        <Panel title="Digital outputs" flush>
-          <ItemList items={ioPoints(d, 'do')} keyOf={(n) => n} empty="This unit has no digital outputs."
+      {d.io.do > 0 && (
+        <Panel title="Digital outputs (relays)">
+          <div class="grid gap-3 py-2 sm:grid-cols-2">
+            {ioPoints(d, 'do').map((name, i) => (
+              <DoCard key={name} name={name} on={!!s.do[i]} busy={busy === i} onSwitch={(on) => switchDo(i, on)} />
+            ))}
+          </div>
+        </Panel>
+      )}
+      {d.io.di > 0 && (
+        <Panel title="Digital inputs">
+          <div class="grid gap-3 py-2 sm:grid-cols-2">
+            {ioPoints(d, 'di').map((name, i) => <DiCard key={name} name={name} active={!!s.di[i]} />)}
+          </div>
+        </Panel>
+      )}
+      {d.io.ai > 0 && (
+        <Panel title="Analog inputs">
+          <div class="grid gap-3 py-2 sm:grid-cols-2">
+            {ioPoints(d, 'ai').map((name, i) => <AiCard key={name} name={name} ua={s.ai[i] ?? 0} />)}
+          </div>
+        </Panel>
+      )}
+      {d.io.ao > 0 && (
+        <Panel title="Analog outputs" flush>
+          <ItemList items={ioPoints(d, 'ao')} keyOf={(n) => n} empty=""
             render={(name, i) => ({
-              led: s.do[i] ? 'ok' : 'off',
-              title: `${name}: ${s.do[i] ? 'on' : 'off'}`,
-              aside: <Button size="sm" onClick={() => switchDo(i, !s.do[i])}>Switch {s.do[i] ? 'off' : 'on'}</Button>,
+              title: name,
+              detail: `now ${s.ao[i] ?? 0}`,
+              aside: (
+                <>
+                  <TextInput class="num w-28" inputMode="numeric" aria-label={`${name} value`} placeholder="0–20000"
+                    value={aoDraft[i] ?? ''} onInput={(v) => setAoDraft({ ...aoDraft, [i]: v })} />
+                  <Button size="sm" onClick={() => writeAo(i)}>Set</Button>
+                </>
+              ),
             })} />
         </Panel>
-        <Panel title="Digital inputs" flush>
-          <ItemList items={ioPoints(d, 'di')} keyOf={(n) => n} empty="This unit has no digital inputs."
-            render={(name, i) => ({ led: s.di[i] ? 'ok' : 'off', title: `${name}: ${s.di[i] ? 'high' : 'low'}` })} />
-        </Panel>
-        <Panel title="Analog inputs" flush>
-          <ItemList items={ioPoints(d, 'ai')} keyOf={(n) => n} empty="This unit has no analog inputs."
-            render={(name, i) => ({ title: name, aside: <span class="num">{((s.ai[i] ?? 0) / 1000).toFixed(3)} mA</span> })} />
-        </Panel>
-        {d.io.ao > 0 && (
-          <Panel title="Analog outputs" flush>
-            <ItemList items={ioPoints(d, 'ao')} keyOf={(n) => n} empty=""
-              render={(name, i) => ({
-                title: name,
-                detail: `now ${s.ao[i] ?? 0}`,
-                aside: (
-                  <>
-                    <TextInput class="num w-28" inputMode="numeric" aria-label={`${name} value`} placeholder="0–20000"
-                      value={aoDraft[i] ?? ''} onInput={(v) => setAoDraft({ ...aoDraft, [i]: v })} />
-                    <Button size="sm" onClick={() => writeAo(i)}>Set</Button>
-                  </>
-                ),
-              })} />
-          </Panel>
-        )}
-      </div>
+      )}
     </>
   );
 }
@@ -159,12 +231,9 @@ export function IoPage(props: { path?: string; tab?: string }) {
   return (
     <>
       <PageHeader title="IO" intro="Built-in digital and analog channels." />
-      <Tabs base="/io" active={tab} tabs={[['control', 'Live control'], ['functions', 'Behaviour']]} />
+      <Tabs base="/io" active={tab} tabs={[['control', 'IO control'], ['functions', 'IO function']]} />
       {tab === 'control' ? (
-        <>
-          <Notice tone="warn">Switching an output acts on the connected equipment immediately.</Notice>
-          <Control />
-        </>
+        <Control />
       ) : (
         <Functions />
       )}

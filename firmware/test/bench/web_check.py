@@ -12,7 +12,7 @@ board running BUILD_DIR's app. Cases:
 3. every config saved back as read and read again; system.hostname saved but /api/device keeps the
    running one until a restart (spec §9.1);
 4. edgeDevices: a model sent as a 40 KB body (streamed) reads back; 49 153 bytes -> 413;
-5. certificates: a PEM stored, a key refused as ca; /api/io 503; an unknown /api/x 404;
+5. certificates: a PEM stored, a key refused as ca; /api/io answers the IO state (Plan 07b) and refuses "ao"; an unknown /api/x 404;
 6. the clock: POST /api/time, then system.time and a dated log line;
 7. slow readers: clients that never read (on app.js, on the WebSocket log) leave the heap level
    while another client is served;
@@ -259,8 +259,19 @@ def case_misc():
     check(s == 400, 'a key as ca: 400')
     s, _, _ = req('POST', '/api/cert?scope=wifi&kind=ca', body=CERT, headers=h)
     check(s == 400, 'an unknown scope: 400')
-    s, _, _ = req('GET', '/api/io')
-    check(s == 503, '/api/io: 503 until the IO module')
+    s, d = get_json('/api/io')
+    d = d or {}
+    check(s == 200 and len(d.get('do', [])) == 2 and len(d.get('di', [])) == 2 and len(d.get('ai', [])) == 2 and d.get('ao') == [],
+          '/api/io: the IO state (%s)' % d)
+    s, _, _ = req('POST', '/api/io', body=b'{"ao": 0, "value": 1}')
+    s2, _, _ = req('POST', '/api/io', body=b'{"do": 5, "value": true}')
+    check(s == 400 and s2 == 400, '/api/io: no analog outputs, no DO6: 400 (%d, %d)' % (s, s2))
+    before = (get_json('/api/io')[1] or {}).get('do')
+    s3, _, _ = req('POST', '/api/io', body=b'{"do": -0.5, "value": true}')
+    s4, _, _ = req('POST', '/api/io', body=b'{"do": 1.9, "value": true}')
+    after = (get_json('/api/io')[1] or {}).get('do')
+    check(s3 == 400 and s4 == 400 and before == after, '/api/io: do -0.5 and 1.9 are no output: 400, relays unchanged (%d, %d, %s -> %s)'
+          % (s3, s4, before, after))
     s, _, _ = req('GET', '/api/x')
     check(s == 404, 'an unknown endpoint: 404')
 

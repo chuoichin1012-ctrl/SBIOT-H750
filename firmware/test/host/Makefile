@@ -8,7 +8,7 @@ BUILD := build
 CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c ../../components/proto/jsonscan.c
 ARENA := ../../components/arena/arena.c $(TLSF)/tlsf.c
 
-all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/bind_sample.bin $(BUILD)/test_bind $(BUILD)/test_store $(BUILD)/test_store_small $(BUILD)/test_heap $(BUILD)/test_ip101 $(BUILD)/test_netcfg $(BUILD)/test_dhcp_dns $(BUILD)/test_rng $(BUILD)/test_clock $(BUILD)/test_web_core $(BUILD)/test_serial_frame
+all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/bind_sample.bin $(BUILD)/test_bind $(BUILD)/test_store $(BUILD)/test_store_small $(BUILD)/test_heap $(BUILD)/test_ip101 $(BUILD)/test_netcfg $(BUILD)/test_dhcp_dns $(BUILD)/test_rng $(BUILD)/test_clock $(BUILD)/test_web_core $(BUILD)/test_serial_frame $(BUILD)/test_io_core $(BUILD)/test_adc_core $(BUILD)/test_reload
 	$(BUILD)/test_cfgmodel
 	$(BUILD)/test_proto
 	$(BUILD)/test_jsonscan
@@ -31,6 +31,9 @@ all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/
 	$(BUILD)/test_clock
 	$(BUILD)/test_web_core
 	$(BUILD)/test_serial_frame
+	$(BUILD)/test_io_core
+	$(BUILD)/test_adc_core
+	$(BUILD)/test_reload
 
 $(BUILD)/test_cfgmodel: test_cfgmodel.c $(CFG) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
@@ -161,3 +164,15 @@ $(BUILD)/test_web_core: test_web_core.c ../../components/webapi/web_core.c
 $(BUILD)/test_serial_frame: test_serial_frame.c ../../components/serial/serial_frame.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -I../../components/serial/include $^ -o $@
+
+$(BUILD)/test_io_core: test_io_core.c ../../components/iomgr/io_core.c $(CJSON)/cJSON.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -I../../components/iomgr/include $^ -o $@
+
+$(BUILD)/test_adc_core: test_adc_core.c ../../components/iomgr/adc_core.c ../../components/board/crc32.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -I../../components/iomgr/include $^ -lm -o $@
+
+$(BUILD)/test_reload: test_reload.c ../../components/sysmgr/reload.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -I../../components/sysmgr/include $^ -o $@

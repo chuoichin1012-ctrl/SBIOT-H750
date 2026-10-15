@@ -39,12 +39,18 @@ static char s_record[STORE_EDGE_RECORD];  // one Edge record at a time, for any 
 static ota_stage_t s_ota;
 static struct mg_mgr s_mgr;
 
-typedef enum { ST_FREE, ST_IDLE, ST_FILE, ST_EDGE_GET, ST_LOG, ST_UPLOAD } state_t;
+typedef enum { ST_FREE, ST_IDLE, ST_FILE, ST_EDGE_GET, ST_LOG, ST_UPLOAD, ST_DISCARD } state_t;
+
+#define DISCARD_MAX (64u * 1024u)  // a rejected body is read and dropped up to this, then the connection closes
+#define QUIET_MS 300u
 
 typedef struct {
     state_t st;
     uint64_t last_ms;  // the last byte received
     bool waiting;      // headers seen, a body still to come (plain requests)
+    bool until_quiet;  // ST_DISCARD of a body without a length: close once nothing comes for QUIET_MS
+    bool hdrs_done;    // this request's headers were handled: Mongoose emits MG_EV_HTTP_HDRS again on every
+                       // read and poll while the body is incomplete
     // ST_FILE
     const www_file_t *file;
     size_t off;
@@ -276,7 +282,14 @@ static void upload_take(struct mg_connection *c, slot_t *s)
             c->recv.len = 0;
             api_error(c, r == OTA_ETOOBIG ? 413 : r == OTA_EFLASH ? 500 : 400,
                       r == OTA_EFLASH ? "The staging flash failed." : "This file is not a valid firmware image for this gateway.");
+            size_t rest = s->expected - s->got - n;
             upload_end(c, s);
+            if (rest) {  // the rest of the body is still coming: read and drop it, then close (see reject)
+                c->is_draining = 0;
+                s->st = ST_DISCARD;
+                s->expected = rest < DISCARD_MAX ? rest : DISCARD_MAX;
+                s->got = 0;
+            }
             return;
         }
     } else {
@@ -286,6 +299,27 @@ static void upload_take(struct mg_connection *c, slot_t *s)
     c->recv.len = 0;
     if (s->got == s->expected)
         upload_complete(c, s);
+}
+
+// An answer before the body (an error at the headers): the body is still read and dropped, so the
+// close that follows is a FIN and not a reset (lwIP resets a socket closed with unread data), and the
+// client reads the answer. Chunked or huge bodies: up to DISCARD_MAX, or until they stall.
+static void reject(struct mg_connection *c, slot_t *s, struct mg_http_message *hm, int status, const char *msg)
+{
+    api_error(c, status, msg);
+    struct mg_str *cl = mg_http_get_header(hm, "Content-Length");
+    s->st = ST_DISCARD;
+    s->expected = cl && hm->body.len < DISCARD_MAX ? hm->body.len : DISCARD_MAX;
+    s->got = 0;
+    s->last_ms = ms_now();
+    mg_iobuf_del(&c->recv, 0, hm->head.len);
+    c->pfn = NULL;  // what follows is not parsed
+    size_t n = c->recv.len < s->expected ? c->recv.len : s->expected;
+    s->got += n;
+    c->recv.len = 0;
+    s->until_quiet = !cl;
+    if (s->got >= s->expected)
+        c->is_draining = 1;
 }
 
 static bool query_var(struct mg_http_message *hm, const char *name, char *out, size_t cap)
@@ -301,27 +335,23 @@ static bool upload_start(struct mg_connection *c, slot_t *s, struct mg_http_mess
         if (!query_var(hm, "scope", s->scope, sizeof s->scope) || !query_var(hm, "kind", s->kind, sizeof s->kind) ||
             (strcmp(s->scope, "mqtt") && strcmp(s->scope, "port1") && strcmp(s->scope, "port2")) ||
             (strcmp(s->kind, "ca") && strcmp(s->kind, "cert") && strcmp(s->kind, "key"))) {
-            api_error(c, 400, "Upload a PEM file for scope mqtt, port1 or port2, kind ca, cert or key.");
-            c->is_draining = 1;
+            reject(c, s, hm, 400, "Upload a PEM file for scope mqtt, port1 or port2, kind ca, cert or key.");
             return true;
         }
     }
     if (hm->body.len == 0) {
-        api_error(c, 400, "The file is empty.");
-        c->is_draining = 1;
+        reject(c, s, hm, 400, "The file is empty.");
         return true;
     }
     bool *busy = ep == WEB_EP_OTA ? &s_ota_busy : &s_body_busy;
     if (*busy) {
-        api_error(c, ep == WEB_EP_OTA ? 409 : 503, "Another upload is in progress. Try again in a moment.");
-        c->is_draining = 1;
+        reject(c, s, hm, ep == WEB_EP_OTA ? 409 : 503, "Another upload is in progress. Try again in a moment.");
         return true;
     }
     if (ep == WEB_EP_OTA) {
         int r = ota_stage_begin(&s_ota, flash_spi4(), (uint32_t)hm->body.len);
         if (r != OTA_OK) {
-            api_error(c, r == OTA_ETOOBIG ? 413 : 500, r == OTA_ETOOBIG ? "The file is larger than the firmware slot." : "The update could not start.");
-            c->is_draining = 1;
+            reject(c, s, hm, r == OTA_ETOOBIG ? 413 : 500, r == OTA_ETOOBIG ? "The file is larger than the firmware slot." : "The update could not start.");
             return true;
         }
     }
@@ -352,6 +382,9 @@ static bool authorized(struct mg_http_message *hm)
 
 static void on_headers(struct mg_connection *c, slot_t *s, struct mg_http_message *hm)
 {
+    if (s->hdrs_done)
+        return;
+    s->hdrs_done = true;
     bool post = mg_strcmp(hm->method, mg_str("POST")) == 0;
     web_ep_t ep = web_endpoint(post, hm->uri.buf, hm->uri.len);
     struct mg_str *cl = mg_http_get_header(hm, "Content-Length");
@@ -359,15 +392,12 @@ static void on_headers(struct mg_connection *c, slot_t *s, struct mg_http_messag
     bool chunked = te && mg_strcasecmp(*te, mg_str("chunked")) == 0;
     int code = web_body_check(ep, cl != NULL, chunked, hm->body.len, SLOT_SIZE);
     if (code) {
-        api_error(c, code, code == 411 ? "Send the body with a Content-Length." : "The request is too large.");
-        c->is_draining = 1;
+        reject(c, s, hm, code, code == 411 ? "Send the body with a Content-Length." : "The request is too large.");
         return;
     }
     if (is_api(hm) && !authorized(hm)) {
-        if (hm->body.len) {  // do not wait for a body that will not be read
-            api_error(c, 401, "Sign in required.");
-            c->is_draining = 1;
-        }
+        if (hm->body.len)  // do not wait for a body that will not be used
+            reject(c, s, hm, 401, "Sign in required.");
         return;  // answered at MG_EV_HTTP_MSG otherwise
     }
     if (ep != WEB_EP_PLAIN) {
@@ -381,6 +411,7 @@ static void on_headers(struct mg_connection *c, slot_t *s, struct mg_http_messag
 static void on_message(struct mg_connection *c, slot_t *s, struct mg_http_message *hm)
 {
     s->waiting = false;
+    s->hdrs_done = false;  // the next request on this connection
     if (c->is_draining)
         return;  // answered at the headers
     if (!is_api(hm)) {
@@ -449,9 +480,18 @@ static void handler(struct mg_connection *c, int ev, void *ev_data)
         s->last_ms = ms_now();
         if (s->st == ST_UPLOAD)
             upload_take(c, s);
+        else if (s->st == ST_DISCARD) {
+            s->got += c->recv.len;
+            c->recv.len = 0;
+            if (s->got >= s->expected)
+                c->is_draining = 1;
+        }
         break;
     case MG_EV_POLL:
+        if (s->st == ST_DISCARD && (web_stalled(s->last_ms, ms_now()) || (s->until_quiet && ms_now() - s->last_ms >= QUIET_MS)))
+            c->is_draining = 1;  // the rest never came (or a chunked body ended): close
         if ((s->st == ST_UPLOAD || s->waiting) && web_stalled(s->last_ms, ms_now())) {
+            SLOG_W("web", "a request body stopped arriving (%lu ms silent)", (unsigned long)(ms_now() - s->last_ms));
             api_error(c, 408, "The request body stopped arriving.");
             if (s->st == ST_UPLOAD)
                 upload_end(c, s);

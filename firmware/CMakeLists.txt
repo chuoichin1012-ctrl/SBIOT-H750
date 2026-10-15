@@ -113,13 +113,9 @@ set(APP_OWN
   app/store_port.c ${STORE}/store.c ${STORE}/fal_nor.c ${CMAKE_SOURCE_DIR}/components/syslog/syslog.c ${CFGM}/cfgmodel.c ${PROTO}/ipacl.c ${PROTO}/jsonscan.c
   ${BOARD}/board_rng.c ${BOARD}/rng_core.c ${NET}/ip101.c ${NET}/netcfg.c ${NET}/eth_drv.c ${NET}/netmgr.c app/fdset_check.c
   ${SYS}/clock.c ${SYS}/sysmgr.c ${WEB}/web_core.c ${WEB}/web.c ${WEB}/api.c ${WEB}/console.c ${WEB}/mg_port.c
-  ${CMAKE_SOURCE_DIR}/components/arena/arena.c)
-# The embedded UI (Plan 06b): tools/embed_web.py writes the table and the .incbin of every gzip file.
-set(WWW ${WEB}/www)
-set(APP_WWW ${WWW}/www_files.c ${WWW}/www_blobs.S)
-set_property(SOURCE ${WWW}/www_blobs.S APPEND PROPERTY COMPILE_OPTIONS -Wa,-I${WWW})
-file(GLOB WWW_GZ ${WWW}/*.gz)
-set_property(SOURCE ${WWW}/www_blobs.S APPEND PROPERTY OBJECT_DEPENDS ${WWW_GZ})
+  ${CMAKE_SOURCE_DIR}/components/arena/arena.c app/arena_port.c)
+# The embedded UI (Plan 06b): tools/embed_web.py writes the gzip bytes as C arrays and their table.
+set(APP_WWW ${WEB}/www/www_files.c)
 # Network (Plan 06a): lwIP 2.2.1 and its FreeRTOS port (third_party/lwip/README.md), built without -Werror.
 set(LWIP ${CMAKE_SOURCE_DIR}/third_party/lwip)
 file(GLOB LWIP_SRC ${LWIP}/src/core/*.c ${LWIP}/src/core/ipv4/*.c ${LWIP}/src/api/*.c)

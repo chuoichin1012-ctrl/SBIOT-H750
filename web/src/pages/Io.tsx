@@ -1,5 +1,5 @@
 import type { ComponentChildren } from 'preact';
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useMemo, useState } from 'preact/hooks';
 import * as api from '../lib/api';
 import { ioPoints, range, useDevice } from '../lib/device';
 import { useAsync, useForm, useInterval } from '../lib/hooks';
@@ -7,7 +7,7 @@ import { useSaver } from '../lib/save';
 import type { DeviceInfo, Values } from '../lib/types';
 import { EN_DIS, ON_OFF, type FieldDef } from '../lib/validate';
 import { attempt, toast } from '../components/feedback';
-import { Button, ItemList, Led, Notice, PageHeader, Panel, Pending, SaveBar, Stale, Tabs } from '../components/ui';
+import { Button, ItemList, PageHeader, Panel, Pending, SaveBar, Stale, Tabs } from '../components/ui';
 import { Fields, TextInput } from '../components/form';
 
 const TIMERS = 6;
@@ -64,12 +64,6 @@ function functionDefs(d: DeviceInfo) {
 
 const POLL_MS = 1000;
 
-/** A DO's configured action, as a short note under its switch. */
-function doMode(cfg: Values | undefined, i: number): string {
-  const mode = Number(cfg?.[`do${i}Mode`] ?? 0), t = Number(cfg?.[`do${i}FlipDelay`] ?? 0);
-  return mode === 1 ? `Output hold: back after ${t} s` : mode === 2 ? `Timer flip: toggles every ${t} s while on` : 'Follows each command';
-}
-
 function Card(props: { children: ComponentChildren; on?: boolean }) {
   return (
     <div class={`rounded-panel border p-4 transition-colors ${props.on ? 'border-led-ok/60 bg-led-ok/[0.06]' : 'border-line bg-surface'}`}>
@@ -78,7 +72,7 @@ function Card(props: { children: ComponentChildren; on?: boolean }) {
   );
 }
 
-function DoCard(props: { name: string; on: boolean; busy: boolean; note: string; onSwitch: (on: boolean) => void }) {
+function DoCard(props: { name: string; on: boolean; busy: boolean; onSwitch: (on: boolean) => void }) {
   const { name, on, busy } = props;
   return (
     <Card on={on}>
@@ -86,7 +80,6 @@ function DoCard(props: { name: string; on: boolean; busy: boolean; note: string;
         <div>
           <div class="text-[13px] font-semibold tracking-wide text-muted">{name}</div>
           <div class={`text-[20px] leading-tight font-semibold ${on ? 'text-led-ok' : 'text-ink'}`}>{on ? 'ON' : 'OFF'}</div>
-          <div class="text-[13px] text-muted">{on ? 'Relay closed (COM–NO)' : 'Relay open (COM–NC)'}</div>
         </div>
         <button
           type="button" role="switch" aria-checked={on} aria-label={`${name} relay`} disabled={busy}
@@ -96,7 +89,6 @@ function DoCard(props: { name: string; on: boolean; busy: boolean; note: string;
           <span class={`absolute top-0.5 size-6.5 rounded-full bg-white shadow transition-[left] ${on ? 'left-8.5' : 'left-0.5'}`} />
         </button>
       </div>
-      <p class="mt-3 border-t border-line/70 pt-2 text-[13px] text-muted">{props.note}</p>
     </Card>
   );
 }
@@ -111,7 +103,6 @@ function DiCard(props: { name: string; active: boolean }) {
         <div>
           <div class="text-[13px] font-semibold tracking-wide text-muted">{name}</div>
           <div class={`text-[20px] leading-tight font-semibold ${active ? 'text-led-ok' : 'text-ink'}`}>{active ? 'Active' : 'Inactive'}</div>
-          <div class="text-[13px] text-muted">{active ? 'Voltage on the input' : 'No voltage on the input'}</div>
         </div>
       </div>
     </Card>
@@ -133,18 +124,12 @@ function AiCard(props: { name: string; ua: number }) {
 function Control() {
   const d = useDevice();
   const io = useAsync(api.readIo);
-  const cfg = useAsync(() => api.getValues('io'));
   const [busy, setBusy] = useState<number | null>(null);
   const [aoDraft, setAoDraft] = useState<Record<number, string>>({});
-  const [seen, setSeen] = useState(0);
-  const [now, setNow] = useState(Date.now());
   useInterval(io.reload, POLL_MS);
-  useInterval(() => setNow(Date.now()), 500);
-  useEffect(() => { if (io.data) setSeen(Date.now()); }, [io.data]);
 
   if (!io.data) return <Pending error={io.error} retry={io.reload} />;
   const s = io.data;
-  const age = (now - seen) / 1000;
 
   const switchDo = async (i: number, on: boolean) => {
     setBusy(i);
@@ -160,18 +145,14 @@ function Control() {
     attempt(() => api.writeAo(i, v), `AO${i + 1} set to ${v}.`);
   };
 
-  const live = !io.error && age < 3;
   return (
     <>
       <Stale error={io.error} />
-      <div class="mb-3 flex items-center justify-end gap-2 text-[13px] text-muted" aria-live="polite">
-        <Led state={live ? 'ok' : 'warn'} label={live ? 'Live, updated every second' : `No update for ${Math.round(age)} s`} />
-      </div>
       {d.io.do > 0 && (
         <Panel title="Digital outputs (relays)">
           <div class="grid gap-3 py-2 sm:grid-cols-2">
             {ioPoints(d, 'do').map((name, i) => (
-              <DoCard key={name} name={name} on={!!s.do[i]} busy={busy === i} note={doMode(cfg.data, i)} onSwitch={(on) => switchDo(i, on)} />
+              <DoCard key={name} name={name} on={!!s.do[i]} busy={busy === i} onSwitch={(on) => switchDo(i, on)} />
             ))}
           </div>
         </Panel>
@@ -252,10 +233,7 @@ export function IoPage(props: { path?: string; tab?: string }) {
       <PageHeader title="IO" intro="Built-in digital and analog channels." />
       <Tabs base="/io" active={tab} tabs={[['control', 'IO control'], ['functions', 'IO function']]} />
       {tab === 'control' ? (
-        <>
-          <Notice tone="warn">Switching an output acts on the connected equipment immediately.</Notice>
-          <Control />
-        </>
+        <Control />
       ) : (
         <Functions />
       )}

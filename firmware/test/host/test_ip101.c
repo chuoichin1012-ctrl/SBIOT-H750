@@ -177,8 +177,31 @@ static void test_power(void)
     CHECK(ip101_power(&phy, 1) == IP101_EWRITE, "a write error is reported");
 }
 
+static void test_action(void)
+{
+    static const struct {
+        ip101_status_t applied, now;
+        ip101_action_t want;
+        const char *what;
+    } k[] = {
+        {IP101_LINK_DOWN, IP101_100_FULL, IP101_START, "down, then up: start"},
+        {IP101_100_FULL, IP101_100_FULL, IP101_KEEP, "the same: keep"},
+        {IP101_10_FULL, IP101_100_FULL, IP101_RECONFIG, "10 to 100 with no down between: reconfigure"},
+        {IP101_100_FULL, IP101_100_HALF, IP101_RECONFIG, "full to half duplex: reconfigure"},
+        {IP101_100_FULL, IP101_LINK_DOWN, IP101_STOP, "up, then down: stop"},
+        {IP101_100_FULL, IP101_AUTONEG_NOT_DONE, IP101_STOP, "up, then renegotiating: stop"},
+        {IP101_100_FULL, IP101_EREAD, IP101_KEEP, "a read error while up: keep"},
+        {IP101_LINK_DOWN, IP101_EREAD, IP101_KEEP, "a read error while down: keep"},
+        {IP101_LINK_DOWN, IP101_AUTONEG_NOT_DONE, IP101_KEEP, "down, autoneg pending: keep"},
+        {IP101_LINK_DOWN, IP101_LINK_DOWN, IP101_KEEP, "down: keep"},
+    };
+    for (size_t i = 0; i < sizeof k / sizeof k[0]; i++)
+        CHECK(ip101_action(k[i].applied, k[i].now) == k[i].want, "%s", k[i].what);
+}
+
 int main(void)
 {
+    test_action();
     test_scan();
     test_link();
     test_power();

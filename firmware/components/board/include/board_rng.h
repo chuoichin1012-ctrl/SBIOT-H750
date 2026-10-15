@@ -9,7 +9,8 @@
 
 /** Starts the RNG (HSI48 kernel clock); 0, or -1 when it failed. Call once, from a task. */
 int board_rng_init(void);
-/** Fills buf from the hardware RNG; 0, or -1 when the RNG failed (restarted once first). */
+/** Fills buf from the hardware RNG; 0, or -1 when the RNG failed (a seed error is recovered once,
+ * rng_core.h). On -1 the rest of buf is not written. */
 int board_rng(void *buf, size_t len);
 /** For LWIP_RAND only. */
 uint32_t board_rand32(void);

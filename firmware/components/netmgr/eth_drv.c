@@ -180,39 +180,57 @@ static int mdio_write(void *ctx, uint32_t addr, uint32_t reg, uint32_t val)
 
 // In eth_rx. The ETH start and stop, and the netif's link, change under the core lock, so that they
 // never run beside low_level_output.
+// Starts the MAC at the speed and duplex of `ls`; true when it runs.
+static bool mac_start(ip101_status_t ls)
+{
+    ETH_MACConfigTypeDef mc;
+    HAL_ETH_GetMACConfig(&heth, &mc);
+    mc.Speed = ls == IP101_100_FULL || ls == IP101_100_HALF ? ETH_SPEED_100M : ETH_SPEED_10M;
+    mc.DuplexMode = ls == IP101_100_FULL || ls == IP101_10_FULL ? ETH_FULLDUPLEX_MODE : ETH_HALFDUPLEX_MODE;
+    HAL_ETH_SetMACConfig(&heth, &mc);
+    if (HAL_ETH_Start_IT(&heth) != HAL_OK)
+        return false;
+    s_st.speed = mc.Speed == ETH_SPEED_100M ? 100 : 10;
+    s_st.full_duplex = mc.DuplexMode == ETH_FULLDUPLEX_MODE;
+    return true;
+}
+
+// In eth_rx. The ETH start and stop, and the netif's link, change under the core lock, so that they
+// never run beside low_level_output. s_applied is the state the MAC runs at (LINK_DOWN: stopped).
 static void link_poll(void)
 {
+    static ip101_status_t s_applied = IP101_LINK_DOWN;
     ip101_status_t ls = ip101_link(&s_phy);
-    bool up = ls >= IP101_100_FULL && ls <= IP101_10_HALF;
-    if (up == s_st.up)
+    ip101_action_t act = ip101_action(s_applied, ls);
+    if (act == IP101_KEEP)
         return;
     LOCK_TCPIP_CORE();
-    if (up) {
-        ETH_MACConfigTypeDef mc;
-        HAL_ETH_GetMACConfig(&heth, &mc);
-        mc.Speed = ls == IP101_100_FULL || ls == IP101_100_HALF ? ETH_SPEED_100M : ETH_SPEED_10M;
-        mc.DuplexMode = ls == IP101_100_FULL || ls == IP101_10_FULL ? ETH_FULLDUPLEX_MODE : ETH_HALFDUPLEX_MODE;
-        HAL_ETH_SetMACConfig(&heth, &mc);
-        if (HAL_ETH_Start_IT(&heth) == HAL_OK) {
-            s_st.up = true;
-            s_st.speed = mc.Speed == ETH_SPEED_100M ? 100 : 10;
-            s_st.full_duplex = mc.DuplexMode == ETH_FULLDUPLEX_MODE;
-            netif_set_link_up(s_netif);
-        }
-    } else {
+    if (act == IP101_STOP || act == IP101_RECONFIG) {
         HAL_ETH_Stop_IT(&heth);
-        s_st.up = false;
-        s_st.speed = 0;
-        netif_set_link_down(s_netif);
+        s_applied = IP101_LINK_DOWN;
     }
+    if (act == IP101_START || act == IP101_RECONFIG) {
+        if (mac_start(ls))
+            s_applied = ls;
+    }
+    bool up = s_applied != IP101_LINK_DOWN;
+    if (up != s_st.up) {  // a reconfiguration that worked keeps the netif's link up
+        if (up)
+            netif_set_link_up(s_netif);
+        else
+            netif_set_link_down(s_netif);
+    }
+    s_st.up = up;
+    if (!up)
+        s_st.speed = 0;
     UNLOCK_TCPIP_CORE();
     s_st.link_changes++;
     uint32_t lp = 0;
-    if (s_st.up && mdio_read(NULL, s_phy.addr, PHY_ANLPAR, &lp))
+    if (up && mdio_read(NULL, s_phy.addr, PHY_ANLPAR, &lp))
         lp = 0xFFFFFFFFu;
-    if (s_st.up)
-        blog("net: link up, %d Mbit %s duplex (partner %04lx)\r\n", s_st.speed, s_st.full_duplex ? "full" : "half",
-             (unsigned long)lp);
+    if (up)
+        blog("net: link %s, %d Mbit %s duplex (partner %04lx)\r\n", act == IP101_RECONFIG ? "now" : "up", s_st.speed,
+             s_st.full_duplex ? "full" : "half", (unsigned long)lp);
     else
         blog("net: link down\r\n");
 }

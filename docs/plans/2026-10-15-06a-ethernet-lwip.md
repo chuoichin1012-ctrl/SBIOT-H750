@@ -139,8 +139,8 @@ Regression: `store_check.py`, `ota_check.py`.
   - image 179 KB.
 - Regressions:
   - `store_check.py` passes: 1000 saves, CPU 71 % idle, lowest free heap 247 328 B, against 247 696 in 05b (lwIP's semaphores and mailboxes);
-  - `ota_check.py`: see below.
-  - Host: `test_ip101`, `test_netcfg`, `test_dhcp_dns`.
+  - `ota_check.py` passes (install, resets during installs, cut uploads, Reload, clone, wrong key).
+  - Host: `test_ip101`, `test_netcfg`, `test_dhcp_dns`, `test_rng`.
 
 ## Rulings (for review)
 
@@ -191,3 +191,19 @@ Regression: `store_check.py`, `ota_check.py`.
 ## Codex round 2 (NOT APPROVED), and the fix
 
 1. `netif_set_up` comes before `dhcp_start`, which needs the netif up; every result is checked.
+
+## Code review round 1 (NOT APPROVED), and the fixes
+
+1. **A speed or duplex change between two polls was missed.** `ip101_action(applied, now)` (`test_ip101`, RED first) decides:
+   - start, stop, keep;
+   - **reconfigure**, for still up at another speed or duplex, such as 10 → 100 with no "down" seen in between;
+   - a read error keeps the state.
+
+   `eth_drv` stops the MAC, sets it again and starts it, all under the core lock, and the netif stays up. The log says `link now`.
+2. **`HAL_OK` from the RNG does not prove a good word on the H750:** the HAL checks the seed error only where `RNG_CR_CONDRST` exists.
+   - `components/board/rng_core.c` reads the registers itself: a clock error fails the word, and a seed error is recovered once as RM0433 §34.3.7 says (clear SEIS, drop 12 words, SEIS must stay clear).
+   - A word read while, or just before, an error shows is dropped.
+   - `board_rng` writes nothing more into the buffer once a word fails.
+   - `test_rng` (RED first) covers: a good word; a seed error that recovers; one that stays; an error with DRDY; a clock error; DRDY never.
+
+`net_check.py` passes again.

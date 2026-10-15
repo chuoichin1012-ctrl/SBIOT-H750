@@ -64,3 +64,19 @@ ip101_status_t ip101_power(ip101_t *phy, int down)
     uint32_t bmcr = down ? BMCR_PDOWN : BMCR_ANEN | BMCR_ANRESTART;
     return phy->io.write(phy->io.ctx, phy->addr, PHY_BMCR, bmcr) ? IP101_EWRITE : IP101_OK;
 }
+
+static int is_up(ip101_status_t s)
+{
+    return s >= IP101_100_FULL && s <= IP101_10_HALF;
+}
+
+ip101_action_t ip101_action(ip101_status_t applied, ip101_status_t now)
+{
+    if (now < IP101_OK)
+        return IP101_KEEP;  // a read error says nothing about the link
+    if (!is_up(applied))
+        return is_up(now) ? IP101_START : IP101_KEEP;
+    if (!is_up(now))
+        return IP101_STOP;
+    return now == applied ? IP101_KEEP : IP101_RECONFIG;
+}

@@ -5,6 +5,7 @@
 #include "blog.h"
 #include "now_us.h"
 #include "rng.h"  // hrng (CubeMX)
+#include "rng_core.h"
 #include "semphr.h"
 
 static StaticSemaphore_t s_mutex_mem;
@@ -22,18 +23,27 @@ int board_rng_init(void)
     return s_ok ? 0 : -1;
 }
 
-// One word, under the mutex. A seed or clock error stops the RNG; it is restarted once
-// (RM0433 §34.3.7) before the word counts as failed.
-static int word(uint32_t *w)
+static uint32_t reg_sr(void *ctx)
 {
-    if (!s_ok)
-        return -1;
-    if (HAL_RNG_GenerateRandomNumber(&hrng, w) == HAL_OK)
-        return 0;
-    HAL_RNG_DeInit(&hrng);
-    s_ok = HAL_RNG_Init(&hrng) == HAL_OK && HAL_RNG_GenerateRandomNumber(&hrng, w) == HAL_OK;
-    return s_ok ? 0 : -1;
+    (void)ctx;
+    return RNG->SR;
 }
+
+static uint32_t reg_dr(void *ctx)
+{
+    (void)ctx;
+    return RNG->DR;
+}
+
+static void reg_clear_seis(void *ctx)
+{
+    (void)ctx;
+    RNG->SR = ~RNG_SR_SEIS & (RNG_SR_SEIS | RNG_SR_CEIS);  // rc_w0: write 0 to SEIS, 1 keeps CEIS
+}
+
+// HAL_RNG_GenerateRandomNumber is not used: on the H750 it never checks the seed error.
+// 200 000 polls of SR: well over the first word after enable, a few ms at most.
+static const rng_io_t k_io = {.sr = reg_sr, .dr = reg_dr, .clear_seis = reg_clear_seis, .spins = 200000};
 
 int board_rng(void *buf, size_t len)
 {
@@ -42,9 +52,12 @@ int board_rng(void *buf, size_t len)
     uint8_t *p = buf;
     int r = 0;
     xSemaphoreTake(s_mutex, portMAX_DELAY);
-    while (len && r == 0) {
+    while (len) {
         uint32_t w;
-        r = word(&w);
+        if (!s_ok || rng_word(&k_io, &w)) {
+            r = -1;  // nothing more is written to buf
+            break;
+        }
         size_t n = len < sizeof w ? len : sizeof w;
         memcpy(p, &w, n);
         p += n;

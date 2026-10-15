@@ -58,5 +58,18 @@ typedef enum {
 ip101_status_t ip101_init(ip101_t *phy, const ip101_io_t *io);
 /** The link now: down, autoneg pending, or the speed and duplex in use. */
 ip101_status_t ip101_link(ip101_t *phy);
+typedef enum {
+    IP101_KEEP,      // nothing to do
+    IP101_START,     // set the MAC to the new speed and duplex, start it, link up
+    IP101_STOP,      // stop the MAC, link down
+    IP101_RECONFIG,  // still up, at another speed or duplex: stop, set the MAC again, start
+} ip101_action_t;
+
+/**
+ * What the MAC must do, from the state it was set up for (`applied`; IP101_LINK_DOWN while stopped)
+ * and the state read now. A renegotiation between two polls changes the speed without a "down"
+ * seen in between (Codex 06a review). A read error keeps everything as it is.
+ */
+ip101_action_t ip101_action(ip101_status_t applied, ip101_status_t now);
 /** Powers the PHY down (the link drops), or up again with autoneg restarted. */
 ip101_status_t ip101_power(ip101_t *phy, int down);

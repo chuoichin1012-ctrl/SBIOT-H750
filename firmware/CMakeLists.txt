@@ -109,7 +109,7 @@ set(APP_OWN
   ${BOARD}/board_io.c ${BOARD}/now_us.c ${BOARD}/tick64.c ${BOARD}/wdog.c ${BOARD}/blog.c ${BOARD}/crc32.c
   ${BOARD}/syscalls.c ${BOARD}/spi_nor.c ${OTA}/sha256.c ${OTA}/ota_image.c ${OTA}/ota_app.c ${OTA}/bind.c
   app/store_port.c ${STORE}/store.c ${STORE}/fal_nor.c ${CMAKE_SOURCE_DIR}/components/syslog/syslog.c ${CFGM}/cfgmodel.c ${PROTO}/ipacl.c ${PROTO}/jsonscan.c
-  ${BOARD}/board_rng.c ${NET}/ip101.c ${NET}/netcfg.c ${NET}/eth_drv.c ${NET}/netmgr.c app/fdset_check.c)
+  ${BOARD}/board_rng.c ${BOARD}/rng_core.c ${NET}/ip101.c ${NET}/netcfg.c ${NET}/eth_drv.c ${NET}/netmgr.c app/fdset_check.c)
 # Network (Plan 06a): lwIP 2.2.1 and its FreeRTOS port (third_party/lwip/README.md), built without -Werror.
 set(LWIP ${CMAKE_SOURCE_DIR}/third_party/lwip)
 file(GLOB LWIP_SRC ${LWIP}/src/core/*.c ${LWIP}/src/core/ipv4/*.c ${LWIP}/src/api/*.c)

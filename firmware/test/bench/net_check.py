@@ -78,7 +78,7 @@ def main():
     phy = find(lines, r'net: PHY at (\d+), id ([0-9a-f]+)')
     check(phy is not None and phy.group(2) == '02430c54', 'IP101 found (%s)' % (phy.group(0) if phy else '-'))
     check(find(lines, r'net: static 192\.168\.0\.7 mask 255\.255\.255\.0 gw 192\.168\.0\.1') is not None, 'static 192.168.0.7 from the config')
-    up = find(lines, r'net: link up, 100 Mbit full duplex')
+    up = find(lines, r'net: link (up|now), 100 Mbit full duplex')
     check(up is not None, 'link up at 100 Mbit full duplex')
     n = ping('192.168.0.7', 20)
     check(n == 20, '20 pings, %d answered' % n)
@@ -102,7 +102,7 @@ def main():
     for i in range(5):
         lines = board.listen(14, sends=[(0.3, 'L')])
         down = find(lines, r'net: link down')
-        back = find(lines, r'net: link up, 100 Mbit')
+        back = find(lines, r'net: link (up|now), 100 Mbit')
         ok = down is not None and back is not None and ping('192.168.0.7', 3) == 3
         bad += not ok
     lines, rx = status()

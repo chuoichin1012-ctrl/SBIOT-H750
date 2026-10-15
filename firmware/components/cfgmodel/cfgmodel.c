@@ -127,15 +127,18 @@ static const char DEF_NETWORK[] =
     "\"dnsMode\":1,\"dns1\":\"8.8.8.8\",\"dns2\":\"1.1.1.1\",\"apn\":\"\",\"apnUser\":\"\","
     "\"apnPassword\":\"\",\"apnAuth\":0,\"cellDnsMode\":0,\"cellDns1\":\"\",\"cellDns2\":\"\"}";
 
-static const char DEF_PORT[] =
-    "{\"baudRate\":115200,\"dataBits\":8,\"parity\":0,\"stopBits\":1,\"flowControl\":0,\"packetLength\":0,\"packetInterval\":0,"
-    "\"serialHeartbeat\":false,\"serialHeartbeatContent\":0,\"serialHeartbeatHex\":1,\"serialHeartbeatData\":\"\",\"serialHeartbeatInterval\":30,"
-    "\"workMode\":3,\"socketMode\":0,\"remoteHost\":\"192.168.0.201\",\"remotePort\":23,\"localPort\":0,\"udpAnyRemotePort\":0,"
-    "\"listenPort\":23,\"maxClients\":8,\"clientLimitAction\":0,\"allowedClients\":\"\",\"httpHost\":\"\",\"httpPort\":80,\"httpLocalPort\":0,\"httpMethod\":0,"
-    "\"httpPath\":\"/\",\"httpHeaders\":\"\",\"httpStripHeaders\":true,\"httpTimeout\":10,\"reconnectInterval\":5,\"shortConnectionTime\":10,"
-    "\"modbusPoll\":false,\"modbusPollTimeout\":200,\"modbusException\":false,\"netHeartbeat\":false,\"netHeartbeatContent\":0,\"netHeartbeatHex\":1,"
-    "\"netHeartbeatData\":\"\",\"netHeartbeatInterval\":60,\"registration\":0,\"registrationSend\":0,\"registrationHex\":1,\"registrationData\":\"\","
-    "\"tls\":0,\"tlsVerify\":0}";
+// The ports' defaults differ only in the TCP server's listen port: both bridges run at once (Plan 08a).
+#define DEF_PORT_JSON(LISTEN) \
+    "{\"baudRate\":115200,\"dataBits\":8,\"parity\":0,\"stopBits\":1,\"flowControl\":0,\"packetLength\":0,\"packetInterval\":0,"\
+    "\"serialHeartbeat\":false,\"serialHeartbeatContent\":0,\"serialHeartbeatHex\":1,\"serialHeartbeatData\":\"\",\"serialHeartbeatInterval\":30,"\
+    "\"workMode\":3,\"socketMode\":0,\"remoteHost\":\"192.168.0.201\",\"remotePort\":23,\"localPort\":0,\"udpAnyRemotePort\":0,"\
+    "\"listenPort\":" LISTEN ",\"maxClients\":8,\"clientLimitAction\":0,\"allowedClients\":\"\",\"httpHost\":\"\",\"httpPort\":80,\"httpLocalPort\":0,\"httpMethod\":0,"\
+    "\"httpPath\":\"/\",\"httpHeaders\":\"\",\"httpStripHeaders\":true,\"httpTimeout\":10,\"reconnectInterval\":5,\"shortConnectionTime\":10,"\
+    "\"modbusPoll\":false,\"modbusPollTimeout\":200,\"modbusException\":false,\"netHeartbeat\":false,\"netHeartbeatContent\":0,\"netHeartbeatHex\":1,"\
+    "\"netHeartbeatData\":\"\",\"netHeartbeatInterval\":60,\"registration\":0,\"registrationSend\":0,\"registrationHex\":1,\"registrationData\":\"\","\
+    "\"tls\":0,\"tlsVerify\":0}"
+static const char DEF_PORT[] = DEF_PORT_JSON("23");
+static const char DEF_PORT2[] = DEF_PORT_JSON("24");
 
 static const char DEF_MQTT[] =
     "{\"enabled\":0,\"version\":1,\"host\":\"\",\"port\":1883,\"clientId\":\"\",\"keepAlive\":60,\"reconnectIfSilent\":0,"
@@ -178,7 +181,7 @@ typedef struct {
 static const cfgdef_t CONFIGS[] = {
     {"network", K_OBJECT, network_fields, N(network_fields), DEF_NETWORK},
     {"port1", K_OBJECT, port_fields, N(port_fields), DEF_PORT},
-    {"port2", K_OBJECT, port_fields, N(port_fields), DEF_PORT},
+    {"port2", K_OBJECT, port_fields, N(port_fields), DEF_PORT2},
     {"mqtt", K_OBJECT, mqtt_fields, N(mqtt_fields), DEF_MQTT},
     {"mqttPublish", K_TOPICS, topic_fields, N(topic_fields), "[]"},
     {"mqttSubscribe", K_TOPICS, topic_fields, N(topic_fields), "[]"},

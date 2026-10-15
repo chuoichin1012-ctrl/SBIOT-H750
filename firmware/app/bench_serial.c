@@ -6,7 +6,8 @@
 //                                 with '|' in <hex>, in those parts instead (up to 4)
 //   E<port> 3 <seconds>           stream bytes 0..255 continuously for <seconds>
 //   E<port> 4 <hex>               send <hex> now (an XOFF 13, an XON 11)
-//   F<port>                       the frames received since the last F: count, bytes, lengths and gaps
+//   F<port>                       the frames received since the last F: count, bytes, lengths and gaps,
+//                                 and the hex of the last one (its first 64 bytes)
 #include "bench_serial.h"
 #include <stdio.h>
 #include <string.h>
@@ -31,6 +32,8 @@ typedef struct {
     volatile uint32_t frames, bytes;
     uint16_t len[LOG_FRAMES];
     uint32_t at_ms[LOG_FRAMES];
+    uint8_t last[64];  // the start of the last frame, for F's hex
+    size_t last_len;
 } peer_t;
 
 static peer_t s_peer[SERIAL_PORTS + 1];
@@ -75,6 +78,8 @@ static void on_frame(int port, const uint8_t *data, size_t len, void *ctx)
     p->at_ms[i] = (uint32_t)(now_us() / 1000u);
     p->frames++;
     p->bytes += (uint32_t)len;
+    p->last_len = len < sizeof p->last ? len : sizeof p->last;
+    memcpy(p->last, data, p->last_len);
     if (p->mode == 1 && !s_echo_len[port]) {
         memcpy(s_echo[port], data, len);
         s_echo_len[port] = len;
@@ -149,7 +154,13 @@ void bench_serial_cmd(char cmd, const char *line)
             q += snprintf(out + q, sizeof out - q, " %u+%ld", p->len[i], gap);
         }
         blog("%s\r\n", out);
+        char hex[2 * sizeof p->last + 1];
+        for (size_t k = 0; k < p->last_len; k++)
+            snprintf(hex + 2 * k, 3, "%02x", p->last[k]);
+        hex[2 * p->last_len] = 0;
+        blog("app: F%d last %s\r\n", port, n ? hex : "-");
         p->frames = p->bytes = 0;
+        p->last_len = 0;
         return;
     }
     int mode = 0, a = 0;

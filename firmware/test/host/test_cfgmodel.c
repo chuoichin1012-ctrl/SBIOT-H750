@@ -235,6 +235,12 @@ static void test_stm32_scope(void)
     cJSON *d = cfg_default(&ENV, "port1");
     CHECK(d && !cJSON_GetObjectItem(d, "rfc2217"), "port default must not carry rfc2217");
     cJSON_Delete(d);
+    // Two bridges run at once (Plan 08a): the ports' default TCP servers must not share a listen port.
+    cJSON *d1 = cfg_default(&ENV, "port1"), *d2 = cfg_default(&ENV, "port2");
+    int l1 = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(d1, "listenPort")), l2 = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(d2, "listenPort"));
+    CHECK(l1 == 23 && l2 == 24, "default listen ports 23 and 24 (%d, %d)", l1, l2);
+    cJSON_Delete(d1);
+    cJSON_Delete(d2);
     d = cfg_default(&ENV, "system");
     CHECK(d && !cJSON_GetObjectItem(d, "telnet") && !cJSON_GetObjectItem(d, "telnetPort"), "system default must not carry telnet");
     cJSON_Delete(d);

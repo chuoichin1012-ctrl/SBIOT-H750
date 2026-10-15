@@ -83,6 +83,7 @@ set(SYS ${CMAKE_SOURCE_DIR}/components/sysmgr)
 set(WEB ${CMAKE_SOURCE_DIR}/components/webapi)
 set(SER ${CMAKE_SOURCE_DIR}/components/serial)
 set(IOM ${CMAKE_SOURCE_DIR}/components/iomgr)
+set(SVC ${CMAKE_SOURCE_DIR}/components/services)
 set(PROTO ${CMAKE_SOURCE_DIR}/components/proto)
 set(MONO ${CMAKE_SOURCE_DIR}/third_party/monocypher)
 set(OTA_BOOT ${OTA}/sha256.c ${OTA}/ota_image.c ${OTA}/bind.c)
@@ -118,7 +119,7 @@ set(APP_OWN
   ${SYS}/clock.c ${SYS}/sysmgr.c ${WEB}/web_core.c ${WEB}/web.c ${WEB}/api.c ${WEB}/console.c ${WEB}/mg_port.c
   ${CMAKE_SOURCE_DIR}/components/arena/arena.c app/arena_port.c
   ${SER}/serial_frame.c ${SER}/uart_drv.c ${SER}/serial.c
-  ${IOM}/io_core.c ${IOM}/adc_core.c ${IOM}/adc_drv.c ${IOM}/iomgr.c ${IOM}/io_mb.c ${SYS}/reload.c app/bench_io.c)
+  ${IOM}/io_core.c ${IOM}/adc_core.c ${IOM}/adc_drv.c ${IOM}/iomgr.c ${IOM}/io_mb.c ${SVC}/bridge_core.c ${SVC}/net.c ${SVC}/bridge.c ${SVC}/services.c ${PROTO}/modbus.c ${SYS}/reload.c app/bench_io.c)
 # The embedded UI (Plan 06b): tools/embed_web.py writes the gzip bytes as C arrays and their table.
 set(APP_WWW ${WEB}/www/www_files.c)
 if(NOT EXISTS ${APP_WWW})  # a build output (gitignored), not a source
@@ -139,7 +140,7 @@ image_includes(app ${CUBE}/app)
 target_include_directories(app PRIVATE app ${RTOS}/include ${RTOS}/portable/GCC/ARM_CM4F ${OTA}/include ${MONO} ${CMAKE_BINARY_DIR}/gen
   ${CMAKE_SOURCE_DIR}/components/syslog/include ${STORE}/include ${STORE}/port ${FDB}/inc ${FDB}/port/fal/inc ${CFGM}/include ${PROTO}/include ${CMAKE_SOURCE_DIR}/third_party/cjson
   ${NET}/include ${LWIP}/src/include ${LWIP}/contrib/ports/freertos/include
-  ${SYS}/include ${WEB}/include ${SER}/include ${IOM}/include ${CMAKE_SOURCE_DIR}/components/arena/include ${CMAKE_SOURCE_DIR}/third_party/tlsf
+  ${SYS}/include ${WEB}/include ${SER}/include ${IOM}/include ${SVC}/include ${CMAKE_SOURCE_DIR}/components/arena/include ${CMAKE_SOURCE_DIR}/third_party/tlsf
   ${CMAKE_SOURCE_DIR}/third_party/mongoose)
 set_source_files_properties(${APP_OWN} TARGET_DIRECTORY app PROPERTIES COMPILE_OPTIONS "${STRICT}")
 # The copy loops of Reset_Handler must stay loops: memcpy/memset run from ITCM, which they fill.

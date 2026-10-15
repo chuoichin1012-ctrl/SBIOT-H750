@@ -13,3 +13,4 @@ firmware/cube/*/CMakeLists.txt
 firmware/cube/*/CMakePresets.json
 firmware/cube/*/Projects
 firmware/tools/__pycache__
+firmware/test/bench/__pycache__

@@ -35,7 +35,7 @@ Tiêu chí hoàn thành:
 | D6 | Edge | **Tối đa 100 điểm** (bản ESP32: 300). `edgeDevices` xử lý **theo từng node** trong một arena cố định (§9) |
 | D7 | Kiểm thử | Host unit test cộng bench HIL trên board thật. E2E chỉ kiểm **UART1** |
 | D8 | MQTT | coreMQTT v2.3.1, chạy trong task riêng, đặt trên `tlsconn.c` chép từ ESP32. Outbox tự viết. Vá CONNECT để hỗ trợ MQTT 3.1 |
-| D9 | Bootloader/OTA | Bootloader tự viết trong flash nội. Slot staging và backup nằm trên SPI flash. Cài đặt làm tiếp được sau khi mất điện, kiểm bằng SHA-256, có boot thử và rollback |
+| D9 | Bootloader/OTA | Bootloader tự viết trong flash nội. Slot staging và slot firmware gốc nằm trên SPI flash. Cài đặt kiểm bằng SHA-256, mất điện thì cài lại từ đầu. **Không tự cứu hộ, không boot thử, không rollback tự động**: có sự cố thì người dùng giữ nút Reload để khôi phục firmware gốc (§11.2) |
 | D10 | LTE | PPPoS của lwIP qua **CMUX** trên UART3 (EC600U có hỗ trợ CMUX). Giữ đường PPP thẳng làm dự phòng |
 | D11 | Giờ | NTP là tùy chọn, chủ yếu phục vụ report theo lịch. Không dịch vụ nào chờ đồng hồ (§10.4). Không thêm nguồn giờ nào khác |
 | D12 | Loại bỏ | SNMP, Cloud, USB, **Telnet**, **RFC 2217**, **đồng bộ baud kiểu PUSR/USR-VCOM**, Socket B, máy in serial, IO mở rộng, PID |
@@ -133,17 +133,12 @@ Mọi vùng đều **căn theo 64 KB**, nên một lệnh xóa block không bao 
 | Offset | Dung lượng | Nội dung |
 |---|---|---|
 | 0x000000 | 1.024 KB | FlashDB: `cfg` KVDB 256 KB (sector 16 KB), `edge` KVDB 256 KB, `cert` KVDB 128 KB, `log` TSDB 384 KB |
-| 0x100000 | 64 KB | Trạng thái boot: hai bản ghi, mỗi bản một sector 4 KB riêng (§11.2). Phần còn lại để dự trữ |
+| 0x100000 | 64 KB | Dự trữ |
 | 0x110000 | 1.472 KB (0x170000, 23 × 64 KB) | Slot staging |
-| 0x280000 | 1.472 KB | Slot backup |
+| 0x280000 | 1.472 KB | Slot firmware gốc (factory image). Bootloader gieo một lần từ image QSPI đầu tiên (§11.2), sau đó chỉ đọc |
 | 0x3F0000 | 64 KB | Factory record (hiệu chuẩn AI, §6.6): hai sector 4 KB, mỗi sector một bản sao kèm CRC. Ghi bằng công cụ sản xuất. Factory reset không xóa. Phần còn lại để dự trữ |
 
-Mọi thao tác trên slot dùng cùng một cách chia:
-- **checkpoint** theo đơn vị logic 64 KB;
-- **xóa** theo sector 4 KB;
-- **ghi** theo page 256 B.
-
-Với checkpoint cuối, chỉ **chép và tính hash** đúng số byte thuộc image. Phần **xóa** thì làm tròn lên thành số sector 4 KB nguyên (⌈byte còn lại / 4 KB⌉), vì không thể xóa dở một sector. Cách làm tròn này không bao giờ vượt quá cuối slot, vì slot dài đúng 23 × 64 KB.
+Mọi thao tác trên slot **xóa** theo sector 4 KB và **ghi** theo page 256 B. Chỉ **chép và tính hash** đúng số byte thuộc image. Phần **xóa** thì làm tròn lên thành số sector 4 KB nguyên (⌈byte / 4 KB⌉), vì không thể xóa dở một sector. Cách làm tròn này không bao giờ vượt quá cuối slot, vì slot dài đúng 23 × 64 KB.
 
 ### 5.3 RAM
 
@@ -155,7 +150,7 @@ Với checkpoint cuối, chỉ **chép và tính hash** đúng số byte thuộc
 | SRAM1 (D2) | 128 KB | Descriptor, buffer RX và buffer TX của ETH, heap `MEM` của lwIP 64 KB, pool pbuf, ring DMA RX và buffer TX của USART1/2/3, buffer trung chuyển SPI4. Số lượng và kích thước chốt trong bảng pool lwIP (§5.6) | **Non-cacheable qua MPU.** Startup bật clock SRAM D2 trước khi khởi tạo `.data` |
 | SRAM2+3 (D2) | 160 KB | Ring serial → mạng 2 × 8 KB, `bufferOffline` 2 × 32 KB, outbox MQTT 64 KB. Còn 16 KB cho metadata và căn lề | Cacheable |
 | SRAM4 (D3) | 64 KB | Ring syslog 32 KB, ring của `mqtt_io` 2 × 12 KB, **buffer BDMA của ADC3** (800 B) trong region non-cacheable 1 KB riêng ở 0x3800FC00 (§6.6). Còn khoảng 7 KB | Region 1 KB của ADC đặt non-cacheable qua MPU, phần còn lại cacheable |
-| Backup SRAM | 4 KB | Bản ghi HardFault (§11.4). Handoff block 64 B giữa bootloader và app (§11.2) | |
+| Backup SRAM | 4 KB | Bản ghi HardFault (§11.4) | |
 
 **Cách tính ngân sách:**
 - Các buffer lớn đều cấp phát tĩnh trong section của vùng tương ứng, **trừ** các khoản được ghi rõ là cấp từ heap trong bảng trên: TLS, Mongoose, buffer report, buffer mạng coreMQTT. Ngân sách tĩnh được kiểm bằng **file map của linker**: tổng của mỗi section không vượt dung lượng vùng.
@@ -246,7 +241,7 @@ Thang ưu tiên của FreeRTOS là 0–31 (`configMAX_PRIORITIES` = 32). `n` là
 
 | Task | Số lượng | Stack | Prio | Vai trò |
 |---|---|---|---|---|
-| `wdog` | 1 | 2 KB | 31 (cao nhất) | Kick WDI và nháy LED WORK mỗi 200 ms (SGM706: timeout tối thiểu 1,0 s). Giám sát `init` và `TRIAL` (§11.4). Nằm trên `tcpip` và `eth_rx`, để một trận broadcast trên LAN nhà máy không gây vòng reset |
+| `wdog` | 1 | 2 KB | 31 (cao nhất) | Kick WDI và nháy LED WORK mỗi 200 ms (SGM706: timeout tối thiểu 1,0 s). Giám sát `init` (§11.4). Nằm trên `tcpip` và `eth_rx`, để một trận broadcast trên LAN nhà máy không gây vòng reset |
 | `tcpip` | 1 | 4 KB | 24 | lwIP, SNTP, nhận dữ liệu PPPoS |
 | `eth_rx` | 1 | 2 KB | 22 | Semaphore từ ISR của ETH, đưa pbuf vào lwIP |
 | `serial_rx[n]` | 2 | 3 KB | 26 | Chủ đọc duy nhất của cổng: cắt frame, giao cho transaction hoặc subscriber. Mỗi lần thức dậy chỉ làm một lượng việc có giới hạn rồi block chờ ISR |
@@ -265,7 +260,7 @@ Thang ưu tiên của FreeRTOS là 0–31 (`configMAX_PRIORITIES` = 32). `n` là
 | `edge_rpt` | 1 | 4 KB | 4 | Report theo chu kỳ, theo lịch, khi thay đổi |
 | `serial_hb[n]` | 2 | 2 KB | 4 | Heartbeat serial khi bus im lặng |
 | `reload` | 1 | 2 KB | 3 | Nút Reload |
-| `syslog`, `idle`, `ota_confirm` | 1 mỗi loại | 3 / 2 / 2 KB | 2 | Log, `idleRestart`, xác nhận image |
+| `syslog`, `idle` | 1 mỗi loại | 3 / 2 KB | 2 | Log, `idleRestart` |
 
 Ngoài bảng trên còn có:
 - task `init` (6 KB, prio 7), tự xóa sau khi khởi động xong;
@@ -330,7 +325,7 @@ Code trên QSPI không được cấu hình lại chính đường đang dùng �
    5. `serial`, phải chạy trước mọi module subscribe cổng nối tiếp;
    6. `services`: bridge[n], MQTT và Edge khi được bật;
    7. `webapi`;
-   8. `sysmgr`, **chạy cuối cùng**. Module này nhận kết quả khởi động của các dịch vụ và khởi động `ota_confirm` (§11.3).
+   8. `sysmgr`, **chạy cuối cùng**. Module này nhận kết quả khởi động của các dịch vụ và ghi vào log.
 4. Task `init` tự xóa sau khi xong.
 
 ### 6.4 Quy tắc luồng dữ liệu
@@ -778,7 +773,6 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
 | `system` | Bỏ `telnet`, `telnetPort` |
 | `edgeDevices` | Tối đa 100 điểm, 64 thiết bị. Body ≤ 48 KB, văn bản chuẩn hóa ≤ 48 KB. Lỗi 411, 413, 503 như §9.4 |
 | Các cấu hình khác | Body và văn bản chuẩn hóa ≤ 10 KB (bản ESP32: body 96 KB) |
-| `POST /api/ota` | Thêm 409 khi đang ở `TRIAL` (§11.3) |
 | `GET /api/status` | Thêm trạng thái của port2. Thêm `wdiMaxGapMs`. Thêm `mem` gồm: <br>• heap AXI: còn trống hiện tại và thấp nhất; <br>• đỉnh arena; <br>• mức chiếm dụng cao nhất của các pool tĩnh (pbuf, netconn, ring, outbox, MessageBuffer) dưới dạng `{used, size}`; <br>• stack còn dư thấp nhất cùng tên task; <br>• các bộ đếm `overrun` và frame bị bỏ của từng UART |
 | Trạng thái MQTT | Bỏ `WAITING FOR CLOCK` |
 
@@ -825,94 +819,57 @@ Header 1 KB đặt ở đầu image:
 
 ### 11.2 Bootloader (flash nội, đơn luồng)
 
-**Bản ghi trạng thái** (SPI4 0x100000, slot A ở sector 4 KB đầu, slot B ở sector 4 KB kế tiếp):
-- Mỗi bản ghi chứa:
-  - `seq` (uint32);
-  - `state`;
-  - `offset` (checkpoint, tính theo đơn vị 64 KB);
-  - `trial`;
-  - `attempts`: số lần đã **bắt đầu** checkpoint `offset` của trạng thái hiện tại mà chưa xong, kèm `verify_fail`: số lần VERIFY hoặc kiểm SHA sau RESTORE thất bại;
-  - `degraded`: lần boot trước không ghi được bản ghi trạng thái;
-  - bản sao header của image trong staging và của image trong backup;
-  - lý do lần chuyển trạng thái gần nhất;
-  - **CRC32 ở cuối**, ghi sau cùng.
-- **Cách ghi:**
-  1. Chọn slot không chứa bản ghi hợp lệ mới nhất.
-  2. Xóa sector đó.
-  3. Ghi thân bản ghi, rồi ghi CRC sau cùng.
+Bootloader chỉ làm ba việc:
+- cài firmware mới có trong staging;
+- khôi phục firmware gốc khi người dùng giữ nút Reload;
+- kiểm image trước khi nhảy.
 
-  Bản ghi cũ vẫn hợp lệ cho tới khi bản ghi mới ghi xong. Ghi dở thì CRC sai, nên bản ghi đó không được dùng.
-- **Cách đọc:** lấy bản ghi có CRC đúng và `seq` mới hơn theo phép so sánh có quay vòng: `(int32_t)(a − b) > 0`. Flash trắng (`0xFF…`) không phải bản ghi hợp lệ.
-- **Không bản ghi nào hợp lệ** (lần đầu sau khi nạp qua SWD, hoặc cả hai đều hỏng):
-  - image QSPI hợp lệ: coi như `CONFIRMED`, ghi bản ghi mới;
-  - image QSPI hỏng và backup hợp lệ: chuyển sang `RESTORE`;
-  - cả hai đều hỏng: theo hàng 9 (còn staging hợp lệ) hoặc hàng 1 của bảng quyết định.
+Nó **không tự cứu hộ**. Không có bản ghi trạng thái, không boot thử, không rollback tự động. Khi không còn image chạy được, nó **dừng** và chờ người dùng tác động.
 
-**Các trạng thái:**
+**Ba image** (§5.2):
+- `Q`: image đang chạy, trong QSPI;
+- `S`: image mới, trong staging;
+- `F`: firmware gốc, trong slot factory.
 
-| Trạng thái | Bootloader làm gì | Chuyển sang |
-|---|---|---|
-| `CONFIRMED` | Kiểm SHA-256 của image QSPI | Hợp lệ: nhảy vào app. Hỏng: `RESTORE(0)` nếu backup hợp lệ; ngược lại theo hàng 9 (còn staging hợp lệ) hoặc hàng 1 của bảng quyết định |
-| `PENDING` (app ghi khi staging đã đầy đủ) | **Kiểm header, kích thước và SHA của staging trước khi xóa bất cứ thứ gì** | Hợp lệ: `BACKUP(0)`, hoặc thẳng `WRITE(0)` nếu image QSPI hiện tại hỏng (khi đó giữ backup cũ). Hỏng: `CONFIRMED`, kèm lý do |
-| `BACKUP(off)` | Chép QSPI → backup từ checkpoint `off` | Xong: **kiểm SHA của backup** khớp header của image đang chạy, rồi `WRITE(0)`. Không khớp: làm lại `BACKUP(0)` một lần, lần hai vẫn sai thì `CONFIRMED` (hủy cài) |
-| `WRITE(off)` | Chép staging → QSPI từ checkpoint `off` | Xong: `VERIFY` |
-| `VERIFY` | SHA của QSPI so với header của staging | Khớp: `TRIAL(0)`. Không khớp: `verify_fail + 1`, làm lại `WRITE(0)`. Cạn lượt thử: theo hàng 8 và 9 của bảng quyết định |
-| `TRIAL(n)` | `n + 1`, ghi bản ghi, rồi nhảy vào app | `n + 1 > 3`: `RESTORE(0)`. App xác nhận: `CONFIRMED`. App yêu cầu rollback: `RESTORE(0)` |
-| `RESTORE(off)` | Ở `off = 0`: **kiểm SHA của backup trước khi xóa QSPI**. Rồi chép backup → QSPI từ `off`. **Backup là nguồn không đổi** của trạng thái này: không bao giờ chép vào backup khi đang `RESTORE` | Xong và SHA của QSPI khớp: `CONFIRMED`. **Xong mà SHA không khớp:** `verify_fail + 1`, làm lại `RESTORE(0)`. Cạn lượt thử: theo hàng 9 của bảng quyết định. Backup hỏng ngay từ đầu: nếu image QSPI còn hợp lệ thì chạy nó (`CONFIRMED`, ghi lý do); nếu không thì theo hàng 9 (còn staging hợp lệ) hoặc hàng 1 |
+"Hợp lệ" nghĩa là qua đủ các bước kiểm ở §11.1 (`img_check`: magic, CRC32 của header, mã phần cứng, `size` ≤ slot, SHA-256 của phần thân, MSP và reset vector). Lỗi đọc flash trong lúc kiểm cũng tính là không hợp lệ.
 
-**Quy tắc chung:**
-- **Kiểm image trước mọi lần nhảy**, kể cả ở `CONFIRMED` và `TRIAL`, không có ngoại lệ. Phải đạt cả: magic, CRC32 của header, mã phần cứng, `size` ≤ slot, SHA-256 của phần thân, MSP và reset vector (§11.1).
-  - Ở `TRIAL`, kiểm thất bại thì chuyển `RESTORE(0)`, không bao giờ nhảy vào image hỏng.
-- Mỗi checkpoint 64 KB gồm: xóa các sector 4 KB của đích (16 sector, riêng checkpoint cuối làm tròn theo §5.2), ghi theo page, đọc lại so sánh với nguồn, rồi ghi `offset + 1`.
-  - Mất điện giữa chừng thì lần boot sau làm lại đúng checkpoint đó.
-  - Nguồn chép không bao giờ bị đụng tới: staging trong `WRITE`, QSPI trong `BACKUP`, backup trong `RESTORE`.
-- **Bộ đếm số lần thử, lưu trong bản ghi trạng thái:**
-  - Trước khi bắt đầu một checkpoint, bootloader ghi bản ghi với `attempts + 1`.
-  - Xong checkpoint thì ghi `offset + 1, attempts = 0`.
-  - Vì vậy một lần treo hay reset giữa chừng đã được đếm trước khi nó xảy ra.
-  - Bộ đếm này **không phân biệt** mất nguồn với lỗi flash. Vì vậy cạn lượt thử không bị coi là lỗi phần cứng, mà dẫn tới chế độ cứu hộ có **tự thử lại** (bên dưới).
-- **Handoff block:** 64 B ở cuối backup SRAM, có magic và CRC, còn nguyên qua reset khi board vẫn có nguồn.
-  - Magic hoặc CRC sai (lần cấp nguồn đầu tiên) thì khởi tạo lại về 0.
-  - Gồm `rec_fail` (số lần liên tiếp không ghi được bản ghi trạng thái), `ram_fail` (số lần thử phục hồi theo dõi tiến độ trong RAM), cờ `degraded` cho app, và lý do của lần boot.
-  - `rec_fail` về 0 ngay khi ghi bản ghi thành công. `ram_fail` về 0 khi phục hồi qua đường RAM thành công.
+**Chép một image** (`copy`, dùng chung cho cả ba đường):
+1. Xóa sector 4 KB đầu của đích **trước tiên**. Từ lúc này, đích bị cắt điện giữa chừng luôn không hợp lệ.
+2. Với mỗi sector còn lại: xóa, rồi ghi theo page.
+3. Ghi sector đầu, nơi chứa header, **sau cùng**, chừa trống 4 byte magic `SBIO`.
+4. Đọc lại toàn bộ đích, so từng byte với nguồn (magic phải còn trắng).
+5. Ghi magic, tách riêng, là **lần ghi cuối cùng**. Nhờ vậy một đích bị cắt điện hay bị ghi sai không bao giờ có magic.
+6. Kiểm đích bằng `img_check`. Header của đích phải trùng từng byte với header của nguồn.
 
-**Bảng quyết định duy nhất.** Trước khi xét bảng, bootloader xác định ba nguồn: `Vq` (image QSPI hợp lệ), `Vb` (backup hợp lệ) và `Vs` (staging hợp lệ). Các hàng loại trừ nhau, xét từ trên xuống, dừng ở hàng đầu tiên khớp:
+Nguồn không bao giờ bị ghi. Mọi lần chờ flash đều có deadline, bằng 2 lần giá trị tối đa trong datasheet GD25Q32E (`nor.h`), và vẫn kick watchdog. Lỗi flash, quá deadline hay kiểm sai đều làm `copy` thất bại.
 
-| # | Điều kiện | Hành động |
-|---|---|---|
-| 1 | Không có `Vq`, `Vb` lẫn `Vs` | **Cứu hộ dừng hẳn.** Hàng này xét **trước mọi nhánh phục hồi**, nên các hàng sau luôn có ít nhất một nguồn hợp lệ |
-| 2 | Thao tác chép dữ liệu (xóa, ghi page, đọc lại) quá deadline, tức 2 lần giá trị tối đa trong datasheet GD25Q32E, ở **bất kỳ** đường chép nào: có checkpoint (state machine, hàng 10) hoặc theo dõi tiến độ trong RAM (hàng 6) | **Ngừng kick** (WDI và IWDG1): IWDG1 reset board (và SGM706 nếu R20 được lắp, §11.4). Lần thử đã được đếm **trước** khi bắt đầu: bằng `attempts` trong bản ghi (đường có checkpoint), hoặc bằng `ram_fail` trong handoff block (đường RAM) |
-| 3 | Ghi **bản ghi trạng thái** thất bại (quá deadline, hoặc đọc lại không khớp) | **Không** ngừng kick. `rec_fail + 1` trong handoff block, rồi xét hàng 4–6 |
-| 4 | Hàng 3, và có `Vq`, **ở bất kỳ trạng thái nào**, kể cả `WRITE` hoặc `RESTORE` (ví dụ đã ghi xong checkpoint cuối nhưng cập nhật bản ghi thất bại) | **Không xóa QSPI.** Nhảy vào app với `degraded` = 1. Không đổi trạng thái, nên cài đặt đang chờ được hoãn lại. App ghi cảnh báo vào log và **từ chối OTA** (409). Ở `TRIAL` thì `trial` không tăng được: app vẫn chạy, nhưng không xác nhận được, vì xác nhận cũng phải ghi bản ghi |
-| 5 | Hàng 3, **không** có `Vq`, `rec_fail` < 3 | Reset và thử lại |
-| 6 | Hàng 3, **không** có `Vq`, `rec_fail` ≥ 3 | **Phục hồi theo dõi tiến độ trong RAM**, xem bên dưới. Vì không có `Vq`, hàng 1 bảo đảm còn `Vb` hoặc `Vs` |
-| 7 | `BACKUP`: `attempts` > 3 | Hủy cài: `CONFIRMED`. Image đang chạy còn nguyên, vì BACKUP chỉ đọc QSPI |
-| 8 | `WRITE`: `attempts` > 3 hoặc `verify_fail` ≥ 2, và có `Vb` | `RESTORE(0)` |
-| 9 | `WRITE` cạn lượt thử và không có `Vb`; hoặc `RESTORE`: `attempts` > 3 hoặc `verify_fail` ≥ 2 | **Cứu hộ có thử lại**. Theo hàng 1, chắc chắn còn ít nhất một nguồn |
-| 10 | Các trường hợp còn lại | Chạy state machine ở bảng trạng thái phía trên |
+**Trình tự quyết định mỗi lần boot** (`install_run`):
+1. **Reload được giữ liên tục 5 s** tính từ lúc bootloader bắt đầu: **khôi phục firmware gốc.** Trong lúc chờ, LED WORK sáng liên tục và bootloader vẫn kick.
+   1. `F` không hợp lệ: **dừng**, không ghi gì cả.
+   2. Xóa sector đầu của staging, để image trong đó không bị cài lại ở lần boot sau. Không xóa được: **dừng**.
+   3. `copy` F → QSPI. Thất bại: **dừng**.
+   4. Chờ nhả nút, rồi nhảy vào app.
 
-**Phục hồi theo dõi tiến độ trong RAM** (hàng 6). Đây là đường dành cho lúc SPI4 không ghi được bản ghi trạng thái, nên mọi bộ đếm đều nằm trong handoff block:
-1. `ram_fail + 1` trong handoff block, **trước khi** làm gì khác.
-2. `ram_fail` > 3: **cứu hộ có thử lại**.
-3. Chọn nguồn: `Vb` trước, không có thì `Vs`. Hàng 6 chỉ được chọn khi không có `Vq`, nên hàng 1 bảo đảm có ít nhất một trong hai. Đường này **không bao giờ** xóa một image QSPI hợp lệ.
-4. **Kiểm nguồn** (header, kích thước, SHA) **trước khi** xóa QSPI. Nguồn hỏng thì loại nó khỏi danh sách rồi quay lại bước 3. Hết nguồn thì **cứu hộ dừng hẳn**.
-5. Chép toàn bộ, mỗi thao tác đều có deadline. Quá deadline thì theo hàng 2: lần thử này đã được đếm ở bước 1.
-6. Kiểm image QSPI theo đúng các điều kiện trước khi nhảy (§11.1):
-   - đạt: `ram_fail` = 0, rồi nhảy vào app với `degraded` = 1;
-   - **không đạt: tuyệt đối không nhảy.** Reset, và lần thử đã được đếm ở bước 1.
+   Mất điện **trước khi** xóa xong sector đầu của staging thì staging có thể còn nguyên. Khi đó, lần boot thường sau đó vẫn cài nó, và người dùng phải giữ Reload lần nữa. Từ lúc xóa xong, image trong staging không bao giờ được cài lại.
 
-Mất nguồn thì handoff block mất theo. Lần cấp nguồn sau, `rec_fail` = `ram_fail` = 0, và bootloader thử ghi bản ghi lại từ đầu. Nếu SPI4 đã hoạt động lại thì quay về đường có checkpoint.
+   Bước này không xóa cấu hình (`cfg`, `edge`, `cert`). Muốn về cấu hình gốc thì dùng Reload 3–15 s của app (§11.4).
+2. **Gieo firmware gốc** (chỉ một lần, ở lần boot đầu tiên sau khi sản xuất). Điều kiện: slot factory **chưa có magic** `SBIO` và `Q` hợp lệ. Khi đó `copy` Q → factory.
+   - Thất bại thì chỉ in log rồi đi tiếp.
+   - Magic được ghi sau cùng, nên mất điện giữa chừng thì lần boot sau gieo lại từ đầu.
+   - Slot factory đã có magic mà image hỏng thì không gieo lại.
+   - Không đọc được magic thì coi như đã có: không gieo.
+3. **Có firmware mới:** `S` hợp lệ, và `Q` không hợp lệ hoặc header của `Q` khác header của `S`. Khi đó `copy` S → QSPI.
+   - Thất bại: **dừng**.
+   - Mất điện giữa chừng: lần boot sau vẫn thấy `S` khác `Q`, nên chép lại từ đầu.
+   - Staging rỗng, hỏng (header hoặc SHA) hay trùng image đang chạy thì không ghi gì.
+4. `Q` hợp lệ: nhảy vào app. Ngược lại: **dừng**.
 
-**Hai chế độ cứu hộ:**
-- **Cứu hộ có thử lại:** LED WORK nháy nhanh, vẫn kick WDI.
-  - Cứ 60 s, đặt lại các bộ đếm (`attempts` và `verify_fail` nếu ghi được bản ghi, `ram_fail` trong handoff block) và thử phục hồi QSPI từ nguồn hợp lệ: backup trước, không có thì staging.
-  - Lần thử dùng đường có checkpoint nếu ghi được bản ghi, ngược lại dùng đường RAM.
-  - Thành công thì về `CONFIRMED` (từ backup) hoặc `TRIAL(0)` (từ staging).
-  - Nếu trong lúc thử phát hiện không còn nguồn hợp lệ nào thì chuyển sang cứu hộ dừng hẳn.
-  - Như vậy một chuỗi mất nguồn hay lỗi tạm thời không giữ board ở cứu hộ mãi.
-- **Cứu hộ dừng hẳn:** LED WORK nháy nhanh, vẫn kick WDI, chỉ nạp lại được qua SWD. Chỉ vào chế độ này khi không còn nguồn hợp lệ nào (hàng 1).
+**Dừng** là chế độ duy nhất khi có sự cố:
+- LED WORK nháy nhanh, bootloader vẫn kick watchdog, không tự reset;
+- bootloader đọc Reload liên tục, giữ 5 s thì chạy bước 1;
+- ngoài ra chỉ còn cấp nguồn lại để thử lại từ đầu, hoặc nạp lại qua SWD.
 
-Gate kiểm thử ở §12.1 dùng đúng bảng này: mỗi hàng có ít nhất một ca fault injection.
+**Firmware mới chạy được nhưng có lỗi** (treo, HardFault, reset liên tục, dịch vụ không lên) thì bootloader không tự phát hiện. Người dùng giữ Reload trong lúc board khởi động lại, hoặc giữ Reload rồi cấp nguồn lại, để về firmware gốc. Lý do mỗi lần boot (cài mới, khôi phục, gieo, dừng) được in ra UART7.
 
 **Trình tự mỗi lần boot:**
 1. **Kick WDI.**
@@ -926,38 +883,32 @@ Gate kiểm thử ở §12.1 dùng đúng bảng này: mỗi hàng có ít nhấ
 
    **Cửa sổ không được bảo đảm trên board hiện tại:** từ lúc cấp nguồn, hoặc từ lúc MCU reset trong khi latch vẫn được cấp điện, cho tới bước 2.1 (vài ms), ngõ ra của latch có thể ở trạng thái cũ hoặc bất định, vì R103 kéo OE xuống GND.
 3. Cấu hình clock và QSPI (§6.2), SPI4.
-4. Đọc bản ghi trạng thái và chạy state machine ở trên.
+4. Lấy mẫu Reload rồi chạy trình tự quyết định ở trên.
 5. Bàn giao cho app theo §6.2.
 
-Logic trạng thái và cài đặt viết trong `boot/install.c` bằng C thuần, với giao diện flash trừu tượng, để chạy host test có cắt điện (§12.1).
+Logic quyết định và chép viết trong `boot/install.c` bằng C thuần, với giao diện flash trừu tượng `nor_t`, để chạy host test có cắt điện (§12.1). Việc đọc nút, chờ 5 s và vòng dừng nằm trong `boot.c`.
 
 **Đề xuất cho phần cứng (không bắt buộc):** đổi R103 thành kéo lên 3V3, để đóng cửa sổ nêu ở bước 2.
 
 ### 11.3 OTA phía ứng dụng
 
 `POST /api/ota` chạy trong task `web`:
-- **Đang ở `TRIAL` thì từ chối** với 409 `{ "error": "The running firmware is not confirmed yet; try again in a minute." }`. Nếu không chặn, pha BACKUP sẽ chép đè một image chưa được xác nhận lên bản backup vẫn đang chạy tốt.
-- Nhận theo luồng vào staging. Sector 4 KB được xóa ngay trước khi ghi tới.
-- Kiểm header ngay từ khối đầu tiên: magic, mã phần cứng, kích thước ≤ slot. Trong lúc nhận, tính SHA-256 dần.
-- Kết thúc mà khớp thì ghi bản ghi `PENDING`, trả 200 rồi khởi động lại.
-- Body dở hoặc sai SHA thì trả 400, trạng thái boot giữ nguyên.
-
-**Xác nhận và rollback** (giữ hành vi F12 của ESP32, `sysmgr.c:225`):
-- Có dịch vụ đã cấu hình mà **khởi tạo** lỗi (bridge, MQTT, Edge, web) thì app ghi `RESTORE(0)` ngay rồi reset.
-  - "Khởi tạo" nghĩa là tạo được task, socket listener và tài nguyên.
-  - Việc broker hay Internet không truy cập được **không** tính là lỗi khởi tạo.
-- Mọi dịch vụ đã khởi tạo xong và chạy được 30 s thì `ota_confirm` ghi `CONFIRMED`.
-- **Deadline của `TRIAL`:** `init` chưa xong sau 60 s, hoặc chưa xác nhận sau 120 s kể từ lúc boot, thì `wdog` ngừng kick (WDI và IWDG1). IWDG1 reset board và `trial` tăng lên. App bị treo hay HardFault cũng làm `trial` tăng.
+- Bắt đầu upload là xóa ngay sector đầu của staging, nên image đang nằm trong staging hết hiệu lực từ lúc đó.
+- Nhận theo luồng vào staging. Mỗi sector 4 KB được xóa ngay trước khi ghi tới. 4 byte magic để trống.
+- Kiểm header ngay từ khối đầu tiên: magic, mã phần cứng, kích thước ≤ slot và bằng đúng độ dài đã báo. Trong lúc nhận, tính SHA-256 dần.
+- Kết thúc mà SHA khớp: ghi magic, là lần ghi cuối cùng. Sau đó staging đọc lại phải qua được `img_check`, rồi trả 200 và khởi động lại. Bootloader cài image mới ở lần boot đó.
+- Body dở hoặc sai SHA: trả 400. Staging lúc đó không hợp lệ nên bootloader bỏ qua, image đang chạy giữ nguyên.
+- Không có xác nhận hay rollback tự động. Firmware mới có lỗi thì người dùng khôi phục firmware gốc bằng nút Reload (§11.2).
 
 ### 11.4 Các cơ chế an toàn khác
 
 - **SGM706 và IWDG1:** SGM706 có timeout tối thiểu 1,0 s, danh định 1,6 s (datasheet SGM706, trang 4). **Trên board hiện tại R20 (WDO → MR) chưa lắp**, nên SGM706 hết thời gian cũng không reset được MCU (đã thử trên bench: ngừng kick 60 s không reset). Vì vậy bootloader bật IWDG1 (LSI/32, reload 1600: 1,5–1,74 s theo dải LSI), và "kick" luôn nghĩa là đảo WDI **và** nạp lại IWDG1 (`board_kick()`); "ngừng kick" là ngừng cả hai. IWDG1 không tắt được cho tới lần reset sau và được đóng băng khi debugger dừng lõi. Khi R20 được lắp, cả hai cùng hoạt động. `wdog` kick mỗi 200 ms. **Đề xuất cho phần cứng:** lắp R20.
   - Vì `wdog` là task chứ không phải ISR, scheduler treo thì watchdog sẽ reset board.
-  - `wdog` còn giám sát deadline của `init` và `TRIAL` (§11.3).
+  - `wdog` còn giám sát deadline của `init`: chưa xong sau 60 s thì ngừng kick (WDI và IWDG1).
   - Ngoài phạm vi này, tiến triển của từng task dịch vụ **không** được giám sát (giữ như ESP32).
   - Phải chốt đúng hậu tố của SGM706 trên BOM, vì mỗi hậu tố có ngưỡng reset khác nhau.
 - **HardFault và vi phạm MPU:** handler ghi PC, LR, CFSR, HFSR, MMFAR/BFAR và tên task vào backup SRAM, rồi reset. Lần boot sau, thông tin này được ghi vào log. Đây là phần thay cho phân vùng coredump của bản ESP32.
-- **Reload:** nhấn 3–15 s để khôi phục cấu hình gốc, giữ lại log.
+- **Reload:** nhấn 3–15 s **trong lúc app chạy** để khôi phục cấu hình gốc, giữ lại log. Nếu nút đã được giữ từ trước khi app chạy (ví dụ vừa khôi phục firmware gốc ở §11.2), app chỉ tính từ lần nhấn sau khi nhả.
 - **BOR:** đặt option byte BOR level 2.
 
 ## 12. Kiểm thử và công cụ
@@ -971,28 +922,7 @@ Logic trạng thái và cài đặt viết trong `boot/install.c` bằng C thu�
 | Tương đương Edge | Chạy các payload trong mock của UI và trong bộ test cũ (thu về ≤ 100 điểm), cộng thêm các payload đặc biệt: <br>• gửi ít trường nhưng văn bản chuẩn hóa lớn (sát 48 KB); <br>• nhiều lỗi cùng lúc, kiểm câu báo lỗi **đầu tiên**; <br>• thứ tự thiết bị và node bị đảo; <br>• tên khác nhau nhưng trùng hash; <br>• trùng ID với thiết bị không map, chồng thanh ghi với node không map. <br>Kết quả phải giống từng byte với `cfg_validate` nguyên khối |
 | Arena | Chạy đúng bộ TLSF trên vùng 64 KB, giả lập kích thước node cJSON 32-bit, tính cả phân mảnh. Kiểm: <br>• đỉnh của payload lớn nhất của **từng** cấu hình; <br>• đỉnh của mô hình Edge 100 điểm; <br>• arena bị poison ở `arena_end` để bắt truy cập sau khi phạm vi kết thúc (template report, chuỗi); <br>• hết bộ nhớ không bao giờ sinh ra cấu hình thiếu trường |
 | Store Edge | `POST` và `GET` chạy xen nhau (generation bị ghim), dọn generation cũ và bản ghi mồ côi sau mất điện ở từng bước commit, FlashDB dọn rác trong lúc `GET` |
-| Bootloader | NOR giả lập mô hình được **ghi dở**: một page hay một sector chỉ ghi hoặc xóa được một phần khi bị cắt điện. Cắt điện tại **mọi** thao tác ghi và xóa của: <br>• bản ghi trạng thái; <br>• mọi pha (BACKUP, WRITE, VERIFY, RESTORE); <br>• lúc tăng `trial`, lúc xác nhận. <br>Thêm các trường hợp:
-• staging hỏng, backup hỏng, cả hai bản ghi hỏng, flash trắng, `seq` quay vòng;
-• image ngắn nhất và dài nhất;
-• lỗi flash (deadline), mất điện liên tiếp trong lúc `RESTORE`;
-• **RESTORE xong mà SHA sai**;
-• **`attempts` vượt 3** ở từng pha;
-• **image hỏng khi đang `TRIAL`**: phải không nhảy vào;
-• **SPI4 lỗi khi ghi bản ghi** (hàng 3–6);
-• **`WRITE` hết lượt thử** khi có và khi không có backup (hàng 8, 9);
-• cắt điện đúng lúc ghi `attempts`.
- **Mỗi hàng 1–10 của bảng quyết định ở §11.2 có ít nhất một ca.** Điều kiện đạt:
-• lần nào cũng kết thúc ở một image hợp lệ;
-• hoặc ở *cứu hộ có thử lại*, và **tự thoát** về một image hợp lệ trong lần thử lại kế tiếp sau khi ngừng giả lập lỗi;
-• hoặc ở *cứu hộ dừng hẳn*, chỉ khi không còn nguồn hợp lệ nào (hàng 1);
-• **không bao giờ nhảy vào một image không qua được bước kiểm.**
-
-Thêm các ca:
-• `rec_fail` tăng dần tới 3 trong lúc `WRITE` (hàng 5 rồi 6);
-• **ghi xong image nhưng cập nhật bản ghi thất bại**, ở cả `WRITE` lẫn `RESTORE`, kể cả khi **chỉ QSPI còn hợp lệ** (backup và staging đều hỏng): phải nhảy vào app ở `degraded` (hàng 4), không được xóa QSPI và không được dừng hẳn;
-• **`WRITE` cạn lượt thử trong khi QSPI, backup và staging đều hỏng**: phải dừng hẳn (hàng 1), không được thử lại;
-• **đường RAM (hàng 6)**: quá deadline khi chép, SHA của đích sai, nguồn hỏng phát hiện ở bước 4, mất nguồn giữa chừng, `ram_fail` vượt 3;
-• handoff block có CRC sai lúc cấp nguồn |
+| Bootloader | NOR giả lập mô hình được **ghi dở**: một page hay một sector chỉ ghi hoặc xóa được một phần khi bị cắt điện. Cắt điện tại **mọi** thao tác ghi và xóa của: <br>• cài image mới (staging → QSPI), kể cả lúc upload vào staging: lần boot sau chạy image cũ (cắt trước khi upload xong) hoặc cài lại từ đầu và chạy image mới; <br>• khôi phục firmware gốc, khi staging khác QSPI: sau khi đã xóa xong sector đầu của staging thì không bao giờ cài lại image trong staging; mất điện lúc đang xóa sector đó thì được phép cài lại; giữ nút lần nữa thì chạy firmware gốc; <br>• gieo firmware gốc: các lần boot sau gieo lại cho tới khi slot factory hợp lệ, và app vẫn chạy. <br>Cắt điện nhiều lần liên tiếp trong một lần cài. Thêm các ca: <br>• staging trắng, hỏng (header, SHA), trùng image đang chạy: không ghi gì; <br>• QSPI hỏng mà không có staging hợp lệ: dừng, không tự khôi phục; <br>• giữ nút khi firmware gốc hỏng: dừng, QSPI và staging còn nguyên; <br>• lỗi flash, quá deadline, ghi im lặng sai khi chép (kể cả chính lần ghi magic), khi cài và khi gieo: cài thì dừng, gieo thì chỉ báo lỗi; slot không có magic; gỡ lỗi rồi boot lại thì làm được; <br>• upload dừng giữa chừng, đè lên một image có cùng phần đuôi: không được cài; <br>• lỗi đọc khi kiểm từng image; <br>• slot factory đã có magic nhưng hỏng: không gieo lại; <br>• image ngắn nhất và dài nhất; upload sai SHA, sai phần cứng, thiếu byte, quá slot. <br>Điều kiện đạt: **không bao giờ nhảy vào một image không qua được bước kiểm**, và không bao giờ ghi vào image nguồn đang chép |
 | MQTT | Adapter transport (đọc một phần, AGAIN, EOF, lỗi). Outbox: mất kết nối ở từng bước QoS 1/2, Session Present 0 và 1 (3.1.1), **3.1 với `cleanSession` 0 và 1** (bản vá đặt `sessionPresent`), clean session, hết hạn chỉ áp dụng cho `QUEUED`, giới hạn 64 KB, `bufferOffline`, đăng ký lại subscribe. Phiên mới: tin đang dở quay về `QUEUED` với packet id mới. Byte của gói CONNECT 3.1 và 3.1.1 |
 | CMUX | Mã hóa và giải mã frame, FCS, frame bị cắt, trường độ dài 1 và 2 byte (kể cả đúng 2048 byte), tái đồng bộ sau rác, SABM/UA kèm T1 và N2, DM/DISC, CLD. **FCoff/FCon dừng và tiếp mọi DLC dữ liệu, còn DLC0 vẫn gửi và nhận được** (kiểm response và FCon trong lúc FCoff). **MSC dừng và tiếp đúng một DLC**, có trả response, Test và NSC. **Hàng đợi TX đầy**, kể cả khi đầy ở lần gọi callback thứ hai trở đi của cùng một frame: callback trả 0, đếm `ppp_out_drop`, phía nhận (PPP giả lập) bỏ frame cụt nhờ FCS, và frame kế tiếp vẫn được nhận đúng. **Luồng PPP có nhiều `0x7D`/`0x7E`** (sau escape dài gần gấp đôi) bị cắt thành nhiều frame ≤ N1 rồi ghép lại đúng. `pppos_input_tcpip` trả `ERR_MEM`: thử lại 3 lần rồi bỏ và đếm |
 | ADC (logic C thuần) | Bàn giao hai nửa buffer: đọc đúng nửa đã đầy; `seq` đổi trong lúc cộng thì bỏ cửa sổ và đếm `adc_late`; chưa có cửa sổ đầu tiên thì không công bố giá trị; lỗi thì cả hai kênh failed; trình tự phục hồi; đổi mã sang mA kèm hiệu chuẩn hai điểm; factory record thiếu hoặc CRC sai thì dùng hệ số danh định |
@@ -1071,8 +1001,7 @@ Ngoài ra, file map của linker phải cho thấy mỗi section nằm trong ng�
 | MQTT TLS khi chưa có giờ (với `tlsVerify` ≥ 1) | Chờ (`WAITING FOR CLOCK`) | **Chỉ bỏ qua kiểm tra ngày**, giống bridge |
 | Modem | EC800, không có RESET_N. Thử CMUX, không được thì PPP thẳng (`modem.c:122`) | EC600U, có RESET_N, timing của EC600U, lệnh CMUX đầy đủ tham số. Giữ đường PPP thẳng làm dự phòng |
 | Cắt frame RTU | Theo khoảng lặng, không đo được t1.5 (F14) | Receiver Timeout cộng timer, **thực thi t1.5/t3.5** khi chạy transaction Modbus |
-| OTA, xác nhận | Hai slot ESP-IDF. Mất điện trước khi xác nhận thì rollback ở lần boot đầu (`test_ota.py:65`) | Bootloader riêng có staging và backup. Khởi tạo lỗi thì rollback ngay. Reset hoặc treo trong lúc `TRIAL` được thử lại tối đa 3 lần rồi mới rollback, để chịu được nguồn chập chờn |
-| OTA trong lúc chưa xác nhận | Không chặn | **409** |
+| OTA, xác nhận | Hai slot ESP-IDF. Mất điện trước khi xác nhận thì rollback ở lần boot đầu (`test_ota.py:65`) | Bootloader riêng có staging và firmware gốc. Không xác nhận, không rollback tự động: firmware mới lỗi thì người dùng giữ Reload để về firmware gốc |
 | Coredump | Phân vùng flash | Bản ghi HardFault trong backup SRAM |
 | Web | `esp_http_server` | Mongoose |
 | MQTT | esp-mqtt | coreMQTT cộng outbox riêng |

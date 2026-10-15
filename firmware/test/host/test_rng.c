@@ -24,6 +24,7 @@ typedef struct {
     uint32_t next_word;
     int dr_reads, clears;
     int recovers;  // 1: clearing SEIS ends the seed error
+    int no_drdy_until;  // DRDY reads 0 until this many DR reads (a stopped RNG during recovery)
 } fake_t;
 
 static uint32_t f_sr(void *ctx)
@@ -32,6 +33,8 @@ static uint32_t f_sr(void *ctx)
     uint32_t v = f->script[f->at < f->n ? f->at : f->n - 1];
     if (f->at < f->n)
         f->at++;
+    if (f->dr_reads < f->no_drdy_until)
+        v &= ~RNG_DRDY;
     return v;
 }
 
@@ -46,8 +49,8 @@ static void f_clear(void *ctx)
 {
     fake_t *f = ctx;
     f->clears++;
-    if (f->recovers)
-        for (int i = f->at; i < f->n; i++)
+    if (f->recovers)  // from now on, the repeated last status included
+        for (int i = f->at < f->n ? f->at : f->n - 1; i < f->n; i++)
             f->script[i] &= ~(RNG_SEIS | RNG_SECS);
 }
 
@@ -86,6 +89,15 @@ int main(void)
         fake_t f = fake(s, 40);
         CHECK(word(&f, &w) == 0 && f.clears == 1 && f.dr_reads == 13 && w == 112,
               "a seed error: recovered, 12 words dropped, the 13th taken (reads %d, w %u)", f.dr_reads, (unsigned)w);
+    }
+    {
+        // RM0433 §34.3.7: the 12 reads that clean the pipeline do not wait for DRDY, which a stopped
+        // RNG does not raise (Codex 06a review r2).
+        const uint32_t s[] = {RNG_SECS | RNG_SEIS | RNG_DRDY};
+        fake_t f = fake(s, 1);
+        f.no_drdy_until = 12;
+        CHECK(word(&f, &w) == 0 && f.dr_reads == 13 && w == 112,
+              "a seed error with DRDY low: 12 reads without waiting, then a word (reads %d)", f.dr_reads);
     }
     {
         // The seed error stays after the recovery: no word.

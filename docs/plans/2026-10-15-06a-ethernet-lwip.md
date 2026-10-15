@@ -207,3 +207,9 @@ Regression: `store_check.py`, `ota_check.py`.
    - `test_rng` (RED first) covers: a good word; a seed error that recovers; one that stays; an error with DRDY; a clock error; DRDY never.
 
 `net_check.py` passes again.
+
+## Code review round 2 (NOT APPROVED), and the fix
+
+1. **The seed recovery waited for DRDY before each of its 12 reads,** which a stopped RNG never raises. Now it reads and drops them without waiting, as RM0433 §34.3.7 says; only the word that is kept waits for DRDY. A new `test_rng` case keeps DRDY low until 12 reads. It failed first, at 0 reads.
+   - Fixed in the fake as well: clearing SEIS now also clears its repeated last status.
+   - On the board: the image boots and answers pings, with no "RNG FAILED".

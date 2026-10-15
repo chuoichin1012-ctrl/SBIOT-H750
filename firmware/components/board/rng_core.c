@@ -10,14 +10,12 @@ static bool wait_drdy(const rng_io_t *io)
 }
 
 // RM0433 §34.3.7: clear SEIS, read and drop 12 words to clean the pipeline, then SEIS must stay clear.
+// The 12 reads do not wait for DRDY: a stopped RNG does not raise it (Codex 06a review r2).
 static int seed_recover(const rng_io_t *io)
 {
     io->clear_seis(io->ctx);
-    for (int i = 0; i < 12; i++) {
-        if (!wait_drdy(io))
-            return -1;
+    for (int i = 0; i < 12; i++)
         (void)io->dr(io->ctx);
-    }
     return io->sr(io->ctx) & (RNG_SEIS | RNG_SECS) ? -1 : 0;
 }
 

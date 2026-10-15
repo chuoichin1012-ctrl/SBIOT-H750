@@ -19,7 +19,7 @@ typedef struct {
 
 /**
  * A word into *w and 0, or -1 with *w untouched. A seed error is recovered once as RM0433 §34.3.7
- * says (clear SEIS, read and drop 12 words, SEIS must stay clear); a word read while, or just before,
+ * says (clear SEIS, read and drop 12 words without waiting for DRDY, SEIS must stay clear); a word read while, or just before,
  * an error shows is dropped. A clock error fails the word.
  */
 int rng_word(const rng_io_t *io, uint32_t *w);

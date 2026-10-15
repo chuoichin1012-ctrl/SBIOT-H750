@@ -27,7 +27,7 @@ extern uint32_t SystemCoreClock;
 #define configUSE_MALLOC_FAILED_HOOK 0
 #define configCHECK_FOR_STACK_OVERFLOW 2
 #define configRECORD_STACK_HIGH_ADDRESS 1
-#define configUSE_TRACE_FACILITY 0
+#define configUSE_TRACE_FACILITY 1  // uxTaskGetSystemState: the lowest stack left, for /api/status.mem
 // CPU time per task in microseconds from TIM2 (now_us), for the bench's idle-time measurement.
 #define configGENERATE_RUN_TIME_STATS 1
 #define configRUN_TIME_COUNTER_TYPE uint64_t

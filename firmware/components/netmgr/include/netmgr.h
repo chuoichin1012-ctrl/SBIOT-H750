@@ -6,7 +6,7 @@
 #include "netcfg.h"
 
 typedef struct {
-    unsigned used, max, err;
+    unsigned used, max, err, size;  // size: elements (bytes for the heap)
 } net_pool_t;
 
 typedef struct {

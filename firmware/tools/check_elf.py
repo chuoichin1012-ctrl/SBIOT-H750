@@ -32,6 +32,8 @@ AXI = (0x24000000, 0x24080000)
 SRAM1 = (0x30000000, 0x30020000)
 # What a DMA engine touches, plus lwIP's MEM heap: SRAM1, non-cacheable (spec §5.4, §5.6).
 APP_SRAM1 = ['lwip_ram_heap', 'DMARxDscrTab', 'DMATxDscrTab', 's_eth_rx_bufs', 's_eth_tx_bufs']
+# The JSON arena, the Edge and certificate body and the web stack: static, in AXI (spec §5.3, Plan 06b).
+APP_AXI = ['s_web_arena', 's_edge_body', 's_web_stack']
 DTCM = (0x20000000, 0x20020000)
 DTCM_BUDGET = 120 * 1024
 QSPI_SLOT = (0x90000000, 0x90000000 + 1472 * 1024)
@@ -116,6 +118,9 @@ def main():
     for name in APP_SRAM1:
         a = sym.get(name, 0)
         check(SRAM1[0] <= a < SRAM1[1], 'app: %s in SRAM1 (0x%08x)' % (name, a))
+    for name in APP_AXI:
+        a = sym.get(name, 0)
+        check(AXI[0] <= a < AXI[1], 'app: %s in AXI (0x%08x)' % (name, a))
     # lwIP's memp pools are CPU-only: AXI, cacheable (spec §5.6, pool table).
     memp = sorted(n for n in sym if re.fullmatch(r'memp_memory_\w+_base', n))
     off = [n for n in memp if not AXI[0] <= sym[n] < AXI[1]]

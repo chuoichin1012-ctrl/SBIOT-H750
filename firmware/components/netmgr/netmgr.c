@@ -123,6 +123,7 @@ static void pool(net_pool_t *o, const struct stats_mem *m)
     o->used = m ? m->used : 0;
     o->max = m ? m->max : 0;
     o->err = m ? m->err : 0;
+    o->size = m ? m->avail : 0;
 }
 
 void netmgr_status(net_status_t *out)

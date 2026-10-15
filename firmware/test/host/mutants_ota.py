@@ -44,7 +44,7 @@ M = [
  ('components/ota/ota_app.c', '    if (r != IMG_OK || memcmp(back.raw, st->hdr.raw, IMG_CORE))\n        return fail(st, OTA_EFLASH);', '', 'staging not read back'),
  ('boot/install.c', '    if (same(in, src, so, dst, dof, len))\n        return -1;\n', '    (void)same;\n', 'copy not read back before the magic'),
  ('components/ota/ota_app.c', '    if (at == 0)\n        memset(st->page, 0xFF, sizeof IMG_MAGIC);  // the magic only once the whole image is in (finish)\n', '', 'upload writes the magic early'),
- ('components/ota/ota_app.c', '    if (spi->erase_sector(spi, SPI_STAGING))\n        return fail(st, OTA_EFLASH);\n    st->erased = NOR_SECTOR;\n', '', 'upload leaves the old staged image'),
+ ('components/ota/ota_app.c', '    if (spi->erase_sector(spi, SPI_STAGING) || spi->read(spi, SPI_STAGING, m, sizeof m) || memcmp(m, erased, sizeof m))\n        return fail(st, OTA_EFLASH);\n    st->erased = NOR_SECTOR;\n', '    (void)m;\n    (void)erased;\n', 'upload leaves the old staged image'),
  ('components/ota/bind.c', '    return crypto_ed25519_check(rec + 16, pub, msg, sizeof msg) == 0;', '    return true;', 'signature not checked', 'bind'),
  ('components/ota/bind.c', '    memcpy(msg + sizeof LABEL, uid, BIND_UID_LEN);', '    memcpy(msg + sizeof LABEL, rec + 4, BIND_UID_LEN);', 'signature over the stored UID', 'bind'),
  ('components/ota/bind.c', '    if (!crc_ok(rec))\n        return BIND_ECORRUPT;', '', 'corrupt record taken for a clone', 'bind'),
@@ -52,7 +52,8 @@ M = [
  ('components/ota/bind.c', '    return BIND_CLONE;\n}', '    qspi->erase_sector(qspi, QSPI_BIND);\n    return BIND_CLONE;\n}', 'clone erases the record too', 'bind'),
  ('components/ota/bind.c', '        return BIND_ENONE;  // never provisioned', '        return BIND_OK;  // never provisioned', 'unprovisioned board runs', 'bind'),
  ('components/ota/bind.c', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        return BIND_EREAD;', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        memset(rec, 0, BIND_LEN);', 'read error taken for a record', 'bind'),
- ('boot/install.c', ' || !staging_gone(in))  // never installed again', ' || (0 && staging_gone(in)))  // never installed again', 'staging erase not verified')
+ ('boot/install.c', ' || !staging_gone(in))  // never installed again', ' || (0 && staging_gone(in)))  // never installed again', 'staging erase not verified'),
+ ('components/ota/ota_app.c', ' || spi->read(spi, SPI_STAGING, m, sizeof m) || memcmp(m, erased, sizeof m))', ' || (0 && spi->read(spi, SPI_STAGING, m, sizeof m) && memcmp(m, erased, sizeof m)))', 'upload erase not verified')
 ]
 
 

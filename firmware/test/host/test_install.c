@@ -505,6 +505,15 @@ static void test_upload_errors(void)
     CHECK(upload_raw(&b, img, len, 100) == OTA_ESHORT, "an upload that stops in its first page");
     o = boot(&b, false);
     CHECK(o.kind == OUT_RUN && o.version == 1 && o.ops == 0, "a new upload invalidates the staged image at once");
+    // The old staged image must be gone before a byte of the new one is taken: an erase of a
+    // protected sector reports success and changes nothing (GD25Q32E §7.15).
+    CHECK(upload(&b, 3, BODY_V1) == OTA_OK, "v3 staged (differs from QSPI)");
+    sim_fail(&b.w, 0, DEV_SPI, SPI_STAGING, SPI_STAGING + NOR_SECTOR, SIM_ERASE_SILENT);
+    ota_stage_t st;
+    long ops0 = b.w.ops;
+    CHECK(ota_stage_begin(&st, &b.s.nor, len) == OTA_EFLASH, "begin, the staging erase silently ignored: 500");
+    CHECK(b.w.ops - ops0 == 1, "and nothing programmed after the erase (%ld operations)", b.w.ops - ops0);
+    sim_fail(&b.w, 0, 0, 0, 0, 0);
     sim_fail(&b.w, 0, DEV_SPI, SPI_STAGING + 0x4000, SPI_STAGING + 0x5000, SIM_SILENT);
     CHECK(upload_raw(&b, img, len, len) == OTA_EFLASH, "staging programmed wrong: the read-back check answers 500");
     sim_fail(&b.w, 0, 0, 0, 0, 0);

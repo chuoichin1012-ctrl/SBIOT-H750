@@ -3,7 +3,7 @@
 
 - board.listen() never returns while its during() callback still acts on the board, and an error
   raised in during() reaches the caller;
-- tools/flash.sh refuses an unknown mode before it touches the board.
+- tools/flash.sh refuses an unknown mode, and "bind" without a key, before it touches the board.
 """
 import os
 import subprocess
@@ -78,15 +78,16 @@ def test_during_error():
 
 
 def test_flash_bad_mode():
-    with tempfile.TemporaryDirectory() as d:
-        log = os.path.join(d, 'calls')
-        cli = os.path.join(d, 'cli.sh')
-        open(cli, 'w').write('#!/bin/sh\necho "$@" >> %s\n' % log)
-        os.chmod(cli, 0o755)
-        r = subprocess.run([os.path.join(HERE, '../../tools/flash.sh'), 'ap'], capture_output=True, text=True,
-                           env=dict(os.environ, CUBEPROG_CLI=cli))
-        check(r.returncode != 0 and 'usage' in (r.stdout + r.stderr) and not os.path.exists(log),
-              'flash.sh ap: usage error, CubeProgrammer never called (rc %d)' % r.returncode)
+    for args, what in ((['ap'], 'ap'), (['bind'], 'bind without a key')):
+        with tempfile.TemporaryDirectory() as d:
+            log = os.path.join(d, 'calls')
+            cli = os.path.join(d, 'cli.sh')
+            open(cli, 'w').write('#!/bin/sh\necho "$@" >> %s\n' % log)
+            os.chmod(cli, 0o755)
+            r = subprocess.run([os.path.join(HERE, '../../tools/flash.sh')] + args, capture_output=True, text=True,
+                               env=dict(os.environ, CUBEPROG_CLI=cli))
+            check(r.returncode != 0 and 'usage' in (r.stdout + r.stderr) and not os.path.exists(log),
+                  'flash.sh %s: usage error, CubeProgrammer never called (rc %d)' % (what, r.returncode))
 
 
 test_slow_during()

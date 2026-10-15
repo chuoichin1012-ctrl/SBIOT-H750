@@ -56,25 +56,6 @@ static void test_sha256(void)
     free(a);
 }
 
-static void test_hmac(void)
-{
-    // RFC 4231 test cases 1, 2 and 6 (a key longer than the block)
-    uint8_t k1[20], k6[131], d[32];
-    char h[65];
-    memset(k1, 0x0b, sizeof k1);
-    memset(k6, 0xaa, sizeof k6);
-    hmac_sha256(k1, sizeof k1, "Hi There", 8, d);
-    hex(d, h);
-    CHECK(!strcmp(h, "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"), "RFC 4231 case 1: %s", h);
-    hmac_sha256("Jefe", 4, "what do ya want for nothing?", 28, d);
-    hex(d, h);
-    CHECK(!strcmp(h, "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"), "RFC 4231 case 2: %s", h);
-    const char *m6 = "Test Using Larger Than Block-Size Key - Hash Key First";
-    hmac_sha256(k6, sizeof k6, m6, strlen(m6), d);
-    hex(d, h);
-    CHECK(!strcmp(h, "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"), "RFC 4231 case 6: %s", h);
-}
-
 static void test_header(void)
 {
     uint8_t raw[IMG_CORE], sha[32] = {1, 2, 3};
@@ -136,7 +117,6 @@ static void test_mkimage_output(const char *path)
 int main(int argc, char **argv)
 {
     test_sha256();
-    test_hmac();
     test_header();
     test_vectors();
     test_mkimage_output(argc > 1 ? argv[1] : "build/mkimage_sample.img");

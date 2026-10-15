@@ -2,11 +2,24 @@
 # Flashes over SWD with STM32CubeProgrammer (spec §12.4): boot.bin into internal flash, app.bin into
 # QSPI bank 2 through the board's external loader, then resets the board. Run from WSL.
 #   stm32/firmware/tools/flash.sh boot|app|both|blank [BUILD_DIR]
+#   stm32/firmware/tools/flash.sh bind KEY|dev [BUILD_DIR]
 # "blank" programs the first 4 KB of the QSPI slot to 0xFF (header and vector table erased).
+# "bind" reads the chip's UID and writes its anti-clone record, signed with the private KEY
+# (tools/provision.py), at QSPI 0x903F0000 (spec §11.5). Do it before RDP Level 1 is set.
 set -euo pipefail
+usage() { echo "usage: flash.sh boot|app|both|blank [BUILD_DIR] | bind KEY|dev [BUILD_DIR]" >&2; exit 2; }
 what=${1:-}
-case "$what" in boot|app|both|blank) ;; *) echo "usage: flash.sh boot|app|both|blank [BUILD_DIR]" >&2; exit 2 ;; esac
-build=$(cd "${2:-$(dirname "$0")/../build/h750}" && pwd)
+tools=$(cd "$(dirname "$0")" && pwd)
+case "$what" in
+boot|app|both|blank) dir=${2:-} ;;
+bind)
+    [ -n "${2:-}" ] || usage
+    key=$2
+    [ "$key" = dev ] || key=$(realpath "$key")
+    dir=${3:-} ;;
+*) usage ;;
+esac
+build=$(cd "${dir:-$tools/../build/h750}" && pwd)
 CLI=${CUBEPROG_CLI:-"/mnt/c/Program Files/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI.exe"}
 LOADER="$(dirname "$CLI")/ExternalLoader/STM32H750VBT6_GD25Q32ESIG.stldr"
 # The team's loader for this board (Dev_info: 0x90000000, 4 MB, 256 B pages, 1024 x 4 KB sectors).
@@ -26,10 +39,11 @@ prog() {
         exit 1
     fi
 }
-qspi() {  # $1 = local file, written at 0x90000000
+qspi() {  # $1 = local file, written at $2 (default 0x90000000)
+    local at=${2:-0x90000000}
     cp "$1" "$stage/$(basename "$1")"
-    prog -c port=SWD mode=UR -el "$(wslpath -w "$LOADER")" -w "$(wslpath -w "$stage/$(basename "$1")")" 0x90000000 -v
-    echo "flash: $(basename "$1") ($(stat -c %s "$1") bytes) at 0x90000000 verified"
+    prog -c port=SWD mode=UR -el "$(wslpath -w "$LOADER")" -w "$(wslpath -w "$stage/$(basename "$1")")" "$at" -v
+    echo "flash: $(basename "$1") ($(stat -c %s "$1") bytes) at $at verified"
 }
 case "$what" in boot|both)
     cp "$build/boot.bin" "$stage/boot.bin"
@@ -37,6 +51,13 @@ case "$what" in boot|both)
     echo "flash: boot.bin ($(stat -c %s "$build/boot.bin") bytes) at 0x08000000 verified" ;;
 esac
 case "$what" in app|both) qspi "$build/app.bin" ;; esac
+if [ "$what" = bind ]; then
+    "$CLI" -c port=SWD mode=UR -r32 0x1FF1E800 12 > "$build/uid.txt" 2>&1 || true
+    uid=$(python3 "$tools/provision.py" uid "$build/uid.txt") || { tail -5 "$build/uid.txt"; echo "flash: cannot read the UID"; exit 1; }
+    python3 "$tools/provision.py" record "$key" "$uid" "$build/bind.bin"
+    qspi "$build/bind.bin" 0x903F0000
+    echo "flash: bound to UID $uid"
+fi
 if [ "$what" = blank ]; then
     head -c 4096 /dev/zero | tr '\0' '\377' > "$build/blank4k.bin"
     qspi "$build/blank4k.bin"

@@ -17,10 +17,15 @@ EXE = os.path.join(tempfile.gettempdir(), 'test_ota_mutant')
 CC = ('gcc -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize=address,undefined '
       '-fno-sanitize-recover=all -Icomponents/ota/include -Icomponents/board/include -Iboot -Itest/host ')
 BUILD = {
-    'install': CC + 'test/host/test_install.c test/host/nor_sim.c boot/install.c components/ota/*.c '
-               'components/board/crc32.c -o ' + EXE,
-    'bind': CC + 'test/host/test_bind.c test/host/nor_sim.c components/ota/*.c components/board/crc32.c -o ' + EXE,
+    'install': CC + 'test/host/test_install.c test/host/nor_sim.c boot/install.c components/ota/sha256.c '
+               'components/ota/ota_image.c components/ota/ota_app.c components/board/crc32.c -o ' + EXE,
+    'bind': CC + '-Ithird_party/monocypher test/host/test_bind.c test/host/nor_sim.c components/ota/bind.c '
+            'third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c '
+            'components/board/crc32.c -o ' + EXE,
 }
+# test_bind reads the records tools/test_provision.py signs (main() writes them first).
+SAMPLE = os.path.join(FW, 'test/host/build/bind_sample.bin')
+ARGS = {'install': [], 'bind': [SAMPLE]}
 # (file, original text, mutated text, what the mutant breaks[, test: 'install' by default])
 M = [
  ('boot/install.c', '        if (p == 0)\n            memset(buf, 0xFF, sizeof IMG_MAGIC);  // the magic is programmed last, on its own\n', '', 'magic programmed with its page'),
@@ -40,18 +45,18 @@ M = [
  ('boot/install.c', '    if (same(in, src, so, dst, dof, len))\n        return -1;\n', '    (void)same;\n', 'copy not read back before the magic'),
  ('components/ota/ota_app.c', '    if (at == 0)\n        memset(st->page, 0xFF, sizeof IMG_MAGIC);  // the magic only once the whole image is in (finish)\n', '', 'upload writes the magic early'),
  ('components/ota/ota_app.c', '    if (spi->erase_sector(spi, SPI_STAGING))\n        return fail(st, OTA_EFLASH);\n    st->erased = NOR_SECTOR;\n', '', 'upload leaves the old staged image'),
- ('components/ota/bind.c', '    if (!memcmp(rec + 4, want + 4, 32))\n        return BIND_OK;', '    return BIND_OK;', 'tag not compared', 'bind'),
- ('components/ota/bind.c', '    if (crc32_update(0, rec, 36) != c)\n        return BIND_ECORRUPT;', '    (void)c;', 'record CRC not checked', 'bind'),
+ ('components/ota/bind.c', '    return crypto_ed25519_check(rec + 16, pub, msg, sizeof msg) == 0;', '    return true;', 'signature not checked', 'bind'),
+ ('components/ota/bind.c', '    memcpy(msg + sizeof LABEL, uid, BIND_UID_LEN);', '    memcpy(msg + sizeof LABEL, rec + 4, BIND_UID_LEN);', 'signature over the stored UID', 'bind'),
+ ('components/ota/bind.c', '    if (!crc_ok(rec))\n        return BIND_ECORRUPT;', '', 'corrupt record taken for a clone', 'bind'),
  ('components/ota/bind.c', '        qspi->erase_sector(qspi, QSPI_SLOT + s);', '        (void)s;', 'clone not erased', 'bind'),
  ('components/ota/bind.c', '    return BIND_CLONE;\n}', '    qspi->erase_sector(qspi, QSPI_BIND);\n    return BIND_CLONE;\n}', 'clone erases the record too', 'bind'),
- ('components/ota/bind.c', '    if (q->read(q, QSPI_BIND, back, BIND_LEN) || memcmp(back + 4, want + 4, BIND_LEN - 4))\n        return BIND_EWRITE;\n    if (q->program', '    if (q->program', 'no read-back before the magic', 'bind'),
- ('components/ota/bind.c', '    if (q->erase_sector(q, QSPI_BIND) || q->program(q, QSPI_BIND + 4, want + 4, BIND_LEN - 4))\n        return BIND_EWRITE;', '    if (q->erase_sector(q, QSPI_BIND) || q->program(q, QSPI_BIND, want, BIND_LEN))\n        return BIND_EWRITE;', 'magic programmed with the tag', 'bind'),
- ('components/ota/bind.c', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        return BIND_EREAD;', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        return write_record(qspi, want);', 'unreadable record rewritten', 'bind'),
- ('components/ota/sha256.c', '        pad[i] = k[i] ^ 0x5c;', '        pad[i] = k[i] ^ 0x36;', 'HMAC outer pad', 'bind')
+ ('components/ota/bind.c', '        return BIND_ENONE;  // never provisioned', '        return BIND_OK;  // never provisioned', 'unprovisioned board runs', 'bind'),
+ ('components/ota/bind.c', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        return BIND_EREAD;', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        memset(rec, 0, BIND_LEN);', 'read error taken for a record', 'bind')
 ]
 
 
 def main():
+    subprocess.run(['make', '-s', '-C', os.path.join(FW, 'test/host'), 'build/bind_sample.bin'], check=True)
     caught = 0
     for path, old, new, what, *test in M:
         path = os.path.join(FW, path)
@@ -65,7 +70,7 @@ def main():
                 res = 'BUILD ERROR (fix the mutant): ' + (b.stderr.splitlines() or [''])[0]
             else:
                 env = dict(os.environ, OTA_QUICK='1', ASAN_OPTIONS='detect_leaks=0')
-                r = subprocess.run([EXE], capture_output=True, text=True, timeout=600, env=env)
+                r = subprocess.run([EXE] + ARGS[test[0] if test else 'install'], capture_output=True, text=True, timeout=600, env=env)
                 res = 'caught' if r.returncode else 'SURVIVED'
                 caught += r.returncode != 0
         finally:

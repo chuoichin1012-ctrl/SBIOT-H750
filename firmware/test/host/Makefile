@@ -8,7 +8,7 @@ BUILD := build
 CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c ../../components/proto/jsonscan.c
 ARENA := ../../components/arena/arena.c $(TLSF)/tlsf.c
 
-all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/test_bind
+all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/bind_sample.bin $(BUILD)/test_bind
 	$(BUILD)/test_cfgmodel
 	$(BUILD)/test_proto
 	$(BUILD)/test_jsonscan
@@ -19,7 +19,7 @@ all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/
 	$(BUILD)/test_board
 	$(BUILD)/test_ota $(BUILD)/mkimage_sample.img
 	$(BUILD)/test_install
-	$(BUILD)/test_bind
+	$(BUILD)/test_bind $(BUILD)/bind_sample.bin
 
 $(BUILD)/test_cfgmodel: test_cfgmodel.c $(CFG) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
@@ -73,9 +73,17 @@ $(BUILD)/test_install: test_install.c nor_sim.c $(INSTALL) $(OTA)
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -I../../boot $^ -o $@
 
-$(BUILD)/test_bind: test_bind.c nor_sim.c ../../components/ota/bind.c $(OTA)
+MONO := ../../third_party/monocypher
+BIND := ../../components/ota/bind.c $(MONO)/monocypher.c $(MONO)/monocypher-ed25519.c ../../components/board/crc32.c
+
+$(BUILD)/test_bind: test_bind.c nor_sim.c $(BIND)
 	mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) $^ -o $@
+	$(CC) $(CFLAGS) -I$(MONO) $^ -o $@
+
+# tools/test_provision.py checks provision.py and writes the records test_bind checks with Monocypher.
+$(BUILD)/bind_sample.bin: ../../tools/provision.py ../../tools/test_provision.py
+	mkdir -p $(BUILD)
+	python3 ../../tools/test_provision.py $@ > /dev/null
 
 clean:
 	rm -rf $(BUILD)

@@ -54,6 +54,26 @@ file(GLOB BOOT_CUBE ${CUBE}/boot/Src/*.c)
 list(REMOVE_ITEM BOOT_CUBE ${CUBE}/boot/Src/system_stm32h7xx.c)
 list(APPEND BOOT_CUBE ${SYSTEM_C})
 hal_sources(BOOT_HAL ${HAL_BOOT})
+# Anti-clone public key (spec §11.5): the 32-byte Ed25519 public key of the production signing key
+# (tools/provision.py pubkey), embedded in the bootloader and the app as gen/bind_key.h. Without
+# it: the development key, which only boards bound with "provision.py ... dev" accept.
+set(SBIOT_BIND_PUBKEY_FILE "" CACHE FILEPATH "32-byte Ed25519 public key (spec 11.5); empty: dev key")
+if(SBIOT_BIND_PUBKEY_FILE)
+  file(SIZE ${SBIOT_BIND_PUBKEY_FILE} BIND_PUB_SIZE)
+  if(NOT BIND_PUB_SIZE EQUAL 32)
+    message(FATAL_ERROR "SBIOT_BIND_PUBKEY_FILE must hold exactly 32 bytes, ${SBIOT_BIND_PUBKEY_FILE} has ${BIND_PUB_SIZE}")
+  endif()
+  file(READ ${SBIOT_BIND_PUBKEY_FILE} BIND_PUB_HEX HEX)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${SBIOT_BIND_PUBKEY_FILE})
+  set(BIND_DEV 0)
+else()
+  message(WARNING "SBIOT_BIND_PUBKEY_FILE is not set: the anti-clone DEV key is built in (not for production)")
+  set(BIND_PUB_HEX 2a140afad3c3e566a000ad19a5b526b39375b2ab0381391b8bf329b33a89b3cf)  # provision.py DEV_PUBLIC_HEX
+  set(BIND_DEV 1)
+endif()
+string(REGEX REPLACE "(..)" "0x\\1," BIND_PUB_BYTES ${BIND_PUB_HEX})
+configure_file(components/ota/bind_key.h.in ${CMAKE_BINARY_DIR}/gen/bind_key.h @ONLY)
+
 set(BOOT_OWN boot/boot.c boot/qspi_flash.c boot/jumpcheck.c ${BOARD}/board_io.c)
 add_executable(boot ${BOOT_CUBE} ${CUBE}/boot/startup_stm32h750xx.s ${BOOT_HAL} ${BOOT_OWN})
 image_includes(boot ${CUBE}/boot)

@@ -103,6 +103,19 @@ Again each fix began with a test that failed first.
    - FlashDB is built from source only for a FlashDB mutant.
    - Most mutants are now caught in 3 to 5 s.
 
+## Codex round 4 (NOT APPROVED), and the fixes
+
+1. **`store_state_get` handed out a value it had misread.** It now returns 0 once a read has failed for good (`test_state_read_failures`, RED then GREEN).
+2. **A read failure before the edge mount left edge enabled,** so a store that was read-only still served `[]`. Edge now serves and saves only through `edge_usable()`: its generation known, and nothing misread. The boot read matrix now asserts that a read-only store serves no model, also on a flash with no model (RED, then GREEN).
+
+Store mutants: 26 of 26.
+
+## Fault scope (agreed with the user, 2026-10-15)
+
+- **Survived:** a power cut at any moment, and transient read faults.
+- **Persistent hardware faults** (a flash that keeps failing writes or reads): the storage must only not make things worse. The flash turns read-only, saves are refused and an error is reported; further operation is not required.
+- A fault class outside this scope is recorded under known limitations, not fixed further.
+
 ## Rulings (for review)
 
 1. **Edge sector size 16 KB**, against 64 KB on the ESP32. An 8 KB record and its header fit, and 16 sectors in 256 KB keep the garbage collection fine-grained. Cost if wrong: more sector headers (a few hundred bytes).

@@ -644,6 +644,10 @@ Quy tắc riêng của bản STM32:
   - `store` từ chối lưu (500) và không xóa bản ghi nào, cho tới lần boot sau.
   - DB `cfg` không mount được thì `store_init` thất bại. DB `cert` không mount được thì chỉ chứng chỉ bị ảnh hưởng.
 - **Sau một lần ghi lỗi khi lưu `edgeDevices`, `store` mount lại DB `edge`,** như lần boot sau sẽ làm, rồi lấy generation đã commit từ đó. Lý do: trạng thái trong RAM của FlashDB (cache) có thể khác flash; ví dụ manifest mới đã nằm trong cache mà chưa hợp lệ. Nhờ vậy, model đang phục vụ luôn là model mà lần boot sau tìm thấy.
+- **Phạm vi chịu lỗi của lưu trữ** (người dùng đồng ý, 2026-10-15):
+  - **phải chịu được** mất điện ở bất kỳ thời điểm nào, và lỗi đọc thoáng qua;
+  - **lỗi phần cứng dai dẳng** (flash cứ ghi hoặc đọc lỗi): chỉ cần không làm hỏng thêm. Flash chuyển sang chỉ đọc, `store` từ chối lưu và báo lỗi; không đòi hỏi hoạt động tiếp.
+  - Loại sự cố nằm ngoài phạm vi này được ghi vào "giới hạn đã biết", không sửa thêm.
 - Mỗi DB dùng sector 16 KB. Riêng `edge` chứa vừa bản ghi 8 KB cùng header của nó, và dọn rác mịn trong 256 KB.
 
 ### 9.2 Vì sao phải xử lý theo node

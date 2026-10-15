@@ -8,7 +8,7 @@ BUILD := build
 CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c ../../components/proto/jsonscan.c
 ARENA := ../../components/arena/arena.c $(TLSF)/tlsf.c
 
-all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/bind_sample.bin $(BUILD)/test_bind
+all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/bind_sample.bin $(BUILD)/test_bind $(BUILD)/test_store $(BUILD)/test_store_small
 	$(BUILD)/test_cfgmodel
 	$(BUILD)/test_proto
 	$(BUILD)/test_jsonscan
@@ -20,6 +20,9 @@ all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/
 	$(BUILD)/test_ota $(BUILD)/mkimage_sample.img
 	$(BUILD)/test_install
 	$(BUILD)/test_bind $(BUILD)/bind_sample.bin
+	$(BUILD)/test_store
+	STORE_CUTS=1 ASAN_OPTIONS=detect_leaks=0 $(BUILD)/test_store
+	$(BUILD)/test_store_small
 
 $(BUILD)/test_cfgmodel: test_cfgmodel.c $(CFG) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
@@ -84,6 +87,28 @@ $(BUILD)/test_bind: test_bind.c nor_sim.c $(BIND)
 $(BUILD)/bind_sample.bin: ../../tools/provision.py ../../tools/test_provision.py
 	mkdir -p $(BUILD)
 	python3 ../../tools/test_provision.py $@ > /dev/null
+
+FDB := ../../third_party/flashdb
+STORE_INC := -I../../components/store/include -I../../components/store/port -I$(FDB)/inc -I$(FDB)/port/fal/inc
+FDB_SRC := $(FDB)/src/fdb.c $(FDB)/src/fdb_kvdb.c $(FDB)/src/fdb_tsdb.c $(FDB)/src/fdb_utils.c \
+           $(FDB)/port/fal/src/fal.c $(FDB)/port/fal/src/fal_flash.c $(FDB)/port/fal/src/fal_partition.c
+
+# FlashDB is upstream code: built once with our sanitizers but without -Werror on its own warnings.
+$(BUILD)/libflashdb.a: $(FDB_SRC) ../../components/store/port/fdb_cfg.h ../../components/store/port/fal_cfg.h
+	mkdir -p $(BUILD)/fdb
+	for f in $(FDB_SRC); do $(CC) $(filter-out -Werror,$(CFLAGS)) -w $(STORE_INC) -c $$f -o $(BUILD)/fdb/$$(basename $$f .c).o || exit 1; done
+	ar rcs $@ $(BUILD)/fdb/*.o
+
+# Two passes: the cases with leak detection, then (STORE_CUTS=1) a power cut at every operation of
+# an edge save that collects garbage and of a small save, plus 150 runs with three cuts.
+$(BUILD)/test_store: test_store.c nor_sim.c ../../components/store/store.c ../../components/store/fal_nor.c $(CFG) $(CJSON)/cJSON.c $(BUILD)/libflashdb.a
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) $(STORE_INC) $(filter %.c,$^) $(BUILD)/libflashdb.a -lm -o $@
+
+# The same with a 3800-byte text cache: the "does not fit" path (test_cache_full).
+$(BUILD)/test_store_small: test_store.c nor_sim.c ../../components/store/store.c ../../components/store/fal_nor.c $(CFG) $(CJSON)/cJSON.c $(BUILD)/libflashdb.a
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -DSTORE_CACHE_SIZE=3800u $(STORE_INC) $(filter %.c,$^) $(BUILD)/libflashdb.a -lm -o $@
 
 clean:
 	rm -rf $(BUILD)

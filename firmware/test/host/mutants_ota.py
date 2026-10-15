@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Mutation check of the OTA and anti-clone logic: each mutant must make its test fail.
 
-    python3 stm32/firmware/test/host/mutants_ota.py      (from the repository root)
+    python3 stm32/firmware/test/host/mutants_ota.py [KIND...]      (from the repository root)
+
+KIND (install, bind, store, store_small) runs only the mutants of those tests: run the ones the
+change can affect, not all of them.
 
 Builds the mutant's test (test/host/test_install.c, or test_bind.c for the binding) with the host
 flags and runs it quickly (OTA_QUICK=1 skips the install power-cut matrices). Every source file is restored afterwards.
@@ -11,6 +14,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
 FW = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../..'))
 EXE = os.path.join(tempfile.gettempdir(), 'test_ota_mutant')
@@ -23,10 +27,29 @@ BUILD = {
             'third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c '
             'components/board/crc32.c -o ' + EXE,
 }
+FDB = ('third_party/flashdb/src/fdb.c third_party/flashdb/src/fdb_kvdb.c third_party/flashdb/src/fdb_tsdb.c '
+       'third_party/flashdb/src/fdb_utils.c third_party/flashdb/port/fal/src/fal.c '
+       'third_party/flashdb/port/fal/src/fal_flash.c third_party/flashdb/port/fal/src/fal_partition.c')
+STORE = (CC.replace('-Werror ', '') + '-Wno-implicit-function-declaration -Icomponents/store/include -Icomponents/store/port '
+         '-Ithird_party/flashdb/inc -Ithird_party/flashdb/port/fal/inc -Icomponents/cfgmodel/include '
+         '-Icomponents/proto/include -Ithird_party/cjson test/host/test_store.c test/host/nor_sim.c '
+         'components/store/store.c components/store/fal_nor.c components/cfgmodel/cfgmodel.c components/proto/ipacl.c '
+         'components/proto/jsonscan.c third_party/cjson/cJSON.c ' + FDB + ' -lm -o ' + EXE)
+# FlashDB from source only for a mutant in FlashDB; the others link the library make built.
+STORE_LIB = STORE.replace(FDB, 'test/host/build/libflashdb.a')
+BUILD['store'] = STORE_LIB
+BUILD['store_fdb'] = STORE
+BUILD['store_small'] = STORE_LIB.replace('test/host/test_store.c', '-DSTORE_CACHE_SIZE=3800u test/host/test_store.c')
 # test_bind reads the records tools/test_provision.py signs (main() writes them first).
 SAMPLE = os.path.join(FW, 'test/host/build/bind_sample.bin')
-ARGS = {'install': [], 'bind': [SAMPLE]}
+ARGS = {'install': [], 'bind': [SAMPLE], 'store': [], 'store_small': [], 'store_fdb': []}
+# Extra environments to run the test with: a mutant is caught when any run fails.
+RUNS = {'store': [{}, {'STORE_CUTS': '1'}], 'store_fdb': [{}, {'STORE_CUTS': '1'}]}
 # (file, original text, mutated text, what the mutant breaks[, test: 'install' by default])
+# Not listed, as equivalent by construction: deleting records in store_edge_save's "commit not
+# known" branch. It is reached when the remount fails or the manifest does not read back: either
+# way a read or a write failed, and after a read that fails past its retries the FAL refuses every
+# write (fal_nor.h), so those deletes cannot happen; the branch stays as a defence.
 M = [
  ('boot/install.c', '        if (p == 0)\n            memset(buf, 0xFF, sizeof IMG_MAGIC);  // the magic is programmed last, on its own\n', '', 'magic programmed with its page'),
  ('boot/install.c', '    if (img_check(dst, dof, in->kick, &back) != IMG_OK || memcmp(back.raw, h->raw, IMG_CORE))\n        return -1;\n', '    (void)back;\n', 'copy not checked'),
@@ -53,33 +76,71 @@ M = [
  ('components/ota/bind.c', '        return BIND_ENONE;  // never provisioned', '        return BIND_OK;  // never provisioned', 'unprovisioned board runs', 'bind'),
  ('components/ota/bind.c', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        return BIND_EREAD;', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        memset(rec, 0, BIND_LEN);', 'read error taken for a record', 'bind'),
  ('boot/install.c', ' || !staging_gone(in))  // never installed again', ' || (0 && staging_gone(in)))  // never installed again', 'staging erase not verified'),
- ('components/ota/ota_app.c', ' || spi->read(spi, SPI_STAGING, m, sizeof m) || memcmp(m, erased, sizeof m))', ' || (0 && spi->read(spi, SPI_STAGING, m, sizeof m) && memcmp(m, erased, sizeof m)))', 'upload erase not verified')
+ ('components/ota/ota_app.c', ' || spi->read(spi, SPI_STAGING, m, sizeof m) || memcmp(m, erased, sizeof m))', ' || (0 && spi->read(spi, SPI_STAGING, m, sizeof m) && memcmp(m, erased, sizeof m)))', 'upload erase not verified'),
+ ('components/store/store.c', '    else if (s_gen)\n        delete_records(0, true);\n    else if (has_records())', '    else\n        delete_records(0, true);\n    if (s_edge_ok && has_records())', 'boot deletes records without a manifest', 'store'),
+ ('components/store/store.c', 'static bool kept(uint32_t g) { return g == s_gen || pin_find(g) >= 0; }', 'static bool kept(uint32_t g) { return g == s_gen; }', 'pinned generation not kept', 'store'),
+ ('components/store/store.c', '    if (r == CFG_OK && !kv_write(&s_edge_db, EDGE, manifest, strlen(manifest))) {  // the commit point', '    if (0) {  // the commit point', 'no manifest commit', 'store'),
+ ('components/store/store.c', '    delete_records(0, true);      // the old generation unless pinned, and any stray record\n', '', 'old generation never deleted', 'store'),
+ ('components/store/store.c', "            delete_records(w.gen, false);  // the old state stands: this generation's records go", '            ;', 'failed save leaves its records', 'store'),
+ ('components/store/store.c', '            if (s_cache[k].off > s_cache[i].off)\n                s_cache[k].off -= s_cache[i].len;\n', '', 'cache offsets not moved', 'store'),
+ ('components/store/store.c', '    return s_used - (i >= 0 ? s_cache[i].len : 0) + len <= sizeof s_pool;', '    return s_used + len <= sizeof s_pool;', 'cache counts the old text too', 'store_small'),
+ ('components/store/store.c', '            doc = cfg_load(&s_env, name, parsed, err, sizeof err);', '            doc = cJSON_Duplicate(parsed, true);', 'no re-validation at boot', 'store'),
+ ('components/store/store.c', '        delete_records(p->gen, false);  // its slot is free now, so kept() no longer holds it', '        ;', 'doomed generation kept after unpin', 'store'),
+ ('third_party/flashdb/src/fdb_kvdb.c', '    if (rs.rescan && !rs.failed && ++rescans <= 16) { /* SBIOT patch, see check_and_recovery_kv_cb */\n        goto __retry;\n    }\n    if (rs.failed || rs.rescan) {', '    (void)rescans;\n    if (rs.failed) {', 'FlashDB recovery stops early', 'store'),
+ ('components/store/store.c', '    UNLOCK();\n        bool more = b->n == LOG_BATCH;', '        bool more = b->n == LOG_BATCH;', 'log callback under the lock', 'store'),
+ ('third_party/flashdb/src/fdb_kvdb.c', '                    return true;\n                }\n            } else {\n                FDB_DEBUG("KV (%.*s) is garbage NOT need move', '                }\n            } else {\n                FDB_DEBUG("KV (%.*s) is garbage NOT need move', 'FlashDB GC formats after a failed move', 'store'),
+ ('third_party/flashdb/src/fdb_kvdb.c', '        result = update_sec_status(db, &sector, kv->len, NULL);\n        if (result != FDB_NO_ERR) {', '        update_sec_status(db, &sector, kv->len, NULL);\n        if (0) {', 'FlashDB move ignores the target sector status', 'store'),
+ ('third_party/flashdb/src/fdb_kvdb.c', '    if (rs.rescan && !rs.failed && ++rescans <= 16) {', '    if (rs.rescan && !rs.failed && ++rescans) {', 'FlashDB rescans without a bound', 'store'),
+ ('components/store/store.c', '        fdb_kvdb_deinit(&s_edge_db);\n        memset(&s_edge_db, 0, sizeof s_edge_db);\n        manifest_t m;\n        bool known = edge_mount(&m);', '        manifest_t m = manifest_read(&s_gen, &s_count);\n        bool known = m != MANIFEST_BAD;', 'no remount after a failed manifest write', 'store'),
+ ('components/store/store.c', '    edge_writer_t w = {.gen = (top > s_gen ? top : s_gen) + 1};', '    edge_writer_t w = {.gen = s_gen + 1};\n    (void)top;\n    delete_records(w.gen, false);', 'new generation over existing records', 'store'),
+ ('components/store/store.c', '    for (int pass = 0; pass < 8; pass++) {', '    for (int pass = 0;; pass++) {', 'cleanup without a bound', 'store'),
+ ('components/store/store.c', '{"mqtt", "port1", "port2"};', '{"mqtt", "port1", "mqtt"};', 'no port2 certificates', 'store'),
+ ('components/store/fal_nor.c', '#define READ_TRIES 3', '#define READ_TRIES 1', 'FAL does not retry a read', 'store'),
+ ('third_party/flashdb/src/fdb_kvdb.c', '    if (rs.failed || rs.rescan) { /* SBIOT patch: the recovery did not finish */', '    if (0) {', 'FlashDB mount succeeds after an unfinished recovery', 'store'),
+ ('components/store/store.c', '    if (!edge_usable()) {  // nothing is known to be committed: no model, not even the default', '    if (0) {', 'unknown edge state serves a model', 'store'),
+ ('components/store/fal_nor.c', '    if (!s_nor || s_read_failed || off < 0 || (uint32_t)off + size > FDB_REGION)\n        return -1;\n    for (size_t done', '    if (!s_nor || off < 0 || (uint32_t)off + size > FDB_REGION)\n        return -1;\n    for (size_t done', 'writes allowed after a failed read', 'store'),
+ ('components/store/fal_nor.c', '    if (!s_nor || s_read_failed || off < 0 || off % NOR_SECTOR', '    if (!s_nor || off < 0 || off % NOR_SECTOR', 'erases allowed after a failed read', 'store'),
+ ('components/store/store.c', '    } else if (s_edge_ok) {\n        fdb_kvdb_deinit(&s_edge_db);', '    } else if (0) {\n        fdb_kvdb_deinit(&s_edge_db);', 'failed edge reset not remounted', 'store'),
+ ('components/store/store.c', 'static bool edge_usable(void) { return !read_only() && s_edge_ok; }', 'static bool edge_usable(void) { return s_edge_ok; }', 'read-only store still serves edge', 'store'),
+ ('components/store/store.c', '    if (read_only())\n        n = 0;  // what was read may be wrong: no state rather than a wrong one', '', 'state read after a failed read', 'store')
 ]
 
 
 def main():
-    subprocess.run(['make', '-s', '-C', os.path.join(FW, 'test/host'), 'build/bind_sample.bin'], check=True)
+    kinds = sys.argv[1:]
+    subprocess.run(['make', '-s', '-C', os.path.join(FW, 'test/host'), 'build/bind_sample.bin', 'build/libflashdb.a'], check=True)
     caught = 0
-    for path, old, new, what, *test in M:
+    todo = [m for m in M if not kinds or (m[4] if len(m) > 4 else 'install') in kinds]
+    for path, old, new, what, *test in todo:
+        t0 = time.time()
         path = os.path.join(FW, path)
         src = open(path).read()
         if src.count(old) != 1:
             sys.exit('mutants: the original text of "%s" is not in %s exactly once' % (what, path))
         open(path, 'w').write(src.replace(old, new))
         try:
-            b = subprocess.run(BUILD[test[0] if test else 'install'], shell=True, cwd=FW, capture_output=True, text=True)
+            bkind = 'store_fdb' if (test and test[0] == 'store' and path.endswith(('fdb_kvdb.c', 'fdb_utils.c'))) else (test[0] if test else 'install')
+            b = subprocess.run(BUILD[bkind], shell=True, cwd=FW, capture_output=True, text=True)
             if b.returncode:
                 res = 'BUILD ERROR (fix the mutant): ' + (b.stderr.splitlines() or [''])[0]
             else:
-                env = dict(os.environ, OTA_QUICK='1', ASAN_OPTIONS='detect_leaks=0')
-                r = subprocess.run([EXE] + ARGS[test[0] if test else 'install'], capture_output=True, text=True, timeout=600, env=env)
-                res = 'caught' if r.returncode else 'SURVIVED'
-                caught += r.returncode != 0
+                kind = test[0] if test else 'install'
+                if kind == 'store' and path.endswith(('fdb_kvdb.c', 'fdb_utils.c')):
+                    kind = 'store_fdb'
+                fail = False
+                for extra in RUNS.get(kind, [{}]):  # the first run that fails is enough
+                    env = dict(os.environ, OTA_QUICK='1', STORE_FAILFAST='1', ASAN_OPTIONS='detect_leaks=0', **extra)
+                    r = subprocess.run([EXE] + ARGS[kind], capture_output=True, text=True, errors='replace', timeout=600, env=env)
+                    fail = r.returncode != 0
+                    if fail:
+                        break
+                res = 'caught' if fail else 'SURVIVED'
+                caught += fail
         finally:
             open(path, 'w').write(src)
-        print('%-36s %s' % (what, res))
-    print('mutants: %d of %d caught' % (caught, len(M)))
-    return 0 if caught == len(M) else 1
+        print('%-36s %-8s %5.1f s' % (what, res, time.time() - t0), flush=True)
+    print('mutants: %d of %d caught' % (caught, len(todo)))
+    return 0 if caught == len(todo) else 1
 
 
 if __name__ == '__main__':

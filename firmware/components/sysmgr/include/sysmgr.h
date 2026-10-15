@@ -3,6 +3,7 @@
 // last in init.
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "cJSON.h"
 
@@ -23,6 +24,12 @@ void sysmgr_sntp_set(uint32_t sec, uint32_t us);
 void sysmgr_restart_later(uint32_t delay_ms);
 /** The one restart: true for the first caller, who resets the board itself; every later restart is a no-op. */
 bool sysmgr_restart_claim(void);
+/**
+ * A heartbeat or registration payload (the ESP32's sys_payload): content 0 the custom text (as it is,
+ * or pairs of hex digits with `hex`), 1 IMEI, 2 serial number, 3 ICCID, 4 MAC. Its length; 0 when
+ * there is nothing to send (IMEI and ICCID until the modem, Plan 10).
+ */
+size_t sysmgr_payload(int content, const char *custom, bool hex, uint8_t *out, size_t max);
 uint32_t sysmgr_uptime_s(void);
 /** The chip UID as 24 hex digits. */
 const char *sysmgr_serial(void);

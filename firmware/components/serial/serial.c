@@ -316,24 +316,6 @@ uint64_t serial_last_activity_us(int port)
 
 // ---- heartbeat --------------------------------------------------------------------------------------
 
-// serialHeartbeatContent: 0 custom, 1 IMEI, 2 serial number, 3 ICCID, 4 MAC (the ESP32's sys_payload).
-static size_t payload(sport_t *p, uint8_t *out, size_t max)
-{
-    char text[24] = "";
-    if (p->hb_content == 0)
-        return sf_payload_custom(p->hb_data, p->hb_hex, out, max);
-    if (p->hb_content == 2) {
-        snprintf(text, sizeof text, "%s", sysmgr_serial());
-    } else if (p->hb_content == 4) {
-        net_status_t ns;
-        netmgr_status(&ns);
-        snprintf(text, sizeof text, "%02x:%02x:%02x:%02x:%02x:%02x", ns.mac[0], ns.mac[1], ns.mac[2], ns.mac[3], ns.mac[4], ns.mac[5]);
-    }  // 1 IMEI, 3 ICCID: the modem comes with Plan 10; nothing to send until then, as the ESP32 without a modem
-    size_t n = strlen(text) < max ? strlen(text) : max;
-    memcpy(out, text, n);
-    return n;
-}
-
 // A fixed payload to the device when nothing was sent to it for serialHeartbeatInterval seconds.
 static void hb_task(void *arg)
 {
@@ -347,7 +329,7 @@ static void hb_task(void *arg)
             vTaskDelay(ticks((uint32_t)(wait_us / 1000) + 1));
             continue;
         }
-        size_t n = payload(p, buf, sizeof buf);
+        size_t n = sysmgr_payload(p->hb_content, p->hb_data, p->hb_hex, buf, sizeof buf);
         if (n)
             serial_write(p->n, buf, n, 1000);
         else

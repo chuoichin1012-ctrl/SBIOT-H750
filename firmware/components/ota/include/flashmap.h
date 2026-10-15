@@ -11,3 +11,6 @@
 // the first image in QSPI, then only read).
 #define SPI_STAGING 0x110000u
 #define SPI_FACTORY 0x280000u
+
+// QSPI: the anti-clone binding record (spec §11.5), one 4 KB sector outside the slot.
+#define QSPI_BIND 0x3F0000u

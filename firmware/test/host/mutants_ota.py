@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Mutation check of the OTA logic: each mutant must make test_install fail.
+"""Mutation check of the OTA and anti-clone logic: each mutant must make its test fail.
 
     python3 stm32/firmware/test/host/mutants_ota.py      (from the repository root)
 
-Builds test/host/test_install.c once per mutant with the host flags and runs it quickly
-(OTA_QUICK=1 skips the power-cut matrices). Every source file is restored afterwards.
+Builds the mutant's test (test/host/test_install.c, or test_bind.c for the binding) with the host
+flags and runs it quickly (OTA_QUICK=1 skips the install power-cut matrices). Every source file is restored afterwards.
 Prints one line per mutant and "mutants: N of N caught"; exits 1 when one survives.
 """
 import os
@@ -13,12 +13,15 @@ import sys
 import tempfile
 
 FW = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../..'))
-EXE = os.path.join(tempfile.gettempdir(), 'test_install_mutant')
-BUILD = ('gcc -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize=address,undefined '
-         '-fno-sanitize-recover=all -Icomponents/ota/include -Icomponents/board/include -Iboot -Itest/host '
-         'test/host/test_install.c test/host/nor_sim.c boot/install.c components/ota/*.c components/board/crc32.c '
-         '-o ' + EXE)
-# (file, original text, mutated text, what the mutant breaks)
+EXE = os.path.join(tempfile.gettempdir(), 'test_ota_mutant')
+CC = ('gcc -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize=address,undefined '
+      '-fno-sanitize-recover=all -Icomponents/ota/include -Icomponents/board/include -Iboot -Itest/host ')
+BUILD = {
+    'install': CC + 'test/host/test_install.c test/host/nor_sim.c boot/install.c components/ota/*.c '
+               'components/board/crc32.c -o ' + EXE,
+    'bind': CC + 'test/host/test_bind.c test/host/nor_sim.c components/ota/*.c components/board/crc32.c -o ' + EXE,
+}
+# (file, original text, mutated text, what the mutant breaks[, test: 'install' by default])
 M = [
  ('boot/install.c', '        if (p == 0)\n            memset(buf, 0xFF, sizeof IMG_MAGIC);  // the magic is programmed last, on its own\n', '', 'magic programmed with its page'),
  ('boot/install.c', '    if (img_check(dst, dof, in->kick, &back) != IMG_OK || memcmp(back.raw, h->raw, IMG_CORE))\n        return -1;\n', '    (void)back;\n', 'copy not checked'),
@@ -36,20 +39,28 @@ M = [
  ('components/ota/ota_app.c', '    if (r != IMG_OK || memcmp(back.raw, st->hdr.raw, IMG_CORE))\n        return fail(st, OTA_EFLASH);', '', 'staging not read back'),
  ('boot/install.c', '    if (same(in, src, so, dst, dof, len))\n        return -1;\n', '    (void)same;\n', 'copy not read back before the magic'),
  ('components/ota/ota_app.c', '    if (at == 0)\n        memset(st->page, 0xFF, sizeof IMG_MAGIC);  // the magic only once the whole image is in (finish)\n', '', 'upload writes the magic early'),
- ('components/ota/ota_app.c', '    if (spi->erase_sector(spi, SPI_STAGING))\n        return fail(st, OTA_EFLASH);\n    st->erased = NOR_SECTOR;\n', '', 'upload leaves the old staged image')
+ ('components/ota/ota_app.c', '    if (spi->erase_sector(spi, SPI_STAGING))\n        return fail(st, OTA_EFLASH);\n    st->erased = NOR_SECTOR;\n', '', 'upload leaves the old staged image'),
+ ('components/ota/bind.c', '    if (!memcmp(rec + 4, want + 4, 32))\n        return BIND_OK;', '    return BIND_OK;', 'tag not compared', 'bind'),
+ ('components/ota/bind.c', '    if (crc32_update(0, rec, 36) != c)\n        return BIND_ECORRUPT;', '    (void)c;', 'record CRC not checked', 'bind'),
+ ('components/ota/bind.c', '        qspi->erase_sector(qspi, QSPI_SLOT + s);', '        (void)s;', 'clone not erased', 'bind'),
+ ('components/ota/bind.c', '    return BIND_CLONE;\n}', '    qspi->erase_sector(qspi, QSPI_BIND);\n    return BIND_CLONE;\n}', 'clone erases the record too', 'bind'),
+ ('components/ota/bind.c', '    if (q->read(q, QSPI_BIND, back, BIND_LEN) || memcmp(back + 4, want + 4, BIND_LEN - 4))\n        return BIND_EWRITE;\n    if (q->program', '    if (q->program', 'no read-back before the magic', 'bind'),
+ ('components/ota/bind.c', '    if (q->erase_sector(q, QSPI_BIND) || q->program(q, QSPI_BIND + 4, want + 4, BIND_LEN - 4))\n        return BIND_EWRITE;', '    if (q->erase_sector(q, QSPI_BIND) || q->program(q, QSPI_BIND, want, BIND_LEN))\n        return BIND_EWRITE;', 'magic programmed with the tag', 'bind'),
+ ('components/ota/bind.c', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        return BIND_EREAD;', '    if (qspi->read(qspi, QSPI_BIND, rec, BIND_LEN))\n        return write_record(qspi, want);', 'unreadable record rewritten', 'bind'),
+ ('components/ota/sha256.c', '        pad[i] = k[i] ^ 0x5c;', '        pad[i] = k[i] ^ 0x36;', 'HMAC outer pad', 'bind')
 ]
 
 
 def main():
     caught = 0
-    for path, old, new, what in M:
+    for path, old, new, what, *test in M:
         path = os.path.join(FW, path)
         src = open(path).read()
         if src.count(old) != 1:
             sys.exit('mutants: the original text of "%s" is not in %s exactly once' % (what, path))
         open(path, 'w').write(src.replace(old, new))
         try:
-            b = subprocess.run(BUILD, shell=True, cwd=FW, capture_output=True, text=True)
+            b = subprocess.run(BUILD[test[0] if test else 'install'], shell=True, cwd=FW, capture_output=True, text=True)
             if b.returncode:
                 res = 'BUILD ERROR (fix the mutant): ' + (b.stderr.splitlines() or [''])[0]
             else:

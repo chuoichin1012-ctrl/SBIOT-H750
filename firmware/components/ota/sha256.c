@@ -98,3 +98,28 @@ void sha256_final(sha256_t *s, uint8_t out[32])
         out[4 * i + 3] = (uint8_t)s->h[i];
     }
 }
+
+void hmac_sha256(const void *key, size_t klen, const void *msg, size_t mlen, uint8_t out[32])
+{
+    uint8_t k[64] = {0}, pad[64];
+    sha256_t s;
+    if (klen > sizeof k) {
+        sha256_init(&s);
+        sha256_update(&s, key, klen);
+        sha256_final(&s, k);
+    } else {
+        memcpy(k, key, klen);
+    }
+    for (int i = 0; i < 64; i++)
+        pad[i] = k[i] ^ 0x36;
+    sha256_init(&s);
+    sha256_update(&s, pad, sizeof pad);
+    sha256_update(&s, msg, mlen);
+    sha256_final(&s, out);
+    for (int i = 0; i < 64; i++)
+        pad[i] = k[i] ^ 0x5c;
+    sha256_init(&s);
+    sha256_update(&s, pad, sizeof pad);
+    sha256_update(&s, out, 32);
+    sha256_final(&s, out);
+}

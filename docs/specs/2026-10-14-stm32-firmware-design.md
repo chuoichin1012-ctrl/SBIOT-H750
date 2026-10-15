@@ -123,7 +123,7 @@ stm32/
 | Vùng | Dung lượng | Nội dung |
 |---|---|---|
 | Flash nội (0x08000000) | 128 KB, **một sector duy nhất** | Chỉ chứa bootloader (≤ 64 KB). Không ghi gì vào đây lúc chạy |
-| QSPI (0x90000000, XIP) | 4 MB | Ứng dụng tối đa 1.472 KB, gồm header 1 KB. UI gzip nằm trong `.rodata`. Không ghi được khi đang XIP |
+| QSPI (0x90000000, XIP) | 4 MB | Ứng dụng tối đa 1.472 KB, gồm header 1 KB, ở offset 0. UI gzip nằm trong `.rodata`. Không ghi được khi đang XIP. Bản ghi liên kết chống clone ở offset 0x3F0000, một sector 4 KB (§11.5) |
 | SPI4 | 4 MB | Bảng §5.2 |
 
 ### 5.2 SPI4
@@ -911,6 +911,51 @@ Logic quyết định và chép viết trong `boot/install.c` bằng C thuần, 
 - **Reload:** nhấn 3–15 s **trong lúc app chạy** để khôi phục cấu hình gốc, giữ lại log. Nếu nút đã được giữ từ trước khi app chạy (ví dụ vừa khôi phục firmware gốc ở §11.2), app chỉ tính từ lần nhấn sau khi nhả.
 - **BOR:** đặt option byte BOR level 2.
 
+### 11.5 Chống clone
+
+**Mục tiêu:** firmware chép từ một board sang vi điều khiển khác thì không chạy. Đây là rào cản, không phải bảo vệ tuyệt đối:
+- QSPI và SPI4 là chip rời, gỡ ra là đọc được;
+- H750 không có mã hóa QSPI phần cứng.
+
+**Hai lớp:**
+1. **RDP Level 1**, đặt ở bước sản xuất cuối cùng (§12.4). Sau đó không đọc được flash nội, tức bootloader và khóa của nó, qua SWD hay bootloader hệ thống.
+   - Hạ về Level 0 thì chip xóa sạch flash nội.
+   - Cập nhật firmware sau đó chỉ qua OTA.
+   - Không dùng Level 2, vì nó khóa debug vĩnh viễn.
+2. **Liên kết image với UID của chip**, do bootloader kiểm trước mọi việc khác ở mỗi lần boot.
+
+**Bản ghi liên kết** ở QSPI 0x3F0000. Phần còn lại của sector để 0xFF.
+
+| Offset | Nội dung |
+|---|---|
+| 0 | magic `SBBD` (4 B), **ghi sau cùng** |
+| 4 | tag: HMAC-SHA256(K, `"SBIOT-H750 bind"` ‖ UID), 32 B. UID là 96 bit ở 0x1FF1E800 |
+| 36 | CRC32 của byte 0–35 |
+
+**Khóa K** dài 32 byte:
+- lấy từ một file **ngoài repo** (repo SBIOT-H750 công khai), truyền cho CMake bằng `-DSBIOT_BIND_KEY_FILE=<đường dẫn>`, và được nhúng vào cả bootloader lẫn app;
+- không truyền thì dùng khóa dev (toàn 0). Khi đó CMake cảnh báo, và bootloader in `bind: DEV KEY` mỗi lần boot.
+
+**Bootloader kiểm ở mỗi lần boot**, sau khi cấu hình clock và QSPI, trước khi lấy mẫu Reload và trước `install_run` (§11.2):
+1. Đọc 40 byte đầu của bản ghi. Lỗi đọc: **dừng**, không xóa gì.
+2. Chưa có magic `SBBD` (lần boot đầu, hoặc lần ghi trước bị cắt điện): **ghi bản ghi**.
+   - Xóa sector, ghi tag và CRC, rồi ghi magic sau cùng.
+   - Đọc lại để kiểm.
+   - Thất bại: **dừng**, không xóa gì; lần boot sau ghi lại.
+3. Có magic nhưng CRC sai (bản ghi hỏng): **dừng**, không xóa gì. Chỉ nạp lại qua SWD được.
+4. Có magic, CRC đúng, tag khớp: đi tiếp.
+5. Có magic, CRC đúng, tag **không khớp** (image chép từ board khác): **xóa toàn bộ slot ứng dụng của QSPI** (0x000000–0x16FFFF) rồi **dừng**.
+   - Giữ nguyên bản ghi liên kết, nên board đó tiếp tục bị từ chối ở mọi lần boot sau.
+   - Reload không cứu được, vì việc kiểm này đứng trước bước khôi phục firmware gốc.
+
+"Dừng" ở đây giống §11.2: LED WORK nháy nhanh, vẫn kick watchdog.
+
+**App kiểm lại** lúc khởi động bằng cùng phép tính, đọc bản ghi qua XIP ở 0x903F0000. Bản ghi thiếu hoặc không khớp thì app không khởi động dịch vụ nào, ghi log rồi dừng.
+- Mục đích: chặn việc chép image sang một board chạy bootloader khác.
+- App nằm trong QSPI nên khóa trong app đọc được. Lớp này chỉ làm việc clone khó hơn.
+
+Logic viết trong `components/ota/bind.c` bằng C thuần trên `nor_t`, chạy host test có cắt điện (§12.1).
+
 ## 12. Kiểm thử và công cụ
 
 ### 12.1 Host test (`test/host`, ASan/UBSan, `-Werror`, cJSON lấy từ `third_party`)
@@ -923,6 +968,7 @@ Logic quyết định và chép viết trong `boot/install.c` bằng C thuần, 
 | Arena | Chạy đúng bộ TLSF trên vùng 64 KB, giả lập kích thước node cJSON 32-bit, tính cả phân mảnh. Kiểm: <br>• đỉnh của payload lớn nhất của **từng** cấu hình; <br>• đỉnh của mô hình Edge 100 điểm; <br>• arena bị poison ở `arena_end` để bắt truy cập sau khi phạm vi kết thúc (template report, chuỗi); <br>• hết bộ nhớ không bao giờ sinh ra cấu hình thiếu trường |
 | Store Edge | `POST` và `GET` chạy xen nhau (generation bị ghim), dọn generation cũ và bản ghi mồ côi sau mất điện ở từng bước commit, FlashDB dọn rác trong lúc `GET` |
 | Bootloader | NOR giả lập mô hình được **ghi dở**: một page hay một sector chỉ ghi hoặc xóa được một phần khi bị cắt điện. Cắt điện tại **mọi** thao tác ghi và xóa của: <br>• cài image mới (staging → QSPI), kể cả lúc upload vào staging: lần boot sau chạy image cũ (cắt trước khi upload xong) hoặc cài lại từ đầu và chạy image mới; <br>• khôi phục firmware gốc, khi staging khác QSPI: sau khi đã xóa xong sector đầu của staging thì không bao giờ cài lại image trong staging; mất điện lúc đang xóa sector đó thì được phép cài lại; giữ nút lần nữa thì chạy firmware gốc; <br>• gieo firmware gốc: các lần boot sau gieo lại cho tới khi slot factory hợp lệ, và app vẫn chạy. <br>Cắt điện nhiều lần liên tiếp trong một lần cài. Thêm các ca: <br>• staging trắng, hỏng (header, SHA), trùng image đang chạy: không ghi gì; <br>• QSPI hỏng mà không có staging hợp lệ: dừng, không tự khôi phục; <br>• giữ nút khi firmware gốc hỏng: dừng, QSPI và staging còn nguyên; <br>• lỗi flash, quá deadline, ghi im lặng sai khi chép (kể cả chính lần ghi magic), khi cài và khi gieo: cài thì dừng, gieo thì chỉ báo lỗi; slot không có magic; gỡ lỗi rồi boot lại thì làm được; <br>• upload dừng giữa chừng, đè lên một image có cùng phần đuôi: không được cài; <br>• lỗi đọc khi kiểm từng image; <br>• slot factory đã có magic nhưng hỏng: không gieo lại; <br>• image ngắn nhất và dài nhất; upload sai SHA, sai phần cứng, thiếu byte, quá slot. <br>Điều kiện đạt: **không bao giờ nhảy vào một image không qua được bước kiểm**, và không bao giờ ghi vào image nguồn đang chép |
+| Chống clone | HMAC-SHA256 theo RFC 4231. Bản ghi liên kết: chưa có thì được ghi, lần boot sau không ghi gì; cắt điện ở mọi thao tác ghi bản ghi thì các lần boot sau vẫn ghi lại được và kết thúc khớp; bản ghi của UID khác hoặc khóa khác thì xóa slot, giữ bản ghi, dừng, và lần boot sau vẫn dừng; CRC sai và lỗi đọc thì dừng mà không ghi gì; lỗi ghi thì dừng |
 | MQTT | Adapter transport (đọc một phần, AGAIN, EOF, lỗi). Outbox: mất kết nối ở từng bước QoS 1/2, Session Present 0 và 1 (3.1.1), **3.1 với `cleanSession` 0 và 1** (bản vá đặt `sessionPresent`), clean session, hết hạn chỉ áp dụng cho `QUEUED`, giới hạn 64 KB, `bufferOffline`, đăng ký lại subscribe. Phiên mới: tin đang dở quay về `QUEUED` với packet id mới. Byte của gói CONNECT 3.1 và 3.1.1 |
 | CMUX | Mã hóa và giải mã frame, FCS, frame bị cắt, trường độ dài 1 và 2 byte (kể cả đúng 2048 byte), tái đồng bộ sau rác, SABM/UA kèm T1 và N2, DM/DISC, CLD. **FCoff/FCon dừng và tiếp mọi DLC dữ liệu, còn DLC0 vẫn gửi và nhận được** (kiểm response và FCon trong lúc FCoff). **MSC dừng và tiếp đúng một DLC**, có trả response, Test và NSC. **Hàng đợi TX đầy**, kể cả khi đầy ở lần gọi callback thứ hai trở đi của cùng một frame: callback trả 0, đếm `ppp_out_drop`, phía nhận (PPP giả lập) bỏ frame cụt nhờ FCS, và frame kế tiếp vẫn được nhận đúng. **Luồng PPP có nhiều `0x7D`/`0x7E`** (sau escape dài gần gấp đôi) bị cắt thành nhiều frame ≤ N1 rồi ghép lại đúng. `pppos_input_tcpip` trả `ERR_MEM`: thử lại 3 lần rồi bỏ và đếm |
 | ADC (logic C thuần) | Bàn giao hai nửa buffer: đọc đúng nửa đã đầy; `seq` đổi trong lúc cộng thì bỏ cửa sổ và đếm `adc_late`; chưa có cửa sổ đầu tiên thì không công bố giá trị; lỗi thì cả hai kênh failed; trình tự phục hồi; đổi mã sang mA kèm hiệu chuẩn hai điểm; factory record thiếu hoặc CRC sai thì dùng hệ số danh định |
@@ -983,6 +1029,10 @@ Ngoài ra, file map của linker phải cho thấy mỗi section nằm trong ng�
 - `mkimage.py`: thêm header.
 - CMake preset `boot` và `app`. Kết quả gồm `boot.elf`, `app.elf` và `app.img` (đã có header).
 - Nạp qua SWD (P6) bằng STM32CubeProgrammer CLI (`tools/flash.sh`, chạy từ WSL): flash nội nạp trực tiếp; QSPI bank 2 qua external loader. OpenOCD `stmqspi` không đọc được flash trên board này ("Failed to read memory at 0x52005020"), nên OpenOCD chỉ dùng để debug, với `QUADSPI 0`.
+- **Bước sản xuất:**
+  1. nạp bootloader (build với khóa thật, §11.5) và image QSPI;
+  2. cấp nguồn một lần, để bootloader ghi bản ghi liên kết và gieo firmware gốc (§11.2);
+  3. **đặt RDP Level 1, luôn là bước cuối** (`STM32_Programmer_CLI -c port=SWD -ob RDP=0xBB`).
 - Plan 02 dùng loader của nhóm `STM32H750VBT6_GD25Q32ESIG.stldr` (Dev_info: 0x90000000, 4 MB, page 256 B, 1024 sector 4 KB; SHA-256 `5ef2de362969bb2ad9d0c92604e58f27b018614533fe421e6ac5974c9bcb0699`), sau khi chứng minh xóa, ghi và đọc lại trên vùng dự trữ 0x903E0000. Loader này không kick WDI: chỉ an toàn khi R20 chưa lắp. Plan 04 thay bằng loader build từ mã nguồn (cùng driver QSPI với bootloader, kick WDI và IWDG1 trong các vòng chờ).
 - Log debug ra UART7, 115200 baud.
 

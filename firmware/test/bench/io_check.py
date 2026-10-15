@@ -268,6 +268,17 @@ def case_adcpoint(ma):
           % (ma, means[0], means[1], st[-1]['ua'][0] / 1000.0, st[-1]['ua'][1] / 1000.0, sd[0], sd[1], len(st)))
 
 
+def case_adccheck(ma):
+    st = window_stats(30)
+    for ch in (0, 1):
+        vals = [x['ua'][ch] / 1000.0 for x in st if x['ok'][ch]]
+        mean = statistics.mean(vals) if vals else -1
+        sd = statistics.pstdev(vals) if vals else -1
+        check(len(vals) == len(st) and abs(mean - float(ma)) <= 0.05 and sd <= 0.005 and st[-1]['cal'],
+              'AI%d at %s mA: %.4f mA (error %+.4f, limit 0.05), spread %.4f mA (limit 0.005), calibrated'
+              % (ch + 1, ma, mean, mean - float(ma), sd))
+
+
 def case_adccal():
     pts = json.load(open(POINTS))
     k = 3.0 / (65535 * 0.499 * 0.120)  # mA per code, nominal
@@ -294,6 +305,8 @@ def main():
         a = args.pop(0)
         if a == 'adcpoint':
             case_adcpoint(args.pop(0))
+        elif a == 'adccheck':
+            case_adccheck(args.pop(0))
         else:
             {'adcbase': case_adcbase, 'dido': case_dido, 'reload': case_reload, 'adccal': case_adccal}[a]()
     print('bench: %s' % ('ok' if not failures else 'FAILED (%d)' % len(failures)))

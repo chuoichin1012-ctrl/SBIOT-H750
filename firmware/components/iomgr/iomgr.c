@@ -29,7 +29,7 @@ static StaticSemaphore_t s_lock_mem;
 static uint8_t s_latched;
 static int s_tz;
 static volatile bool s_factory;
-volatile bool g_io_trace;  // bench: log each change of the outputs (bench_io.c 'D')
+volatile bool g_io_trace;  // bench: log each change of the outputs and each AI window (bench_io.c 'D')
 static TaskHandle_t s_io, s_reload;
 static StaticTask_t s_io_tcb, s_reload_tcb;
 static StackType_t s_io_stack[IO_STACK_WORDS], s_reload_stack[RELOAD_STACK_WORDS];
@@ -79,8 +79,11 @@ static void io_task(void *arg)
             uint32_t seq = adc_drv_seq();  // first, then the half it belongs to
             const uint16_t (*half)[ADC_CH] = adc_drv_half();
             lock();
-            adc_core_half(&s_adc, half, seq, seq_read, NULL);
+            bool pub = adc_core_half(&s_adc, half, seq, seq_read, NULL);
+            int32_t ua0 = adc_core_ua(&s_adc, 0), ua1 = adc_core_ua(&s_adc, 1);
             unlock();
+            if (pub && g_io_trace)
+                blog("io: AI %ld %ld at %lu ms\r\n", (long)ua0, (long)ua1, (unsigned long)now_ms());
         }
         uint32_t now = now_ms();
         if (now - last_tick < IO_TICK_MS)

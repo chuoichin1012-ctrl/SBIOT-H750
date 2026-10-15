@@ -5,6 +5,7 @@
 #include "adc_drv.h"
 #include "blog.h"
 #include "io_core.h"
+#include "io_mb.h"
 #include "main.h"  // the pin names (app.ioc)
 #include "now_us.h"
 #include "reload.h"
@@ -158,6 +159,9 @@ void iomgr_start(const cJSON *io, const cJSON *sys, nor_t *spi4)
     if (found)
         blog("io: outputs restored (0x%02x)\r\n", mask);
     reload_init(&s_button);
+    // The IO as a Modbus slave on both ports (io.modbusAddress, spec §6.4; the bridges ask it).
+    static const io_mb_ops_t ops = {IO_DO, IO_DI, ADC_CH, iomgr_do_get, iomgr_do_set, iomgr_di_get, iomgr_ai_ua, iomgr_ai_ok};
+    io_mb_init(&ops, cfg.mb_addr);
 
     // The factory record: two copies, the first valid wins; none: nominal (spec §5.2, §6.6).
     static uint8_t a[FREC_SIZE], b[FREC_SIZE];

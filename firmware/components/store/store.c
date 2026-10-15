@@ -390,6 +390,10 @@ store_err_t store_init(const cfg_env_t *env, nor_t *flash)
     load_all();
     read_only();  // a read that failed anywhere in the mount or the loads
     UNLOCK();
+    if (s_ro) {  // what the mount read cannot be trusted: defaults are served, nothing is written
+        store_port_log("mounted read-only after a flash read failed: defaults, no writes");
+        return STORE_EFLASH;
+    }
     store_port_log("%u configs loaded, edge generation %lu, boot #%lu", (unsigned)s_ncache, (unsigned long)s_gen,
                    (unsigned long)s_boot);
     return STORE_OK;

@@ -65,13 +65,22 @@ static int data(SPI_HandleTypeDef *h, const uint8_t *tx, uint8_t *rx, uint32_t n
 
 static const spi_nor_port_t k_port = {lock, unlock, busy_wait, data};
 
+// Stands in for a flash that failed its init: never used, even if the bus answers later (as in
+// the bootloader, Plan 04b). Its users (OTA, FlashDB) see every operation fail.
+static int dead_read(nor_t *n, uint32_t off, void *buf, uint32_t len) { return NOR_EIO; }
+static int dead_erase(nor_t *n, uint32_t off) { return NOR_EIO; }
+static int dead_program(nor_t *n, uint32_t off, const void *buf, uint32_t len) { return NOR_EIO; }
+static nor_t s_dead = {dead_read, dead_erase, dead_program, 0};
+static int s_init = NOR_EIO;
+
 int flash_spi4_init(void)
 {
     s_lock = xSemaphoreCreateMutexStatic(&s_lock_mem);
     s_done = xSemaphoreCreateBinaryStatic(&s_done_mem);
-    return spi_nor_init(&s_spi, &hspi4, NULL, &k_port);  // the wdog task kicks meanwhile
+    s_init = spi_nor_init(&s_spi, &hspi4, NULL, &k_port);  // the wdog task kicks meanwhile
+    return s_init;
 }
 
-nor_t *flash_spi4(void) { return &s_spi.nor; }
+nor_t *flash_spi4(void) { return s_init == NOR_OK ? &s_spi.nor : &s_dead; }
 uint32_t flash_spi4_jedec(void) { return spi_nor_jedec(&s_spi); }
 unsigned flash_spi4_dma_errors(void) { return s_dma_errors; }

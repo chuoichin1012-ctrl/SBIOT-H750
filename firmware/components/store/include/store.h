@@ -29,7 +29,7 @@ typedef enum {
  * records of no committed generation, bumps the boot counter, and loads every small config,
  * re-validated (keys added by newer firmware filled in), falling back to its default.
  */
-store_err_t store_init(const cfg_env_t *env, nor_t *flash);
+store_err_t store_init(const cfg_env_t *env, nor_t *flash);  // STORE_EFLASH: no cfg, or read-only (defaults)
 /** Unmounts (host tests: a power cut, then store_init again on the same flash). */
 void store_deinit(void);
 

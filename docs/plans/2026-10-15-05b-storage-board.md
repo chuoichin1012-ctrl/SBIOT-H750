@@ -44,6 +44,12 @@
 5. **The mount time (1.8 s worst seen) is accepted for now.** Cost if wrong: about 2 s more boot time after heavy saving.
 6. **Configs are read once at boot** (user decision). The store's listeners have no live consumer, and are kept only until Plan 06 decides on the "restart required" flag.
 
+## Codex round 1 (NOT APPROVED), and the fix
+
+1. **FlashDB still used SPI4 after its init failed.** `flash_spi4()` now hands out a `nor_t` whose every operation fails when `spi_nor_init` failed, as the bootloader does since Plan 04b. `store_init` also answers `STORE_EFLASH` when the mount ends read-only: a mount over a failing flash used to report "mounted", with defaults and a wrong boot count, although nothing was written.
+   - Bench case in `store_check.py`: `spi_nor_init` is forced to fail through the debugger (r0 at its return). The log shows `spi4 ... FAILED` and `store FAILED`.
+   - The next boot finds the boot counter one up from before the forced boot, and the same config: no write happened in between.
+
 ## Tasks
 
 - [x] SPI4 port and DMA (CubeMX streams, `flash_spi4.c`); OTA uses it. On the board: report, upload and install over DMA, DMA errors 0.

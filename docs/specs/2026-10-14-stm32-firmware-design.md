@@ -950,7 +950,7 @@ Logic quyết định và chép viết trong `boot/install.c` bằng C thuần, 
 **Bootloader kiểm ở mỗi lần boot**, sau khi cấu hình clock và QSPI, trước khi lấy mẫu Reload và trước `install_run` (§11.2). Bootloader **không bao giờ ghi** bản ghi.
 1. Đọc 84 byte. Lỗi đọc: **dừng**, không xóa gì.
 2. Chưa có magic `SBBD` (board chưa được ghi bản ghi): **dừng**, không xóa gì.
-3. Có magic nhưng CRC sai (bản ghi hỏng): **dừng**, không xóa gì. Phải ghi lại bằng công cụ nạp.
+3. Có magic nhưng CRC sai: **dừng**, không xóa gì. Đây là quy tắc phân loại lỗi chứ không phải bằng chứng: CRC sai được coi là hỏng ngẫu nhiên, còn kẻ giả mạo phải tính lại CRC nên rơi vào bước 5. Phải ghi lại bằng công cụ nạp.
 4. CRC đúng và chữ ký hợp lệ **cho UID của chip này**: đi tiếp.
 5. CRC đúng mà chữ ký không hợp lệ. Đây là bản ghi chép từ board khác, ký bằng khóa khác, hay bị sửa có tính lại CRC. Khi đó **xóa toàn bộ slot ứng dụng của QSPI** (0x000000–0x16FFFF) rồi **dừng**.
    - Giữ nguyên bản ghi, nên board đó tiếp tục bị từ chối ở mọi lần boot sau.

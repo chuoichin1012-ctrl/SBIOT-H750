@@ -77,6 +77,24 @@ def test_genkey():
         pubp = os.path.join(d, 'bind.pub')
         provision.main(['pubkey', p, pubp])
         check(open(pubp, 'rb').read() == provision.public_key(first), 'pubkey writes the 32-byte public key')
+        link = os.path.join(d, 'link.key')
+        os.symlink(p, link)
+        hard = os.path.join(d, 'hard.key')
+        os.link(p, hard)
+        for out, how in ((p, 'the key itself'), (link, 'a symlink to it'), (hard, 'a hard link to it')):
+            rp = provision.main(['pubkey', p, out])
+            rr = provision.main(['record', p, UID_A.hex(), out])
+            check(rp != 0 and rr != 0 and open(p, 'rb').read() == first,
+                  'pubkey/record refuse to write over %s, and the key is unchanged' % how)
+        bad = os.path.join(d, 'short.key')
+        open(bad, 'wb').write(b'x' * 31)
+        outp = os.path.join(d, 'out.bin')
+        open(outp, 'wb').write(b'keep')
+        try:
+            provision.main(['pubkey', bad, outp])
+        except ValueError:
+            pass
+        check(open(outp, 'rb').read() == b'keep', 'a bad key is refused before the output is touched')
         recp = os.path.join(d, 'rec.bin')
         provision.main(['record', p, UID_A.hex(), recp])
         check(open(recp, 'rb').read() == provision.record(first, UID_A), 'record writes the record of a hex UID')

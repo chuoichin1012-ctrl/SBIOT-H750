@@ -65,6 +65,16 @@ def load_key(path):
     return seed
 
 
+def write_out(path, data, key):
+    """Writes data to path, computed before; never over the key file (also through a link)."""
+    if key != 'dev' and os.path.exists(path) and os.path.samefile(path, key):
+        print('provision: %s is the private key, not overwritten' % path, file=sys.stderr)
+        return 1
+    with open(path, 'wb') as f:
+        f.write(data)
+    return 0
+
+
 def main(argv):
     if len(argv) >= 2 and argv[0] == 'genkey':
         try:
@@ -76,11 +86,9 @@ def main(argv):
             f.write(os.urandom(32))
         return 0
     if len(argv) == 3 and argv[0] == 'pubkey':
-        open(argv[2], 'wb').write(public_key(load_key(argv[1])))
-        return 0
+        return write_out(argv[2], public_key(load_key(argv[1])), argv[1])
     if len(argv) == 4 and argv[0] == 'record':
-        open(argv[3], 'wb').write(record(load_key(argv[1]), bytes.fromhex(argv[2])))
-        return 0
+        return write_out(argv[3], record(load_key(argv[1]), bytes.fromhex(argv[2])), argv[1])
     if len(argv) == 2 and argv[0] == 'uid':
         print(uid_from_cli(open(argv[1]).read()).hex())
         return 0

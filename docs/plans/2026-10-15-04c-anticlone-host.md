@@ -34,7 +34,7 @@
    - With Ed25519, the device holds only the public key.
    - Cost if wrong: about 10.9 KB more in the bootloader (measured at `-Os` with `--gc-sections`; the bootloader is 18 KB today and its limit is 64 KB), plus a vendored library.
 2. **A missing record halts without erasing.** A genuine board that was not provisioned yet must not lose its image. Cost if wrong: none for security, because a clone without a valid record does not run either.
-3. **A corrupt record (wrong CRC) halts without erasing.** The CRC separates damage from forgery: a forger would recompute the CRC, and that path erases. Cost if wrong: an attacker who leaves the CRC broken keeps the application in QSPI, but it still does not run.
+3. **A corrupt record (wrong CRC) halts without erasing.** This is a rule for sorting errors, not a proof. A wrong CRC is treated as damage, because random damage almost always breaks it. A forger has to recompute the CRC, and that path erases. (Codex corrected this wording.) Cost if wrong: an attacker who leaves the CRC broken keeps the application in QSPI, but it still does not run.
 4. **The signature is checked over this chip's UID.** The UID stored in the record is only informative. A record of another chip fails even when its stored UID is rewritten with the CRC fixed (`test_clone`).
 5. **Development keypair** derived from the public string `"SBIOT-H750 dev bind key"`. Builds without `SBIOT_BIND_PUBKEY_FILE` embed its public key, warn at configure time, and the bootloader prints `bind: DEV KEY` (Plan 04b). Cost if wrong: a production build made without the variable accepts dev-bound boards. The warning, the banner and the production steps in §12.4 are the guard.
 
@@ -63,7 +63,11 @@
 
 ### Task 1: the production signer
 
-- [x] `python3 stm32/firmware/tools/test_provision.py OUT`. Expected: `ModuleNotFoundError: provision` first, then `test_provision: ok` (14 checks: record layout, signature, determinism, the dev key, the UID parsed from CubeProgrammer output, genkey never overwrites and uses mode 0600).
+- [x] `python3 stm32/firmware/tools/test_provision.py OUT`. Expected: `ModuleNotFoundError: provision` first, then `test_provision: ok`. The 18 checks cover:
+  - the record layout, the signature, determinism and the dev key;
+  - the UID parsed from CubeProgrammer output;
+  - `genkey` never overwrites, and uses mode 0600;
+  - `pubkey` and `record` never write over the key file, also through a symlink or hard link, and refuse a bad key before touching the output. This was a Codex finding: the first version opened the output before it read the key.
 
 ### Task 2: the check
 

@@ -33,7 +33,7 @@ bind_result_t bind_check(nor_t *qspi, const uint8_t pub[BIND_PUB_LEN], const uin
     if (memcmp(rec, MAGIC, sizeof MAGIC))
         return BIND_ENONE;  // never provisioned: the bootloader never makes a record itself
     if (!crc_ok(rec))
-        return BIND_ECORRUPT;  // damage, not a forgery: nothing is erased
+        return BIND_ECORRUPT;  // treated as damage (a forger must fix the CRC): nothing is erased
     if (bind_valid(rec, pub, uid))
         return BIND_OK;
     // A valid record of another chip or key: this image was copied. Erase the application, keep

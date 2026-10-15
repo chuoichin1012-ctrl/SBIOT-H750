@@ -166,6 +166,7 @@ typedef struct {
     uint16_t version;
     bool degraded;
     uint8_t state;
+    int cuts;  // power cuts that happened (one_run)
 } outcome_t;
 
 // Boots until the app runs with nothing left to do, or the board stays in halted rescue. A power
@@ -902,6 +903,55 @@ static void test_restore_power_losses(void)
     free(b);
 }
 
+// ---- read errors are not proof of a bad image (Codex final review of Plan 04a) -------------------
+
+static void test_image_read_errors(void)
+{
+    bench_t b;
+    outcome_t o;
+    // Only QSPI holds a valid image, and its header read fails once: decide again after a reset,
+    // never halt.
+    bench_init(&b, 160);
+    put_image(&b.q, QSPI_SLOT, 1, BODY_V1);
+    boot_until_stable(&b, APP_CONFIRM, 3);
+    sim_fail(&b.w, 0, DEV_QSPI, QSPI_SLOT, QSPI_SLOT + IMG_HDR_SIZE, SIM_READ_EIO);
+    b.w.fail[0].count = 1;
+    b.boots = 0;
+    o = boot_until_stable(&b, APP_CONFIRM, 5);
+    CHECK(o.kind == OUT_RUN && o.version == 1 && b.boots == 2, "QSPI read fails once: one more boot, then v1 runs (kind %d, boots %d)",
+          o.kind, b.boots);
+    bench_free(&b);
+
+    // QSPI bad, the backup the only source, its read fails once: restored after a reset.
+    bench_init(&b, 161);
+    put_image(&b.s, SPI_BACKUP, 1, BODY_V1);
+    record(&b, BR_CONFIRMED, 0, 0, 0, 0, 0, 0, 1, BODY_V1);
+    sim_fail(&b.w, 0, DEV_SPI, SPI_BACKUP, SPI_BACKUP + IMG_HDR_SIZE, SIM_READ_EIO);
+    b.w.fail[0].count = 1;
+    o = boot_until_stable(&b, APP_CONFIRM, 10);
+    CHECK(o.kind == OUT_RUN && o.version == 1, "backup read fails once: restored (kind %d)", o.kind);
+    bench_free(&b);
+
+    // The backup stays unreadable: after 3 resets the boot gives up deciding again, but with an
+    // unreadable source it retries every 60 s instead of halting; once it reads, it is restored.
+    bench_init(&b, 162);
+    put_image(&b.s, SPI_BACKUP, 1, BODY_V1);
+    record(&b, BR_CONFIRMED, 0, 0, 0, 0, 0, 0, 1, BODY_V1);
+    sim_fail(&b.w, 0, DEV_SPI, SPI_BACKUP, SPI_BACKUP + IMG_HDR_SIZE, SIM_READ_EIO);
+    b.w.fail[0].count = 8;
+    o = boot_until_stable(&b, APP_CONFIRM, 20);
+    CHECK(o.kind == OUT_RUN && o.version == 1 && b.retries > 0, "backup unreadable for a while: rescue retries, then restored (kind %d)",
+          o.kind);
+    bench_free(&b);
+
+    // Row 1 before everything: no readable record and no valid image at all halts at once.
+    bench_init(&b, 163);
+    sim_fail(&b.w, 0, DEV_SPI, REC_LO, REC_HI, SIM_READ_EIO);
+    o = boot_until_stable(&b, APP_CONFIRM, 5);
+    CHECK(o.kind == OUT_HALT && b.boots == 1, "unreadable record, nothing valid: halted on the first boot (boots %d)", b.boots);
+    bench_free(&b);
+}
+
 // ---- the staging writer -------------------------------------------------------------------------
 
 static int upload_raw(bench_t *b, const uint8_t *img, uint32_t total, uint32_t send)
@@ -967,10 +1017,12 @@ static long one_run(const matrix_t *m, long cut, int cuts, long period, outcome_
         if (pending_done)
             *pending_done = b->w.ops;
     } else {
+        b->cuts++;  // cut during the upload
         memset(&b->ho, 0xA5, sizeof b->ho);
     }
     b->boots = 0;
     *o = boot_until_stable(b, m->policy, 60);
+    o->cuts = b->cuts;
     long ops = b->w.ops;
     bench_free(b);
     free(b);
@@ -997,20 +1049,25 @@ static void test_power_cuts(const matrix_t *m)
     CHECK(bad == 0, "%s: %d of %ld cut points end wrong", m->name, bad, total);
     printf("%s: %ld cut points (PENDING done at op %ld), %d ended on v2\n", m->name, total, pending, newer);
 
-    // Several cuts in one run: three cuts at a random start, a random 1-200 operations apart. With
-    // repeated cuts both images are acceptable; never a halt, a degraded run or an unconfirmed end.
+    // Several cuts in one run: up to three cuts from a random start, a random 1-200 operations apart
+    // (a cut that ends the upload before PENDING leaves nothing more to cut). With repeated cuts both
+    // images are acceptable; never a halt, a degraded run or an unconfirmed end.
     uint32_t x = 12345;
+    int triple = 0;
     bad = 0;
     for (int i = 0; i < 300; i++) {
         x = x * 1103515245u + 12345u;
         long cut = (long)((x >> 8) % (uint32_t)total), period = 1 + (long)((x >> 4) % 200);
         one_run(m, cut, 3, period, &o, NULL);
+        triple += o.cuts == 3;
         bool ok = o.kind == OUT_RUN && o.state == BR_CONFIRMED && !o.degraded && (o.version == 1 || o.version == 2);
         if (!ok && bad++ < 5)
             printf("  %s: 3 cuts from op %ld every %ld -> kind %d v%u state %u\n", m->name, cut, period, o.kind,
                    o.version, o.state);
     }
-    CHECK(bad == 0, "%s: %d of 300 triple-cut runs end wrong", m->name, bad);
+    CHECK(bad == 0, "%s: %d of 300 multi-cut runs end wrong", m->name, bad);
+    CHECK(triple >= 100, "%s: only %d of 300 runs had all three cuts", m->name, triple);
+    printf("%s: 300 runs with up to three cuts, %d with all three\n", m->name, triple);
 }
 
 int main(void)
@@ -1033,6 +1090,7 @@ int main(void)
     test_ram_path_bad_result();
     test_trial_readback_error();
     test_restore_power_losses();
+    test_image_read_errors();
     matrix_t install = {"install", APP_CONFIRM, 2}, rollback = {"rollback", APP_CRASH, 1};
     if (!getenv("OTA_QUICK")) {  // the two matrices take most of the run time
         test_power_cuts(&install);

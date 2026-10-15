@@ -31,6 +31,7 @@ typedef struct {
     bootrec_t rec;          // the record as last read or written
     // private
     bool prev_degraded;
+    bool read_error;         // an image check could not read its flash (not cached)
     signed char vq, vb, vs;  // validity cache: -1 unknown, else 0/1
     img_hdr_t hq, hb, hs;
 } install_t;

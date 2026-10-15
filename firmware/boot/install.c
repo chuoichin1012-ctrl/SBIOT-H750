@@ -18,10 +18,18 @@ static uint32_t checkpoints(uint32_t len)
 
 // ---- the three sources, checked on demand and cached until written --------------------------
 
+// A read error is not proof of a bad image: it is not cached, and in->read_error makes the boot
+// decide again after a reset (unsure()) before acting on "not valid".
 static bool check(install_t *in, signed char *v, img_hdr_t *h, nor_t *n, uint32_t off)
 {
-    if (*v < 0)
-        *v = img_check(n, off, in->kick, h) == IMG_OK;
+    if (*v >= 0)
+        return *v;
+    int r = img_check(n, off, in->kick, h);
+    if (r == IMG_EREAD) {
+        in->read_error = true;
+        return false;
+    }
+    *v = r == IMG_OK;
     return *v;
 }
 
@@ -59,8 +67,31 @@ static bool put(install_t *in)
     return true;
 }
 
+// True when a decision is about to rest on an image that could not be read: reset and decide
+// again, at most 3 times in a row (then an unreadable image counts as not valid).
+static bool unsure(install_t *in)
+{
+    if (!in->read_error || in->ho->read_fail >= 3)
+        return false;
+    in->ho->read_fail++;
+    handoff_store(in->ho);
+    return true;
+}
+
+// Row 1, or a rescue retry when an image could not even be read (it may come back).
+static install_result_t nothing_valid(install_t *in)
+{
+    if (unsure(in))
+        return INSTALL_REBOOT;
+    if (in->read_error)
+        return INSTALL_RESCUE_RETRY;
+    in->rows |= INSTALL_ROW(1);
+    return INSTALL_RESCUE_HALT;
+}
+
 static install_result_t jump(install_t *in, bool degraded)
 {
+    in->ho->read_fail = 0;
     in->degraded = degraded;
     in->ho->degraded = degraded;
     in->ho->reason = in->rec.reason;
@@ -159,12 +190,13 @@ static install_result_t ram_path(install_t *in)
         }
         return INSTALL_REBOOT;  // never jump into an image that failed its check
     }
-    in->rows |= INSTALL_ROW(1);
-    return INSTALL_RESCUE_HALT;
+    return nothing_valid(in);
 }
 
 static install_result_t rec_failed(install_t *in)
 {
+    if (!vq(in) && !vb(in) && !vs(in))
+        return nothing_valid(in);  // row 1 comes before every recovery branch
     in->rows |= INSTALL_ROW(3);
     if (in->ho->rec_fail < 255)
         in->ho->rec_fail++;
@@ -173,7 +205,7 @@ static install_result_t rec_failed(install_t *in)
         in->rows |= INSTALL_ROW(4);
         return jump(in, true);  // QSPI is never erased here; a pending install waits
     }
-    if (in->ho->rec_fail < 3) {
+    if (in->ho->rec_fail < 3 || unsure(in)) {  // never overwrite a QSPI image that could not be read
         in->rows |= INSTALL_ROW(5);
         return INSTALL_REBOOT;
     }
@@ -281,6 +313,8 @@ static int step(install_t *in)
         set_state(in, BR_CONFIRMED, RSN_NONE);  // bootrec_read never returns another state
         break;
     }
+    if (unsure(in))
+        return INSTALL_REBOOT;  // this step's decision rested on an image that could not be read
     if (!put(in))
         return rec_failed(in);
     return CONTINUE;
@@ -291,6 +325,7 @@ static int step(install_t *in)
 static void begin(install_t *in)
 {
     in->vq = in->vb = in->vs = -1;
+    in->read_error = false;
     in->degraded = false;
     in->prev_degraded = in->ho->degraded;
     in->ho->degraded = 0;
@@ -300,10 +335,8 @@ static void begin(install_t *in)
 static install_result_t decide(install_t *in)
 {
     for (int guard = 0; guard < 64; guard++) {
-        if (!vq(in) && !vb(in) && !vs(in)) {
-            in->rows |= INSTALL_ROW(1);
-            return INSTALL_RESCUE_HALT;
-        }
+        if (!vq(in) && !vb(in) && !vs(in))
+            return nothing_valid(in);
         bootrec_t *r = &in->rec;
         bool exhausted = r->attempts > 3 || r->verify_fail >= 2;
         if (r->state == BR_BACKUP && r->attempts > 3) {
@@ -351,9 +384,10 @@ install_result_t install_run(install_t *in)
             in->rows |= INSTALL_ROW(9);
             return INSTALL_RESCUE_RETRY;
         } else {
-            in->rows |= INSTALL_ROW(1);
-            return INSTALL_RESCUE_HALT;
+            return nothing_valid(in);
         }
+        if (unsure(in))
+            return INSTALL_REBOOT;
         if (!put(in))
             return rec_failed(in);
     }
@@ -380,8 +414,7 @@ install_result_t install_rescue_retry(install_t *in)
         set_state(in, BR_CONFIRMED, RSN_RESCUE_RETRY);  // no source to recover from, but QSPI is good
         in->rec.verify_fail = 0;
     } else {
-        in->rows |= INSTALL_ROW(1);
-        return INSTALL_RESCUE_HALT;
+        return nothing_valid(in);
     }
     // A record that cannot be written goes through rows 3-6 like anywhere else: a valid QSPI is
     // run degraded (never erased), rec_fail is counted, and only then the RAM path.

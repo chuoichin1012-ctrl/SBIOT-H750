@@ -396,6 +396,7 @@ static void on_headers(struct mg_connection *c, slot_t *s, struct mg_http_messag
     if (s->hdrs_done)
         return;
     s->hdrs_done = true;
+    s->declared = hm->body.len;  // for every request, before any branch returns (Codex 06b review r2)
     bool post = mg_strcmp(hm->method, mg_str("POST")) == 0;
     web_ep_t ep = web_endpoint(post, hm->uri.buf, hm->uri.len);
     struct mg_str *cl = mg_http_get_header(hm, "Content-Length");
@@ -416,7 +417,6 @@ static void on_headers(struct mg_connection *c, slot_t *s, struct mg_http_messag
         return;
     }
     s->waiting = hm->body.len > 0;
-    s->declared = hm->body.len;
     s->last_ms = ms_now();
 }
 

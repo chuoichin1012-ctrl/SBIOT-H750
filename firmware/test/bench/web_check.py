@@ -344,6 +344,12 @@ def case_review(ws_port):
     _, after = get_json('/api/config/system')
     check(after['hostname'] == before['hostname'], 'a body cut short by the client: nothing saved')
 
+    # 1b. On one connection, a POST with a body, then a GET without the login: both answered (r2).
+    pb = json.dumps({'hostname': before['hostname']}).encode()
+    r = raw(b'POST /api/config/system HTTP/1.1\r\nHost: x\r\nAuthorization: ' + AUTH.encode() +
+            b'\r\nContent-Length: %d\r\n\r\n' % len(pb) + pb + b'GET /api/device HTTP/1.1\r\nHost: x\r\n\r\n')
+    check(b'HTTP/1.1 200' in r and b'HTTP/1.1 401' in r, 'a POST, then a GET without login on one connection: 200, then 401')
+
     # 2. A GET, then an edgeDevices POST, pipelined in one send.
     model = edge_model(1, 2)
     eb = json.dumps(model).encode()
@@ -380,28 +386,28 @@ def case_review(ws_port):
     ws.close()
     check(h1 > h0 - 20000 and h2 > h0 - 20000, 'requests and console commands without reading: heap bounded (%d, %d, %d)' % (h0, h1, h2))
 
-    # 4. Console sockets that never finish their handshake: limited, and closed after 5 s.
+    # 4. Console sockets that never finish their handshake: limited, and closed after 5 s. Only an EOF
+    # or a reset counts as closed (a timeout means the socket is still open); the new client tries
+    # while the test still holds its sockets, so the board must have taken them back itself (r2).
+    def closed_by_board(x, wait):
+        x.settimeout(wait)
+        try:
+            return x.recv(1) == b''
+        except ConnectionResetError:
+            return True
+        except socket.timeout:
+            return False
     pend = [socket.create_connection((HOST, ws_port), timeout=5) for _ in range(8)]
     time.sleep(0.5)
-    closed = 0
-    for x in pend:
-        x.settimeout(0.2)
-        try:
-            closed += x.recv(1) == b''
-        except (socket.timeout, OSError):
-            pass
+    refused = sum(closed_by_board(x, 0.2) for x in pend)
     time.sleep(6)
-    late = 0
-    for x in pend:
-        x.settimeout(0.5)
-        try:
-            late += x.recv(1) == b''
-        except (socket.timeout, ConnectionResetError):
-            late += 1
-        x.close()
+    late = sum(closed_by_board(x, 0.5) for x in pend)
     ws, st = ws_open(ws_port, base64.b64encode(b'admin:admin').decode())
-    check(closed >= 3 and late == 8 and st == 101, 'pending console sockets: %d refused at once, all closed after 5 s, a client then gets in' % closed)
+    check(refused >= 3 and late == 8 and st == 101,
+          'pending console sockets: %d refused at once, %d of 8 closed by the board after 5 s, a client then gets in (%d)' % (refused, late, st))
     ws.close()
+    for x in pend:
+        x.close()
 
     # 5. Edge GETs that hold 4 generations: the fifth gets 503, not an empty 200; closing frees them.
     big = json.dumps(edge_model(10, 10)).encode()

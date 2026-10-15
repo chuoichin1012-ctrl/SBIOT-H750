@@ -97,10 +97,12 @@ M = [
  ('components/store/store.c', '{"mqtt", "port1", "port2"};', '{"mqtt", "port1", "mqtt"};', 'no port2 certificates', 'store'),
  ('components/store/fal_nor.c', '#define READ_TRIES 3', '#define READ_TRIES 1', 'FAL does not retry a read', 'store'),
  ('third_party/flashdb/src/fdb_kvdb.c', '    if (rs.failed || rs.rescan) { /* SBIOT patch: the recovery did not finish */', '    if (0) {', 'FlashDB mount succeeds after an unfinished recovery', 'store'),
- ('components/store/store.c', '    if (!s_edge_ok) {  // nothing is known to be committed: no model, not even the default', '    if (0) {', 'unknown edge state serves a model', 'store'),
+ ('components/store/store.c', '    if (!edge_usable()) {  // nothing is known to be committed: no model, not even the default', '    if (0) {', 'unknown edge state serves a model', 'store'),
  ('components/store/fal_nor.c', '    if (!s_nor || s_read_failed || off < 0 || (uint32_t)off + size > FDB_REGION)\n        return -1;\n    for (size_t done', '    if (!s_nor || off < 0 || (uint32_t)off + size > FDB_REGION)\n        return -1;\n    for (size_t done', 'writes allowed after a failed read', 'store'),
  ('components/store/fal_nor.c', '    if (!s_nor || s_read_failed || off < 0 || off % NOR_SECTOR', '    if (!s_nor || off < 0 || off % NOR_SECTOR', 'erases allowed after a failed read', 'store'),
- ('components/store/store.c', '    } else if (s_edge_ok) {\n        fdb_kvdb_deinit(&s_edge_db);', '    } else if (0) {\n        fdb_kvdb_deinit(&s_edge_db);', 'failed edge reset not remounted', 'store')
+ ('components/store/store.c', '    } else if (s_edge_ok) {\n        fdb_kvdb_deinit(&s_edge_db);', '    } else if (0) {\n        fdb_kvdb_deinit(&s_edge_db);', 'failed edge reset not remounted', 'store'),
+ ('components/store/store.c', 'static bool edge_usable(void) { return !read_only() && s_edge_ok; }', 'static bool edge_usable(void) { return s_edge_ok; }', 'read-only store still serves edge', 'store'),
+ ('components/store/store.c', '    if (read_only())\n        n = 0;  // what was read may be wrong: no state rather than a wrong one', '', 'state read after a failed read', 'store')
 ]
 
 

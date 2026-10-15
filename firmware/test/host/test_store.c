@@ -351,6 +351,36 @@ static void listener(const char *name, void *ctx)
     CHECK(ctx == &s_heard, "listener context");
 }
 
+// Every read of a state value failing three times in turn: the value or nothing, never garbage.
+static void test_state_read_failures(void)
+{
+    flash_new(8);
+    reboot();
+    uint8_t v[2] = {1, 0};
+    store_state_set("do", v, 2);
+    s_rfail_lo = 0;
+    s_rfail_hi = 0x40000;
+    s_rfail_times = 3;
+    s_rcount = 0;
+    s_rfail_at = 1L << 40;
+    uint8_t b[2];
+    store_state_get("do", b, 2);
+    long reads = s_rcount;
+    int bad = 0;
+    for (long k = 0; k < reads; k++) {
+        reboot();
+        s_rcount = 0;
+        s_rfail_at = k;
+        memset(b, 0x5A, 2);
+        size_t n = store_state_get("do", b, 2);
+        s_rfail_at = -1;
+        if (!(n == 0 || (n == 2 && b[0] == 1 && b[1] == 0)) && bad++ < 3)
+            printf("  state read %ld of %ld failing: %zu bytes %02x %02x\n", k, reads, n, b[0], b[1]);
+    }
+    s_rfail_times = 1;
+    CHECK(bad == 0, "state: %d of %ld read failures hand out garbage", bad, reads);
+}
+
 static void test_listeners_and_state(void)
 {
     flash_new(4);
@@ -1158,7 +1188,12 @@ static void test_boot_read_failures(void)
         store_init(&ENV, &s_spi.nor);
         s_depth = 0;
         char *e1 = edge_now();
-        bool ro = store_set_text("system", "{\"hostname\":\"x\"}", 16, err, sizeof err) != STORE_OK || !e1 || !strcmp(e1, w);
+        store_edge_pin_t p1;
+        store_edge_pin(&p1);
+        store_edge_unpin(&p1);
+        bool refused = store_set_text("system", "{\"hostname\":\"x\"}", 16, err, sizeof err) != STORE_OK;
+        // read-only (the save refused) serves no model at all; otherwise the model is whole
+        bool ro = refused ? (!e1 && p1.count == 0) : (e1 && !strcmp(e1, w));
         free(e1);
         s_rfail_at = -1;
         reboot();
@@ -1184,6 +1219,36 @@ static void test_boot_read_failures(void)
         ro += store_set_text("system", "{\"hostname\":\"y\"}", 16, err, sizeof err) != STORE_OK;
     }
     CHECK(ro == 0, "a single failing read at boot: still writable (%d read-only)", ro);
+
+    // the same on a flash with no Edge model: read-only must not serve the default either
+    flash_new(27);
+    reboot();
+    store_deinit();
+    snapshot();
+    s_rfail_times = 3;
+    restore();
+    s_rcount = 0;
+    s_rfail_at = 1L << 40;
+    reboot();
+    reads = s_rcount;
+    s_rfail_at = -1;
+    bad = 0;
+    for (long k = 0; k < reads; k += 3) {
+        store_deinit();
+        restore();
+        s_rcount = 0;
+        s_rfail_at = k;
+        store_init(&ENV, &s_spi.nor);
+        s_depth = 0;
+        char *e1 = edge_now();
+        bool refused = store_set_text("system", "{\"hostname\":\"x\"}", 16, err, sizeof err) != STORE_OK;
+        s_rfail_at = -1;
+        if (refused && e1 && bad++ < 3)
+            printf("  no model, boot read %ld failing: read-only yet serving %s\n", k, e1);
+        free(e1);
+    }
+    s_rfail_times = 1;
+    CHECK(bad == 0, "read-only after a boot read failure: no model served, not even the default (%d)", bad);
     free(m), free(w), free(sys), free(s_snap);
 }
 
@@ -1353,6 +1418,7 @@ int main(void)
         test_set_get();
         test_revalidate_at_boot();
         test_listeners_and_state();
+        test_state_read_failures();
         test_certs_and_factory_reset();
         test_factory_reset_fails();
         test_edge_save_and_read();

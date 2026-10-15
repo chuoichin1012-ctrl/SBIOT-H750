@@ -296,6 +296,9 @@ static bool read_only(void)
     return s_ro;
 }
 
+/** Edge serves and saves only when its committed generation is known and nothing has misread. */
+static bool edge_usable(void) { return !read_only() && s_edge_ok; }
+
 static int pin_find(uint32_t gen)
 {
     for (int i = 0; i < MAX_PINS; i++)
@@ -526,7 +529,7 @@ store_err_t store_edge_save(const char *text, size_t len, char *err, size_t errl
 {
     err[0] = '\0';
     LOCK();
-    if (read_only() || !s_edge_ok) {
+    if (!edge_usable()) {
         UNLOCK();
         snprintf(err, errlen, "The Edge model storage is unavailable; restart the gateway.");
         return STORE_EFLASH;
@@ -589,10 +592,9 @@ store_err_t store_edge_save(const char *text, size_t len, char *err, size_t errl
 void store_edge_pin(store_edge_pin_t *p)
 {
     LOCK();
-    read_only();
     p->gen = s_gen;
     p->count = s_gen ? s_count : 1;
-    if (!s_edge_ok) {  // nothing is known to be committed: no model, not even the default
+    if (!edge_usable()) {  // nothing is known to be committed: no model, not even the default
         p->gen = 0;
         p->count = 0;
         UNLOCK();
@@ -736,6 +738,8 @@ size_t store_state_get(const char *key, void *data, size_t len)
     struct fdb_blob blob;
     LOCK();
     size_t n = fdb_kv_get_blob(&s_cfg_db, k, fdb_blob_make(&blob, data, len));
+    if (read_only())
+        n = 0;  // what was read may be wrong: no state rather than a wrong one
     UNLOCK();
     return n;
 }

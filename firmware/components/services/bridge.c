@@ -55,6 +55,7 @@ typedef struct {
     volatile uint32_t dropped;
     client_t cli[BR_MAX_CLIENTS];
     int ncli;
+    int rr;  // where the next pass starts reading: every client gets its turn (Codex code review r1)
     uint8_t frame[FRAME_MAX];
     size_t frame_len;
     bool have;
@@ -314,9 +315,10 @@ static int wait(bridge_t *b, int lfd, fd_set *rd, uint32_t ms)
 static bool read_clients(bridge_t *b, fd_set *rd)
 {
     uint8_t *buf = b->buf.io.rx;
-    bool work = false;
-    int reads = 0;
-    for (int i = b->ncli - 1; i >= 0 && reads < PASS_READS; i--) {
+    bool work = false, gone[BR_MAX_CLIENTS] = {false};
+    int reads = 0, n = b->ncli, start = n ? b->rr % n : 0, k = 0;
+    for (; k < n && reads < PASS_READS; k++) {  // round robin from where the last pass stopped
+        int i = (start + k) % n;
         client_t *cl = &b->cli[i];
         if (!FD_ISSET(cl->c.fd, rd))
             continue;
@@ -325,11 +327,15 @@ static bool read_clients(bridge_t *b, fd_set *rd)
         work = true;
         if (r > 0)
             from_network(b, cl, buf, (size_t)r, reply_tcp, cl);
-        if (r == 0 || r == NET_FAIL || cl->c.fd < 0) {
+        if (r == 0 || r == NET_FAIL || cl->c.fd < 0)
+            gone[i] = true;
+    }
+    b->rr = start + k;
+    for (int i = n - 1; i >= 0; i--)  // dropped after the pass: the indices above stay valid during it
+        if (gone[i]) {
             SLOG_I("bridge", "UART%d: a client left", b->n);
             drop_client(b, i);
         }
-    }
     return work;
 }
 
@@ -403,7 +409,8 @@ static void tcp_server(bridge_t *b)
 static void tcp_client(bridge_t *b)
 {
     client_t *cl = &b->cli[0];
-    uint32_t next_try = 0, last_hb = 0;
+    uint64_t next_try = 0;  // now_us of the next dial; 64 bits: no wrap (Codex code review r1)
+    uint32_t last_hb = 0;
     cl->c.fd = -1;
     for (;;) {
         if (b->ncli == 0) {
@@ -413,7 +420,7 @@ static void tcp_client(bridge_t *b)
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             }
-            if (!netmgr_online() || (int32_t)(now_ms() - next_try) < 0) {
+            if (!netmgr_online() || !wait_over(now_us(), next_try)) {
                 set_state(b, "CONNECTING");
                 vTaskDelay(pdMS_TO_TICKS(100));
                 continue;
@@ -421,7 +428,7 @@ static void tcp_client(bridge_t *b)
             set_state(b, "CONNECTING");
             int fd = net_tcp_connect(b->C.host, b->C.remote_port, b->C.local_port, 10000);
             if (fd < 0) {
-                next_try = now_ms() + (uint32_t)(b->C.reconnect_s > 0 ? b->C.reconnect_s : 1) * 1000u;
+                next_try = now_us() + (uint64_t)(b->C.reconnect_s > 0 ? b->C.reconnect_s : 1) * 1000000u;
                 continue;
             }
             memset(cl, 0, sizeof *cl);
@@ -477,7 +484,7 @@ static void tcp_client(bridge_t *b)
         if (b->ncli)
             drop_client(b, 0);
         b->have = false;
-        next_try = now_ms() + (uint32_t)(b->C.reconnect_s > 0 ? b->C.reconnect_s : 1) * 1000u;
+        next_try = now_us() + (uint64_t)(b->C.reconnect_s > 0 ? b->C.reconnect_s : 1) * 1000000u;
     }
 }
 
@@ -508,14 +515,15 @@ static void udp(bridge_t *b)
         return;
     }
     net_nonblock(b->udp);
-    uint32_t last_hb = now_ms(), next_resolve = 0;
+    uint32_t last_hb = now_ms();
+    uint64_t next_resolve = 0;
     bool joined = false;
     for (;;) {
         bool work = false;
         // The default peer is resolved once the network is up (and again while DNS fails).
-        if (!server && !b->peer_ok && (int32_t)(now_ms() - next_resolve) >= 0 && netmgr_online()) {
+        if (!server && !b->peer_ok && wait_over(now_us(), next_resolve) && netmgr_online()) {
             b->peer_ok = net_resolve(b->C.host, b->C.remote_port, &b->peer);
-            next_resolve = now_ms() + 5000;
+            next_resolve = now_us() + 5000000u;
             uint8_t reg[48];
             size_t n = b->peer_ok && b->C.reg_send != BR_REG_PREFIX ? registration(b, reg, sizeof reg) : 0;
             if (n)
@@ -550,9 +558,11 @@ static void udp(bridge_t *b)
                 udp_reply_t u = {.b = b};
                 socklen_t fl = sizeof u.to;
                 int r = lwip_recvfrom(b->udp, buf, NET_BUF, MSG_DONTWAIT, (struct sockaddr *)&u.to, &fl);
-                if (r <= 0)
+                if (r < 0)
                     break;
-                work = true;
+                work = true;  // an empty datagram is work too: the pass yields (Codex code review r1)
+                if (r == 0)
+                    continue;
                 bool accept = true;
                 if (server && !ipacl_allows(&b->C.acl, lwip_ntohl(u.to.sin_addr.s_addr))) {
                     accept = false;  // not in allowedClients: ignored, and it does not become the peer

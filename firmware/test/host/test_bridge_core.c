@@ -201,6 +201,14 @@ static void test_tx(void)
               net_classify(ECONNABORTED) == NET_FAIL && net_classify(EBADF) == NET_FAIL,
           "ECONNRESET, ENOTCONN, EPIPE, ECONNABORTED, EBADF: fail");
     CHECK(!accept_allowed(3, 4) && accept_allowed(4, 4) && accept_allowed(5, 4), "accept while at least 4 netconns are free");
+    // idleRestart, with an activity stamped between the two reads (Codex code review r1)
+    const uint64_t L = 60000000u;
+    CHECK(!idle_due(100000000u, 100000005u, L), "an activity newer than now: not idle (no unsigned wrap)");
+    CHECK(!idle_due(159999999u, 100000000u, L) && idle_due(160000000u, 100000000u, L), "idle after 60 s exactly");
+    // 64-bit waits: no wrap around 24.85 or 49.71 days of uptime
+    const uint64_t d2485 = 2147483648ull * 1000u, d4971 = 4294967296ull * 1000u;
+    CHECK(wait_over(d2485 + 5, 0) && wait_over(d4971 + 5, 0), "no wait (0) is over at 24.85 and 49.71 days");
+    CHECK(!wait_over(d2485, d2485 + 2000000u) && wait_over(d2485 + 2000000u, d2485 + 2000000u), "a 2 s wait across 24.85 days");
 }
 
 int main(void)

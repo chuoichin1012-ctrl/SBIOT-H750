@@ -90,5 +90,11 @@ typedef int (*tx_send_fn)(void *ctx, const uint8_t *data, size_t len);
 /** Starts or continues sending `frame` (the same frame until TX_DONE or TX_LOST). */
 int tx_progress(tx_conn_t *c, const uint8_t *frame, size_t len, tx_send_fn send, void *ctx, uint32_t now_ms);
 
+/** idleRestart: true when `limit_us` passed since the last activity. The activity is read before
+ * `now_us`, so an update in between (last > now) is no expiry (Codex code review r1). */
+bool idle_due(uint64_t now_us, uint64_t last_us, uint64_t limit_us);
+/** A wait until `at_us` (0: no wait) is over: 64-bit time, no wrap in the gateway's life. */
+static inline bool wait_over(uint64_t now_us, uint64_t at_us) { return now_us >= at_us; }
+
 /** spec §5.6: a TCP server's listener accepts only while at least `reserve` netconns are free. */
 static inline bool accept_allowed(int netconn_free, int reserve) { return netconn_free >= reserve; }

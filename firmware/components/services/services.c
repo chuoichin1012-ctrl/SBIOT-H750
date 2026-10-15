@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include "FreeRTOS.h"
 #include "bridge.h"
+#include "bridge_core.h"
 #include "cfgmodel.h"
 #include "now_us.h"
 #include "serial.h"
@@ -37,7 +38,8 @@ static void idle_task(void *arg)
     uint64_t limit_us = (uint64_t)(uintptr_t)arg * 1000000u;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(1000));
-        if (now_us() - last_activity() >= limit_us) {
+        uint64_t last = last_activity();  // first: a bridge may stamp it in between (Codex code review r1)
+        if (idle_due(now_us(), last, limit_us)) {
             SLOG_W("svc", "no data flowed for %lu s: restarting", (unsigned long)(limit_us / 1000000u));
             sysmgr_restart_later(500);
             vTaskDelete(NULL);

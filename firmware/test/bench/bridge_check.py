@@ -563,9 +563,79 @@ def case_twoports():
     setup(1, **base())
 
 
+def adc_pace():
+    """(board seconds, ADC windows, late): the board's own clock, not the PC's after a console round trip."""
+    lines = sc.console([(0.3, 'a'), (0.5, 'i')], 1.2)
+    m = sc.find(lines, r'windows (\d+) late (\d+)')
+    u = sc.find(lines, r'uptime_ms=(\d+)')
+    return (int(u.group(1)) / 1000.0, int(m.group(1)), int(m.group(2))) if m and u else None
+
+
+def case_emptyudp():
+    """A flood of empty datagrams must not starve the io task (Codex code review r1)."""
+    check(setup(1, **base(workMode=2, localPort=9002)), 'set up UART1: UDP server on 9002')
+    a0 = adc_pace()
+    flood = subprocess.run([WIN_PY, '-c', (
+        'import socket,time\n'
+        's=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\n'
+        't=time.time();n=0\n'
+        'while time.time()-t<20:\n'
+        '    s.sendto(b"",("%s",9002));n+=1\n'
+        'print(n)\n' % GW)], cwd='/mnt/c', capture_output=True, text=True)
+    a1 = adc_pace()
+    n = int(flood.stdout.strip() or 0)
+    wins = (a1[1] - a0[1]) / (a1[0] - a0[0]) if a0 and a1 else -1
+    late = a1[2] - a0[2] if a0 and a1 else -1
+    check(n > 10000 and 9.5 <= wins <= 10.5 and late == 0,
+          'a flood of %d empty datagrams: ADC %.2f windows/s, late +%d (the io task keeps its pace)' % (n, wins, late))
+
+
+def case_fair():
+    """More than 8 busy clients: every one is served (Codex code review r1)."""
+    check(setup(1, **base(socketMode=1, maxClients=12)), 'set up UART1: TCP server, Modbus gateway, 12 clients')
+    _, io = w.get_json('/api/config/io')
+    unit = io.get('modbusAddress', 100)
+    import threading
+    cls = [socket.create_connection((GW, 23), 5) for _ in range(10)]
+    counts = [0] * 10
+    stop = [False]
+
+    def run(i):
+        s = cls[i]
+        s.settimeout(0.5)
+        req = mbap(1, bytes([unit, 1, 0, 0, 0, 1]))
+        s.sendall(req * 4)  # keep requests queued: the client always has data to read
+        while not stop[0]:
+            try:
+                d = s.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if not d:
+                break
+            k = len(d) // 10
+            counts[i] += k
+            try:
+                s.sendall(req * k)
+            except OSError:
+                break
+    th = [threading.Thread(target=run, args=(i,), daemon=True) for i in range(10)]
+    for t in th:
+        t.start()
+    time.sleep(10)
+    stop[0] = True
+    for t in th:
+        t.join(2)
+    for s in cls:
+        s.close()
+    check(min(counts) > 0 and min(counts) >= 0.2 * (sum(counts) / 10.0),
+          '10 busy clients on the Modbus gateway: answers per client %s' % counts)
+
+
 CASES = {'tcpserver': case_tcpserver, 'modbus': case_modbus, 'tcpclient': case_tcpclient, 'mbclient': case_mbclient,
          'udp': case_udp, 'http': case_http, 'offline': case_offline, 'idle': case_idle, 'load': case_load,
-         'twoports': case_twoports}
+         'twoports': case_twoports, 'emptyudp': case_emptyudp, 'fair': case_fair}
 
 
 def main():

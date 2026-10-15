@@ -196,3 +196,5 @@ int tx_progress(tx_conn_t *c, const uint8_t *frame, size_t len, tx_send_fn send,
     c->off = 0;
     return TX_DONE;
 }
+
+bool idle_due(uint64_t now_us, uint64_t last_us, uint64_t limit_us) { return now_us >= last_us && now_us - last_us >= limit_us; }

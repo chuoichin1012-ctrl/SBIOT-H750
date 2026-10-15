@@ -20,7 +20,7 @@ BUILD = ('gcc -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsani
          '-o ' + EXE)
 # (file, original text, mutated text, what the mutant breaks)
 M = [
- ('boot/install.c', '        if (p == 0)\n            memset(buf, 0xFF, sizeof MAGIC);  // the magic is programmed last, on its own\n', '', 'magic programmed with its page'),
+ ('boot/install.c', '        if (p == 0)\n            memset(buf, 0xFF, sizeof IMG_MAGIC);  // the magic is programmed last, on its own\n', '', 'magic programmed with its page'),
  ('boot/install.c', '    if (img_check(dst, dof, in->kick, &back) != IMG_OK || memcmp(back.raw, h->raw, IMG_CORE))\n        return -1;\n', '    (void)back;\n', 'copy not checked'),
  ('boot/install.c', '        if (img_check(in->spi, SPI_FACTORY, in->kick, &hf) != IMG_OK)\n            return halt(in, WHY_FACTORY_BAD);', '        img_check(in->spi, SPI_FACTORY, in->kick, &hf);', 'Reload skips the factory check'),
  ('boot/install.c', "        if (in->spi->erase_sector(in->spi, SPI_STAGING))  // staging's image is never installed again\n            return halt(in, WHY_STAGING);\n", '', 'Reload leaves staging'),
@@ -29,11 +29,14 @@ M = [
  ('boot/install.c', '!(q && !memcmp(hq.raw, hs.raw, IMG_CORE))', '1', 'staging installed every boot'),
  ('boot/install.c', '    if (q && factory_unseeded(in))', '    if (factory_unseeded(in))', 'seeding from a bad QSPI'),
  ('boot/install.c', '    if (q && factory_unseeded(in))', '    if (q && (factory_unseeded(in) || 1))', 'seeding every boot'),
- ('boot/install.c', '== NOR_OK && memcmp(m, MAGIC, sizeof m)', '!= NOR_OK || memcmp(m, MAGIC, sizeof m)', 'unreadable factory taken for unseeded'),
+ ('boot/install.c', '== NOR_OK && memcmp(m, IMG_MAGIC, sizeof m)', '!= NOR_OK || memcmp(m, IMG_MAGIC, sizeof m)', 'unreadable factory taken for unseeded'),
  ('boot/install.c', '    if (q && factory_unseeded(in))  // once, at the first boot after production\n        in->did |= copy(in, in->qspi, QSPI_SLOT, &hq, in->spi, SPI_FACTORY) ? DID_SEED_FAIL : DID_SEED;\n\n    if (img_check(in->spi, SPI_STAGING, in->kick, &hs) == IMG_OK && !(q && !memcmp(hq.raw, hs.raw, IMG_CORE))) {\n        if (copy(in, in->spi, SPI_STAGING, &hs, in->qspi, QSPI_SLOT))\n            return halt(in, WHY_COPY);\n        in->did |= DID_INSTALL;\n        return INSTALL_JUMP;\n    }\n', '    if (img_check(in->spi, SPI_STAGING, in->kick, &hs) == IMG_OK && !(q && !memcmp(hq.raw, hs.raw, IMG_CORE))) {\n        if (copy(in, in->spi, SPI_STAGING, &hs, in->qspi, QSPI_SLOT))\n            return halt(in, WHY_COPY);\n        in->did |= DID_INSTALL;\n        q = img_check(in->qspi, QSPI_SLOT, in->kick, &hq) == IMG_OK;\n        if (q && factory_unseeded(in))\n            in->did |= copy(in, in->qspi, QSPI_SLOT, &hq, in->spi, SPI_FACTORY) ? DID_SEED_FAIL : DID_SEED;\n        return INSTALL_JUMP;\n    }\n    if (q && factory_unseeded(in))\n        in->did |= copy(in, in->qspi, QSPI_SLOT, &hq, in->spi, SPI_FACTORY) ? DID_SEED_FAIL : DID_SEED;\n', 'install before seeding'),
  ('components/ota/ota_image.c', '    if (memcmp(sha, hdr.sha256, 32))\n        return IMG_ESHA;', '', 'SHA not checked'),
  ('components/ota/ota_app.c', '    if (memcmp(sha, st->hdr.sha256, 32))\n        return fail(st, OTA_EIMAGE);', '', 'stage SHA not checked'),
- ('components/ota/ota_app.c', '    if (r != IMG_OK || memcmp(back.raw, st->hdr.raw, IMG_CORE))\n        return fail(st, OTA_EFLASH);', '', 'staging not read back')
+ ('components/ota/ota_app.c', '    if (r != IMG_OK || memcmp(back.raw, st->hdr.raw, IMG_CORE))\n        return fail(st, OTA_EFLASH);', '', 'staging not read back'),
+ ('boot/install.c', '    if (same(in, src, so, dst, dof, len))\n        return -1;\n', '    (void)same;\n', 'copy not read back before the magic'),
+ ('components/ota/ota_app.c', '    if (at == 0)\n        memset(st->page, 0xFF, sizeof IMG_MAGIC);  // the magic only once the whole image is in (finish)\n', '', 'upload writes the magic early'),
+ ('components/ota/ota_app.c', '    if (spi->erase_sector(spi, SPI_STAGING))\n        return fail(st, OTA_EFLASH);\n    st->erased = NOR_SECTOR;\n', '', 'upload leaves the old staged image')
 ]
 
 

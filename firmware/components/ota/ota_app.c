@@ -18,6 +18,10 @@ int ota_stage_begin(ota_stage_t *st, nor_t *spi, uint32_t total)
         return fail(st, OTA_ETOOBIG);
     if (total < IMG_HDR_SIZE + 8)
         return fail(st, OTA_EIMAGE);
+    // The image staged before is invalid from now on, whatever this upload becomes.
+    if (spi->erase_sector(spi, SPI_STAGING))
+        return fail(st, OTA_EFLASH);
+    st->erased = NOR_SECTOR;
     sha256_init(&st->sha);
     return OTA_OK;
 }
@@ -30,6 +34,8 @@ static int flush_page(ota_stage_t *st)
             return fail(st, OTA_EFLASH);
         st->erased += NOR_SECTOR;
     }
+    if (at == 0)
+        memset(st->page, 0xFF, sizeof IMG_MAGIC);  // the magic only once the whole image is in (finish)
     if (st->spi->program(st->spi, SPI_STAGING + at, st->page, st->fill))
         return fail(st, OTA_EFLASH);
     st->fill = 0;
@@ -80,6 +86,8 @@ int ota_stage_finish(ota_stage_t *st)
     sha256_final(&st->sha, sha);
     if (memcmp(sha, st->hdr.sha256, 32))
         return fail(st, OTA_EIMAGE);
+    if (st->spi->program(st->spi, SPI_STAGING, IMG_MAGIC, sizeof IMG_MAGIC))
+        return fail(st, OTA_EFLASH);
     // What the bootloader will check, read back from staging itself (catches programming errors).
     img_hdr_t back;
     int r = img_check(st->spi, SPI_STAGING, 0, &back);

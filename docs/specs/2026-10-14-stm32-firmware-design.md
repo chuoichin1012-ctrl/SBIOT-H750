@@ -836,8 +836,10 @@ Nó **không tự cứu hộ**. Không có bản ghi trạng thái, không boot 
 **Chép một image** (`copy`, dùng chung cho cả ba đường):
 1. Xóa sector 4 KB đầu của đích **trước tiên**. Từ lúc này, đích bị cắt điện giữa chừng luôn không hợp lệ.
 2. Với mỗi sector còn lại: xóa, rồi ghi theo page.
-3. Ghi sector đầu, nơi chứa header, **sau cùng**. Trong đó 4 byte magic `SBIO` là **lần ghi cuối cùng**, tách riêng, nên đích chỉ có magic khi mọi byte khác đã được ghi.
-4. Kiểm đích bằng `img_check`. Header của đích phải trùng từng byte với header của nguồn.
+3. Ghi sector đầu, nơi chứa header, **sau cùng**, chừa trống 4 byte magic `SBIO`.
+4. Đọc lại toàn bộ đích, so từng byte với nguồn (magic phải còn trắng).
+5. Ghi magic, tách riêng, là **lần ghi cuối cùng**. Nhờ vậy một đích bị cắt điện hay bị ghi sai không bao giờ có magic.
+6. Kiểm đích bằng `img_check`. Header của đích phải trùng từng byte với header của nguồn.
 
 Nguồn không bao giờ bị ghi. Mọi lần chờ flash đều có deadline, bằng 2 lần giá trị tối đa trong datasheet GD25Q32E (`nor.h`), và vẫn kick watchdog. Lỗi flash, quá deadline hay kiểm sai đều làm `copy` thất bại.
 
@@ -847,6 +849,8 @@ Nguồn không bao giờ bị ghi. Mọi lần chờ flash đều có deadline, 
    2. Xóa sector đầu của staging, để image trong đó không bị cài lại ở lần boot sau. Không xóa được: **dừng**.
    3. `copy` F → QSPI. Thất bại: **dừng**.
    4. Chờ nhả nút, rồi nhảy vào app.
+
+   Mất điện **trước khi** xóa xong sector đầu của staging thì staging có thể còn nguyên. Khi đó, lần boot thường sau đó vẫn cài nó, và người dùng phải giữ Reload lần nữa. Từ lúc xóa xong, image trong staging không bao giờ được cài lại.
 
    Bước này không xóa cấu hình (`cfg`, `edge`, `cert`). Muốn về cấu hình gốc thì dùng Reload 3–15 s của app (§11.4).
 2. **Gieo firmware gốc** (chỉ một lần, ở lần boot đầu tiên sau khi sản xuất). Điều kiện: slot factory **chưa có magic** `SBIO` và `Q` hợp lệ. Khi đó `copy` Q → factory.
@@ -889,9 +893,10 @@ Logic quyết định và chép viết trong `boot/install.c` bằng C thuần, 
 ### 11.3 OTA phía ứng dụng
 
 `POST /api/ota` chạy trong task `web`:
-- Nhận theo luồng vào staging. Mỗi sector 4 KB được xóa ngay trước khi ghi tới.
+- Bắt đầu upload là xóa ngay sector đầu của staging, nên image đang nằm trong staging hết hiệu lực từ lúc đó.
+- Nhận theo luồng vào staging. Mỗi sector 4 KB được xóa ngay trước khi ghi tới. 4 byte magic để trống.
 - Kiểm header ngay từ khối đầu tiên: magic, mã phần cứng, kích thước ≤ slot và bằng đúng độ dài đã báo. Trong lúc nhận, tính SHA-256 dần.
-- Kết thúc mà SHA khớp, và staging đọc lại qua được `img_check`: trả 200 rồi khởi động lại. Bootloader cài image mới ở lần boot đó.
+- Kết thúc mà SHA khớp: ghi magic, là lần ghi cuối cùng. Sau đó staging đọc lại phải qua được `img_check`, rồi trả 200 và khởi động lại. Bootloader cài image mới ở lần boot đó.
 - Body dở hoặc sai SHA: trả 400. Staging lúc đó không hợp lệ nên bootloader bỏ qua, image đang chạy giữ nguyên.
 - Không có xác nhận hay rollback tự động. Firmware mới có lỗi thì người dùng khôi phục firmware gốc bằng nút Reload (§11.2).
 
@@ -917,7 +922,7 @@ Logic quyết định và chép viết trong `boot/install.c` bằng C thuần, 
 | Tương đương Edge | Chạy các payload trong mock của UI và trong bộ test cũ (thu về ≤ 100 điểm), cộng thêm các payload đặc biệt: <br>• gửi ít trường nhưng văn bản chuẩn hóa lớn (sát 48 KB); <br>• nhiều lỗi cùng lúc, kiểm câu báo lỗi **đầu tiên**; <br>• thứ tự thiết bị và node bị đảo; <br>• tên khác nhau nhưng trùng hash; <br>• trùng ID với thiết bị không map, chồng thanh ghi với node không map. <br>Kết quả phải giống từng byte với `cfg_validate` nguyên khối |
 | Arena | Chạy đúng bộ TLSF trên vùng 64 KB, giả lập kích thước node cJSON 32-bit, tính cả phân mảnh. Kiểm: <br>• đỉnh của payload lớn nhất của **từng** cấu hình; <br>• đỉnh của mô hình Edge 100 điểm; <br>• arena bị poison ở `arena_end` để bắt truy cập sau khi phạm vi kết thúc (template report, chuỗi); <br>• hết bộ nhớ không bao giờ sinh ra cấu hình thiếu trường |
 | Store Edge | `POST` và `GET` chạy xen nhau (generation bị ghim), dọn generation cũ và bản ghi mồ côi sau mất điện ở từng bước commit, FlashDB dọn rác trong lúc `GET` |
-| Bootloader | NOR giả lập mô hình được **ghi dở**: một page hay một sector chỉ ghi hoặc xóa được một phần khi bị cắt điện. Cắt điện tại **mọi** thao tác ghi và xóa của: <br>• cài image mới (staging → QSPI), kể cả lúc upload vào staging: lần boot sau chạy image cũ (cắt trước khi upload xong) hoặc cài lại từ đầu và chạy image mới; <br>• khôi phục firmware gốc: lần boot sau không giữ nút thì dừng hoặc chạy firmware gốc, không bao giờ cài lại image trong staging; giữ nút lần nữa thì chạy firmware gốc; <br>• gieo firmware gốc: các lần boot sau gieo lại cho tới khi slot factory hợp lệ, và app vẫn chạy. <br>Cắt điện nhiều lần liên tiếp trong một lần cài. Thêm các ca: <br>• staging trắng, hỏng (header, SHA), trùng image đang chạy: không ghi gì; <br>• QSPI hỏng mà không có staging hợp lệ: dừng, không tự khôi phục; <br>• giữ nút khi firmware gốc hỏng: dừng, QSPI và staging còn nguyên; <br>• lỗi flash, quá deadline, ghi im lặng sai khi chép: dừng; gỡ lỗi rồi boot lại thì cài được; <br>• lỗi đọc khi kiểm từng image; <br>• slot factory đã có magic nhưng hỏng: không gieo lại; <br>• image ngắn nhất và dài nhất; upload sai SHA, sai phần cứng, thiếu byte, quá slot. <br>Điều kiện đạt: **không bao giờ nhảy vào một image không qua được bước kiểm**, và không bao giờ ghi vào image nguồn đang chép |
+| Bootloader | NOR giả lập mô hình được **ghi dở**: một page hay một sector chỉ ghi hoặc xóa được một phần khi bị cắt điện. Cắt điện tại **mọi** thao tác ghi và xóa của: <br>• cài image mới (staging → QSPI), kể cả lúc upload vào staging: lần boot sau chạy image cũ (cắt trước khi upload xong) hoặc cài lại từ đầu và chạy image mới; <br>• khôi phục firmware gốc, khi staging khác QSPI: sau khi đã xóa xong sector đầu của staging thì không bao giờ cài lại image trong staging; mất điện lúc đang xóa sector đó thì được phép cài lại; giữ nút lần nữa thì chạy firmware gốc; <br>• gieo firmware gốc: các lần boot sau gieo lại cho tới khi slot factory hợp lệ, và app vẫn chạy. <br>Cắt điện nhiều lần liên tiếp trong một lần cài. Thêm các ca: <br>• staging trắng, hỏng (header, SHA), trùng image đang chạy: không ghi gì; <br>• QSPI hỏng mà không có staging hợp lệ: dừng, không tự khôi phục; <br>• giữ nút khi firmware gốc hỏng: dừng, QSPI và staging còn nguyên; <br>• lỗi flash, quá deadline, ghi im lặng sai khi chép (kể cả chính lần ghi magic), khi cài và khi gieo: cài thì dừng, gieo thì chỉ báo lỗi; slot không có magic; gỡ lỗi rồi boot lại thì làm được; <br>• upload dừng giữa chừng, đè lên một image có cùng phần đuôi: không được cài; <br>• lỗi đọc khi kiểm từng image; <br>• slot factory đã có magic nhưng hỏng: không gieo lại; <br>• image ngắn nhất và dài nhất; upload sai SHA, sai phần cứng, thiếu byte, quá slot. <br>Điều kiện đạt: **không bao giờ nhảy vào một image không qua được bước kiểm**, và không bao giờ ghi vào image nguồn đang chép |
 | MQTT | Adapter transport (đọc một phần, AGAIN, EOF, lỗi). Outbox: mất kết nối ở từng bước QoS 1/2, Session Present 0 và 1 (3.1.1), **3.1 với `cleanSession` 0 và 1** (bản vá đặt `sessionPresent`), clean session, hết hạn chỉ áp dụng cho `QUEUED`, giới hạn 64 KB, `bufferOffline`, đăng ký lại subscribe. Phiên mới: tin đang dở quay về `QUEUED` với packet id mới. Byte của gói CONNECT 3.1 và 3.1.1 |
 | CMUX | Mã hóa và giải mã frame, FCS, frame bị cắt, trường độ dài 1 và 2 byte (kể cả đúng 2048 byte), tái đồng bộ sau rác, SABM/UA kèm T1 và N2, DM/DISC, CLD. **FCoff/FCon dừng và tiếp mọi DLC dữ liệu, còn DLC0 vẫn gửi và nhận được** (kiểm response và FCon trong lúc FCoff). **MSC dừng và tiếp đúng một DLC**, có trả response, Test và NSC. **Hàng đợi TX đầy**, kể cả khi đầy ở lần gọi callback thứ hai trở đi của cùng một frame: callback trả 0, đếm `ppp_out_drop`, phía nhận (PPP giả lập) bỏ frame cụt nhờ FCS, và frame kế tiếp vẫn được nhận đúng. **Luồng PPP có nhiều `0x7D`/`0x7E`** (sau escape dài gần gấp đôi) bị cắt thành nhiều frame ≤ N1 rồi ghép lại đúng. `pppos_input_tcpip` trả `ERR_MEM`: thử lại 3 lần rồi bỏ và đếm |
 | ADC (logic C thuần) | Bàn giao hai nửa buffer: đọc đúng nửa đã đầy; `seq` đổi trong lúc cộng thì bỏ cửa sổ và đếm `adc_late`; chưa có cửa sổ đầu tiên thì không công bố giá trị; lỗi thì cả hai kênh failed; trình tự phục hồi; đổi mã sang mA kèm hiệu chuẩn hai điểm; factory record thiếu hoặc CRC sai thì dùng hệ số danh định |

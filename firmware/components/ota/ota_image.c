@@ -4,7 +4,6 @@
 #include "flashmap.h"
 #include "sha256.h"
 
-static const char k_magic[4] = {'S', 'B', 'I', 'O'};
 static const char k_hw[16] = "SBIOT-H750";
 
 static uint32_t le32(const uint8_t *p)
@@ -20,7 +19,7 @@ static void put32(uint8_t *p, uint32_t v)
 
 int img_parse(const uint8_t raw[IMG_CORE], img_hdr_t *h)
 {
-    if (memcmp(raw, k_magic, 4))
+    if (memcmp(raw, IMG_MAGIC, 4))
         return IMG_EMAGIC;
     if (crc32_update(0, raw, 64) != le32(raw + 64))
         return IMG_ECRC;
@@ -40,7 +39,7 @@ int img_parse(const uint8_t raw[IMG_CORE], img_hdr_t *h)
 void img_make(uint8_t raw[IMG_CORE], const uint16_t version[3], uint32_t size, const uint8_t sha256[32])
 {
     memset(raw, 0, IMG_CORE);
-    memcpy(raw, k_magic, 4);
+    memcpy(raw, IMG_MAGIC, 4);
     memcpy(raw + 4, k_hw, sizeof k_hw);
     for (int i = 0; i < 3; i++) {
         raw[20 + 2 * i] = (uint8_t)version[i];

@@ -30,9 +30,11 @@ typedef struct {
 
 // Starts an upload of `total` bytes (header + body).
 int ota_stage_begin(ota_stage_t *st, nor_t *spi, uint32_t total);
-// Takes the next chunk. Each 4 KB staging sector is erased just before the first byte lands in it.
+// begin erases staging's first sector, so the image staged before is gone at once.
+// Takes the next chunk. Each 4 KB staging sector is erased just before the first byte lands in it;
+// the magic is left blank until finish.
 // The header is checked as soon as its core has arrived (magic, CRC, hardware id, size == total).
 int ota_stage_write(ota_stage_t *st, const void *data, uint32_t len);
-// After the last chunk: SHA-256, then a full read-back check of staging (img_check, as the
-// bootloader will do it). OTA_OK: reboot, and the bootloader installs the image.
+// After the last chunk: SHA-256, then the magic, then a full read-back check of staging (img_check,
+// as the bootloader will do it). OTA_OK: reboot, and the bootloader installs the image.
 int ota_stage_finish(ota_stage_t *st);

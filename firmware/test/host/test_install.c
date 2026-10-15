@@ -354,6 +354,34 @@ static void test_copy_failures(void)
     }
 }
 
+static void magic_silent(sim_world_t *w, void *arg)
+{
+    sim_fail(w, 0, DEV_QSPI, 0, 4, SIM_SILENT);
+}
+
+// The magic is the last program of a copy, after the read-back: only the final img_check sees it fail.
+static void test_magic_program_fails(void)
+{
+    bench_t b;
+    bench_v1(&b, 55);
+    CHECK(upload(&b, 2, BODY_V2) == OTA_OK, "upload v2");
+    b.w.ops = 0;
+    long n = (boot(&b, false), b.w.ops);  // the operations of an install
+    bench_free(&b);
+
+    bench_v1(&b, 55);
+    CHECK(upload(&b, 2, BODY_V2) == OTA_OK, "upload v2");
+    b.w.ops = 0;
+    b.w.hook_at = n - 1;
+    b.w.hook = magic_silent;
+    outcome_t o = boot(&b, false);
+    CHECK(o.kind == OUT_HALT && o.why == WHY_COPY, "the magic programmed wrong without an error: halt (kind %d)", o.kind);
+    sim_fail(&b.w, 0, 0, 0, 0, 0);
+    o = boot(&b, false);
+    CHECK(o.kind == OUT_RUN && o.version == 2 && o.did == DID_INSTALL, "the fault gone: installed");
+    bench_free(&b);
+}
+
 static void staging_reads_fail(sim_world_t *w, void *arg)
 {
     sim_fail(w, 1, DEV_SPI, SPI_STAGING, SPI_STAGING + SLOT_SIZE, SIM_READ_EIO);
@@ -420,6 +448,17 @@ static void test_seed(void)
     CHECK(o.kind == OUT_RUN && o.did == DID_SEED && version_at(&b.s, SPI_FACTORY) == 1, "the next boot seeds it");
     bench_free(&b);
 
+    bench_init(&b, 73);
+    put_image(&b.q, QSPI_SLOT, 1, BODY_V1);
+    sim_fail(&b.w, 0, DEV_SPI, SPI_FACTORY + 0x8000, SPI_FACTORY + 0x9000, SIM_SILENT);
+    o = boot(&b, false);
+    CHECK(o.kind == OUT_RUN && o.version == 1 && o.did == DID_SEED_FAIL, "seeding programmed wrong without an error: reported");
+    CHECK(blank(&b.s, SPI_FACTORY, 4), "and the factory slot gets no magic");
+    sim_fail(&b.w, 0, 0, 0, 0, 0);
+    o = boot(&b, false);
+    CHECK(o.did == DID_SEED && version_at(&b.s, SPI_FACTORY) == 1, "the fault gone, the next boot seeds it");
+    bench_free(&b);
+
     bench_init(&b, 72);
     put_image(&b.q, QSPI_SLOT, 1, BODY_V1);
     put_image(&b.s, SPI_STAGING, 2, BODY_V2);
@@ -446,6 +485,14 @@ static void test_upload_errors(void)
     CHECK(upload_raw(&b, img, SLOT_SIZE + 1, 0) == OTA_ETOOBIG, "upload larger than the slot: 413");
     outcome_t o = boot(&b, false);
     CHECK(o.kind == OUT_RUN && o.version == 1 && o.ops == 0, "after failed uploads v1 runs and nothing is installed");
+    CHECK(upload(&b, 2, BODY_V2) == OTA_OK, "a complete upload of v2 (not booted yet)");
+    CHECK(upload_raw(&b, img, len, 0x8000) == OTA_ESHORT, "the same image again, cut off at a sector boundary: 400");
+    o = boot(&b, false);
+    CHECK(o.kind == OUT_RUN && o.version == 1 && o.ops == 0, "the half upload over a staging image with the same tail is not installed");
+    CHECK(upload(&b, 2, BODY_V2) == OTA_OK, "v2 staged again");
+    CHECK(upload_raw(&b, img, len, 100) == OTA_ESHORT, "an upload that stops in its first page");
+    o = boot(&b, false);
+    CHECK(o.kind == OUT_RUN && o.version == 1 && o.ops == 0, "a new upload invalidates the staged image at once");
     sim_fail(&b.w, 0, DEV_SPI, SPI_STAGING + 0x4000, SPI_STAGING + 0x5000, SIM_SILENT);
     CHECK(upload_raw(&b, img, len, len) == OTA_EFLASH, "staging programmed wrong: the read-back check answers 500");
     sim_fail(&b.w, 0, 0, 0, 0, 0);
@@ -491,7 +538,8 @@ static long one_run(int kind, long cut, int cuts, long period, result_t *res, lo
     }
     if (kind == RUN_RESTORE) {
         upload(b, 2, BODY_V2);
-        boot(b, false);  // v2 installed, staging still holds v2
+        boot(b, false);  // v2 installed
+        upload(b, 3, BODY_V1);  // and v3 staged, not booted yet: staging differs from QSPI
     }
     arm(b, cut, cuts, period);
     if (kind == RUN_INSTALL) {
@@ -532,9 +580,10 @@ static bool good(int kind, const result_t *r, long cut, long upload_end, bool si
         if (single)
             return r->end.version == (cut < upload_end ? 1 : 2);
         return r->end.version == 1 || r->end.version == 2;
-    case RUN_RESTORE:  // never staging again; v2 untouched, v1, or a halt; Reload then gives v1
-        return !r->reinstalled && (r->end.kind == OUT_HALT || (r->end.kind == OUT_RUN && r->end.version >= 1)) &&
-               r->again.kind == OUT_RUN && r->again.version == 1;
+    case RUN_RESTORE:  // staging comes back only from a cut inside its own erase (op 0); Reload then gives v1
+        if (r->reinstalled && cut != 0)
+            return false;
+        return (r->end.kind == OUT_HALT || r->end.kind == OUT_RUN) && r->again.kind == OUT_RUN && r->again.version == 1;
     default:  // RUN_SEED: the app runs, and the factory slot ends seeded
         return r->end.kind == OUT_RUN && r->end.version == 1 && r->factory == 1;
     }
@@ -600,6 +649,7 @@ int main(void)
     test_qspi_bad();
     test_restore();
     test_copy_failures();
+    test_magic_program_fails();
     test_read_errors();
     test_seed();
     test_upload_errors();

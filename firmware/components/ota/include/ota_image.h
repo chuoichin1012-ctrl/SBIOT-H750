@@ -14,6 +14,10 @@
 #define IMG_CORE 68u  // the bytes that identify an image; the rest of the header is 0xFF
 #define IMG_MAX_BODY (0x170000u - IMG_HDR_SIZE)
 
+// The first 4 header bytes. Every writer of a slot programs them last, on their own, so a slot cut
+// short, or programmed wrong, never has a magic.
+static const uint8_t IMG_MAGIC[4] = {'S', 'B', 'I', 'O'};
+
 typedef struct {
     uint8_t raw[IMG_CORE];  // the header core as stored: compare two images with memcmp
     uint16_t version[3];

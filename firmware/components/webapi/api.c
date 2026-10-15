@@ -6,6 +6,7 @@
 #include "FreeRTOS.h"
 #include "heap_newlib.h"
 #include "netmgr.h"
+#include "serial.h"
 #include "store.h"
 #include "syslog.h"
 #include "sysmgr.h"
@@ -148,12 +149,14 @@ static void status_get(struct mg_connection *c)
     cJSON_AddStringToObject(cell, "netType", "");
     cJSON_AddStringToObject(cell, "state", "disconnected");
 
-    cJSON *ports = cJSON_AddArrayToObject(o, "ports");  // the bridge: Plan 08
-    for (int p = 0; p < store_env()->uart_count; p++) {
+    cJSON *ports = cJSON_AddArrayToObject(o, "ports");  // the bridge (the state): Plan 08
+    for (int p = 1; p <= store_env()->uart_count; p++) {
+        serial_counters_t sc;
+        serial_counters(p, &sc);
         cJSON *x = cJSON_CreateObject();
         cJSON_AddStringToObject(x, "state", "NOT STARTED");
-        cJSON_AddNumberToObject(x, "tx", 0);
-        cJSON_AddNumberToObject(x, "rx", 0);
+        cJSON_AddNumberToObject(x, "tx", sc.tx);
+        cJSON_AddNumberToObject(x, "rx", sc.rx);
         cJSON_AddItemToArray(ports, x);
     }
     cJSON *mq = cJSON_AddObjectToObject(o, "mqtt");  // Plan 09
@@ -192,11 +195,15 @@ static void status_get(struct mg_connection *c)
     cJSON *st = cJSON_AddObjectToObject(mem, "stackMin");
     cJSON_AddStringToObject(st, "task", worst);
     cJSON_AddNumberToObject(st, "words", n ? words : 0);
-    cJSON *uart = cJSON_AddArrayToObject(mem, "uart");  // the serial driver: Plan 07
-    for (int p = 0; p < store_env()->uart_count; p++) {
+    cJSON *uart = cJSON_AddArrayToObject(mem, "uart");
+    for (int p = 1; p <= store_env()->uart_count; p++) {
+        serial_counters_t sc;
+        serial_counters(p, &sc);
         cJSON *x = cJSON_CreateObject();
-        cJSON_AddNumberToObject(x, "overrun", 0);
-        cJSON_AddNumberToObject(x, "dropped", 0);
+        cJSON_AddNumberToObject(x, "overrun", sc.overruns);
+        cJSON_AddNumberToObject(x, "dropped", sc.dropped);
+        cJSON_AddNumberToObject(x, "lineErrors", sc.line_errors);
+        cJSON_AddNumberToObject(x, "t15Violations", sc.violations);
         cJSON_AddItemToArray(uart, x);
     }
     api_json(c, 200, o);

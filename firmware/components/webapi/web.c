@@ -35,7 +35,7 @@ static StackType_t s_web_stack[WEB_STACK_WORDS] __attribute__((section(".axi_bss
 static StaticTask_t s_tcb;
 static arena_t s_arena;
 static unsigned s_arena_peak;  // the highest of any scope's peak, for /api/status
-static char s_record[STORE_EDGE_RECORD];  // one Edge record at a time, for any GET
+static char s_record[STORE_EDGE_RECORD] __attribute__((section(".axi_bss")));  // one Edge record at a time, for any GET
 static ota_stage_t s_ota;
 static struct mg_mgr s_mgr;
 

@@ -4,7 +4,8 @@
 // LOG mode (websocketTarget 3): the syslog task is the one writer of a MessageBuffer (its tap); this
 // task drains it after each poll into text frames. A client whose send buffer is over WEB_SEND_HIGH
 // gets no frame (dropped and counted), so one that stops reading costs no memory (Codex 06b r1).
-// UART modes (1, 2): the serial driver comes with Plan 07.
+// UART modes (1, 2, Plan 07a): serial_rx[n] is the one writer of the same MessageBuffer, through a
+// subscriber; each UART frame becomes one binary WebSocket message. Messages from a client go to the port.
 #include <stdio.h>
 #include <string.h>
 #include "FreeRTOS.h"
@@ -12,6 +13,7 @@
 #include "message_buffer.h"
 #include "heap_newlib.h"
 #include "netmgr.h"
+#include "serial.h"
 #include "now_us.h"
 #include "syslog.h"
 #include "sysmgr.h"
@@ -30,7 +32,7 @@
 static StaticTask_t s_tcb;
 static StackType_t s_stack[CONSOLE_STACK_WORDS];
 static StaticMessageBuffer_t s_mb_mem;
-static uint8_t s_mb_store[LOG_BUF];
+static uint8_t s_mb_store[LOG_BUF];  // 2 KB: one 1460-byte frame and some (each message has a 4-byte length)
 static MessageBufferHandle_t s_mb;
 static struct mg_mgr s_mgr;
 static int s_port, s_target;
@@ -40,6 +42,15 @@ void console_buffer_use(unsigned *used, unsigned *size)
 {
     *size = LOG_BUF;
     *used = s_mb ? (unsigned)(LOG_BUF - xMessageBufferSpacesAvailable(s_mb)) : 0;
+}
+
+// serial_rx[n]: the one writer in UART mode (spec §6.4). A frame that does not fit is dropped and counted.
+static void uart_frame(int port, const uint8_t *data, size_t len, void *ctx)
+{
+    (void)port;
+    (void)ctx;
+    if (xMessageBufferSend(s_mb, data, len, 0) != len)
+        s_dropped++;
 }
 
 // The syslog task: the one writer (spec §6.4).
@@ -149,8 +160,11 @@ static void handler(struct mg_connection *c, int ev, void *ev_data)
         }
         mg_ws_upgrade(c, hm, NULL);
     } else if (ev == MG_EV_WS_OPEN) {
-        const char *hello = s_target == 3 ? "connected to the gateway log; type help\n"
-                                          : "connected; the UART console starts with the serial driver (a later firmware)\n";
+        char hello[48];
+        if (s_target == 3)
+            snprintf(hello, sizeof hello, "connected to the gateway log; type help\n");
+        else
+            snprintf(hello, sizeof hello, "connected to UART%d\n", s_target);
         mg_ws_send(c, hello, strlen(hello), WEBSOCKET_OP_TEXT);
     } else if (ev == MG_EV_WS_MSG) {
         struct mg_ws_message *wm = ev_data;
@@ -158,13 +172,15 @@ static void handler(struct mg_connection *c, int ev, void *ev_data)
             return;  // not reading its answers: no more of them (Codex 06b review)
         if (s_target == 3 && (wm->flags & 15) == WEBSOCKET_OP_TEXT)
             command(c, wm->data.buf, wm->data.len);
+        else if (s_target != 3 && wm->data.len)
+            serial_write(s_target, (const uint8_t *)wm->data.buf, wm->data.len, 2000);  // text or binary, as typed
     }
 }
 
-// After each poll: the log lines to every client that keeps reading.
+// After each poll: the log lines (text) or UART frames (binary) to every client that keeps reading.
 static void drain(void)
 {
-    static char line[200];
+    static char line[SERIAL_FRAME_MAX] __attribute__((section(".axi_bss")));
     size_t n;
     while ((n = xMessageBufferReceive(s_mb, line, sizeof line, 0)) > 0) {
         for (struct mg_connection *x = s_mgr.conns; x; x = x->next) {
@@ -174,7 +190,10 @@ static void drain(void)
                 s_dropped++;
                 continue;
             }
-            mg_ws_printf(x, WEBSOCKET_OP_TEXT, "%.*s\n", (int)n, line);
+            if (s_target == 3)
+                mg_ws_printf(x, WEBSOCKET_OP_TEXT, "%.*s\n", (int)n, line);
+            else
+                mg_ws_send(x, line, n, WEBSOCKET_OP_BINARY);
         }
     }
 }
@@ -191,8 +210,7 @@ static void console_task(void *arg)
         blog("console: WebSocket on port %d (%s)\r\n", s_port, s_target == 3 ? "log" : "UART");
     for (;;) {
         mg_mgr_poll(&s_mgr, POLL_MS);
-        if (s_target == 3)
-            drain();
+        drain();
     }
 }
 
@@ -203,6 +221,8 @@ int console_start(int port, int target)
     s_mb = xMessageBufferCreateStatic(sizeof s_mb_store, s_mb_store, &s_mb_mem);
     if (target == 3)
         syslog_set_tap(tap, NULL);
+    else if (serial_subscribe(target, uart_frame, NULL))
+        SLOG_W("console", "UART%d is not running: the console shows nothing", target);
     xTaskCreateStatic(console_task, "console", CONSOLE_STACK_WORDS, NULL, CONSOLE_PRIO, s_stack, &s_tcb);
     return 0;
 }

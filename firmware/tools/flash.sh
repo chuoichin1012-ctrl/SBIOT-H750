@@ -3,20 +3,23 @@
 # QSPI bank 2 through the board's external loader, then resets the board. Run from WSL.
 #   stm32/firmware/tools/flash.sh boot|app|both|blank [BUILD_DIR]
 #   stm32/firmware/tools/flash.sh bind KEY|dev [BUILD_DIR]
+#   stm32/firmware/tools/flash.sh erase [BUILD_DIR]
 # "blank" programs the first 4 KB of the QSPI slot to 0xFF (header and vector table erased).
 # Note: a valid image in staging (SPI4) that differs from the one flashed here is installed by the
 # bootloader at the next boot, over this one (spec §11.2). On the bench, upload the new image over
 # UART7 instead (test/bench/board.py upload) when staging may hold another one.
+# "erase" mass-erases the internal flash and all of QSPI (a board that ran another firmware); then
+# bind, flash both, and wipe SPI4 from the console ("Z" then "WIPE"; the app formats FlashDB afresh).
 # "bind" reads the chip's UID and writes its anti-clone record, signed with the private KEY
 # (tools/provision.py), at QSPI 0x903F0000 (spec §11.5). Do it before RDP Level 1 is set.
 # Bench only: SBIOT_BIND_UID=<24 hex digits> signs for that UID instead, which makes the board look
 # like it carries a record copied from another chip (test/bench/ota_check.py, the clone case).
 set -euo pipefail
-usage() { echo "usage: flash.sh boot|app|both|blank [BUILD_DIR] | bind KEY|dev [BUILD_DIR]" >&2; exit 2; }
+usage() { echo "usage: flash.sh boot|app|both|blank|erase [BUILD_DIR] | bind KEY|dev [BUILD_DIR]" >&2; exit 2; }
 what=${1:-}
 tools=$(cd "$(dirname "$0")" && pwd)
 case "$what" in
-boot|app|both|blank) dir=${2:-} ;;
+boot|app|both|blank|erase) dir=${2:-} ;;
 bind)
     [ -n "${2:-}" ] || usage
     key=$2
@@ -50,6 +53,12 @@ qspi() {  # $1 = local file, written at $2 (default 0x90000000)
     prog -c port=SWD mode=UR -el "$(wslpath -w "$LOADER")" -w "$(wslpath -w "$stage/$(basename "$1")")" "$at" -v
     echo "flash: $(basename "$1") ($(stat -c %s "$1") bytes) at $at verified"
 }
+if [ "$what" = erase ]; then
+    out=$("$CLI" -c port=SWD mode=UR -el "$(wslpath -w "$LOADER")" -e all 2>&1) || true
+    grep -iE 'erase|error|fail' <<<"$out" | tail -6
+    grep -qi 'Mass erase successfully achieved' <<<"$out" || { echo "flash: FAILED"; exit 1; }
+    echo "flash: internal flash and QSPI erased"
+fi
 case "$what" in boot|both)
     cp "$build/boot.bin" "$stage/boot.bin"
     prog -c port=SWD mode=UR -w "$(wslpath -w "$stage/boot.bin")" 0x08000000 -v

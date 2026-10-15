@@ -21,6 +21,8 @@ int sysmgr_set_local(const char *text);
 void sysmgr_sntp_set(uint32_t sec, uint32_t us);
 /** Resets the MCU after delay_ms (the answer to the request gets out first). */
 void sysmgr_restart_later(uint32_t delay_ms);
+/** The one restart: true for the first caller, who resets the board itself; every later restart is a no-op. */
+bool sysmgr_restart_claim(void);
 uint32_t sysmgr_uptime_s(void);
 /** The chip UID as 24 hex digits. */
 const char *sysmgr_serial(void);

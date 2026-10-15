@@ -15,8 +15,9 @@
 #define UNPOISON(p, n) ((void)(p), (void)(n))
 #endif
 
-// The open scope. Plan 05 makes this per task (a FreeRTOS thread-local pointer).
+// The open scope, and the task that opened it: only that task allocates from it (Codex 06b r1).
 static arena_t *s_current;
+static void *s_owner;
 // The one arena whose blocks json_free must recognise, also after its scope closed.
 static arena_t *s_known;
 static unsigned s_failures;
@@ -36,6 +37,7 @@ void arena_begin(arena_t *a)
     a->tlsf = tlsf_create_with_pool(a->mem, a->size);
     a->used = a->peak = 0;
     a->failed = false;
+    s_owner = arena_port_self();
     s_current = a;
 }
 
@@ -73,7 +75,11 @@ bool arena_owns(const arena_t *a, const void *p)
     return p && c >= m && c - m < a->size;
 }
 
-arena_t *arena_current(void) { return s_current; }
+// The board's port returns the FreeRTOS task handle (app/arena_port.c). This default makes every
+// caller one task: the host tests that need two define their own.
+__attribute__((weak)) void *arena_port_self(void) { return NULL; }
+
+arena_t *arena_current(void) { return s_current && s_owner == arena_port_self() ? s_current : NULL; }
 
 static void *json_malloc(size_t size)
 {

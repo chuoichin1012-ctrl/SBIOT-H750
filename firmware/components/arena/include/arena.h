@@ -36,8 +36,11 @@ void *arena_malloc(arena_t *a, size_t size);
 void arena_free(arena_t *a, void *p);
 bool arena_owns(const arena_t *a, const void *p);
 
-/** The arena whose scope is open on this task, or NULL. Single-threaded on the host. */
+/** The arena whose scope is open on this task, or NULL: another task's scope is not this task's. */
 arena_t *arena_current(void);
+
+/** The calling task, as the port sees it (the FreeRTOS task handle on the board). */
+void *arena_port_self(void);
 
 /** Installs cJSON hooks: blocks come from arena_current() when a scope is open, else from malloc. */
 void json_alloc_install(void);

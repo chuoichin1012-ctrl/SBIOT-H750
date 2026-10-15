@@ -24,6 +24,9 @@ static bool s_mounted, s_log_ok;
 // that does not read back, or a save whose commit is not known: no model is served and no record
 // deleted until the next boot decides.
 static bool s_edge_ok, s_cert_ok;
+// Read-only until the next boot: a read failed past the FAL's retries (fal_nor.h), so the flash
+// refuses writes and what FlashDB read may be wrong. Saves are refused, edge is unavailable.
+static bool s_ro;
 static fdb_time_t s_log_seq;  // TSDB key: last used sequence number
 static uint32_t s_boot;
 static cfg_env_t s_env;
@@ -281,6 +284,18 @@ static void edge_unknown(const char *why)
     store_port_log("edgeDevices unavailable until the next boot: %s", why);
 }
 
+/** True once a read has failed for good: the store stays read-only until the next boot. */
+static bool read_only(void)
+{
+    if (!s_ro && fal_nor_read_failed()) {
+        s_ro = true;
+        store_port_log("a flash read failed: storage read-only until the next boot");
+        if (s_edge_ok)
+            edge_unknown("a flash read failed");
+    }
+    return s_ro;
+}
+
 static int pin_find(uint32_t gen)
 {
     for (int i = 0; i < MAX_PINS; i++)
@@ -332,6 +347,7 @@ store_err_t store_init(const cfg_env_t *env, nor_t *flash)
 {
     s_env = *env;
     fal_nor_set(flash);
+    fal_nor_rearm();  // a new boot: the flash is writable until a read fails
     LOCK();
     if (!kvdb_open(&s_cfg_db, "cfg", CFG_SECTOR)) {
         UNLOCK();
@@ -354,7 +370,8 @@ store_err_t store_init(const cfg_env_t *env, nor_t *flash)
     s_boot = 0;
     store_state_get("boot", &s_boot, sizeof s_boot);
     s_boot++;
-    store_state_set("boot", &s_boot, sizeof s_boot);
+    if (!read_only())
+        store_state_set("boot", &s_boot, sizeof s_boot);
 
     manifest_t m;
     s_edge_ok = edge_mount(&m);
@@ -367,6 +384,7 @@ store_err_t store_init(const cfg_env_t *env, nor_t *flash)
     else if (has_records())
         store_port_log("edge records without a manifest: kept until the next save");
     load_all();
+    read_only();  // a read that failed anywhere in the mount or the loads
     UNLOCK();
     store_port_log("%u configs loaded, edge generation %lu, boot #%lu", (unsigned)s_ncache, (unsigned long)s_gen,
                    (unsigned long)s_boot);
@@ -387,7 +405,8 @@ void store_deinit(void)
     memset(&s_edge_db, 0, sizeof s_edge_db);
     memset(&s_cert_db, 0, sizeof s_cert_db);
     memset(&s_log_db, 0, sizeof s_log_db);
-    s_mounted = s_log_ok = s_edge_ok = s_cert_ok = false;
+    s_mounted = s_log_ok = s_edge_ok = s_cert_ok = s_ro = false;
+    fal_nor_rearm();
     s_used = s_ncache = s_nlisteners = 0;
     s_gen = s_count = 0;
     memset(s_pins, 0, sizeof s_pins);
@@ -470,6 +489,12 @@ store_err_t store_set_text(const char *name, const char *text, size_t len, char 
     if (!out)
         return from_cfg(CFG_NO_MEMORY, err, errlen);
     LOCK();
+    if (read_only()) {
+        UNLOCK();
+        cJSON_free(out);
+        snprintf(err, errlen, "The settings storage is read-only after a flash error; restart the gateway.");
+        return STORE_EFLASH;
+    }
     int i = cache_find(name);
     cJSON *cur = i >= 0 ? cJSON_ParseWithLength(s_pool + s_cache[i].off, s_cache[i].len) : NULL;
     store_err_t e = cur ? from_cfg(cfg_validate_text(&s_env, name, text, len, cur, out, CFG_SMALL_BUF, err, errlen), err, errlen)
@@ -501,7 +526,7 @@ store_err_t store_edge_save(const char *text, size_t len, char *err, size_t errl
 {
     err[0] = '\0';
     LOCK();
-    if (!s_edge_ok) {
+    if (read_only() || !s_edge_ok) {
         UNLOCK();
         snprintf(err, errlen, "The Edge model storage is unavailable; restart the gateway.");
         return STORE_EFLASH;
@@ -554,6 +579,7 @@ store_err_t store_edge_save(const char *text, size_t len, char *err, size_t errl
     if (p >= 0)
         s_pins[p].doomed = true;  // a GET still reads it: deleted at its last unpin
     delete_records(0, true);      // the old generation unless pinned, and any stray record
+    read_only();
     UNLOCK();
     store_port_log("edgeDevices saved: generation %lu, %lu records", (unsigned long)w.gen, (unsigned long)w.idx);
     notify(EDGE);
@@ -563,6 +589,7 @@ store_err_t store_edge_save(const char *text, size_t len, char *err, size_t errl
 void store_edge_pin(store_edge_pin_t *p)
 {
     LOCK();
+    read_only();
     p->gen = s_gen;
     p->count = s_gen ? s_count : 1;
     if (!s_edge_ok) {  // nothing is known to be committed: no model, not even the default
@@ -627,6 +654,8 @@ size_t store_edge_record(const store_edge_pin_t *p, uint32_t i, char *buf, size_
     size_t n = 0;
     if (fdb_kv_get_obj(&s_edge_db, key, &kv) && kv.value_len <= cap)
         n = fdb_blob_read((fdb_db_t)&s_edge_db, fdb_kv_to_blob(&kv, fdb_blob_make(&blob, buf, kv.value_len)));
+    if (read_only())
+        n = 0;  // what was read may be wrong
     UNLOCK();
     return n;
 }
@@ -659,16 +688,34 @@ size_t store_edge_text(char *buf, size_t cap)
 store_err_t store_factory_reset(void)
 {
     LOCK();
-    store_err_t e = STORE_OK;
-    if (fdb_kv_set_default(&s_cfg_db) != FDB_NO_ERR || (s_edge_ok && fdb_kv_set_default(&s_edge_db) != FDB_NO_ERR) ||
-        (s_cert_ok && fdb_kv_set_default(&s_cert_db) != FDB_NO_ERR) || !s_edge_ok || !s_cert_ok)
-        e = STORE_EFLASH;  // a database that does not mount cannot be reset here
-    s_gen = s_count = 0;
-    memset(s_pins, 0, sizeof s_pins);
-    store_state_set("boot", &s_boot, sizeof s_boot);  // the boot numbering of the log goes on
-    load_all();
+    if (read_only()) {
+        UNLOCK();
+        return STORE_EFLASH;
+    }
+    // Each database on its own. The configs are reloaded below from the flash as it now is, and
+    // certificates are always read from it; only edge keeps its generation in RAM, so a failed
+    // edge reset is mounted again: what this boot serves is what the next boot finds.
+    bool cfg = fdb_kv_set_default(&s_cfg_db) == FDB_NO_ERR;
+    bool edge = s_edge_ok && fdb_kv_set_default(&s_edge_db) == FDB_NO_ERR;
+    bool cert = s_cert_ok && fdb_kv_set_default(&s_cert_db) == FDB_NO_ERR;
+    if (edge) {
+        s_gen = s_count = 0;
+        memset(s_pins, 0, sizeof s_pins);
+    } else if (s_edge_ok) {
+        fdb_kvdb_deinit(&s_edge_db);
+        memset(&s_edge_db, 0, sizeof s_edge_db);
+        manifest_t m;
+        memset(s_pins, 0, sizeof s_pins);
+        if (!edge_mount(&m))
+            edge_unknown("a factory reset failed");
+    }
+    if (!s_ro)
+        store_state_set("boot", &s_boot, sizeof s_boot);  // the boot numbering of the log goes on
+    load_all();  // from the flash as it now is
+    read_only();
     UNLOCK();
-    store_port_log("factory settings restored");
+    store_err_t e = cfg && edge && cert ? STORE_OK : STORE_EFLASH;
+    store_port_log(e == STORE_OK ? "factory settings restored" : "factory reset incomplete");
     return e;
 }
 
@@ -677,7 +724,7 @@ store_err_t store_state_set(const char *key, const void *data, size_t len)
     char k[FDB_KV_NAME_MAX];
     snprintf(k, sizeof k, "st.%s", key);
     LOCK();
-    bool ok = kv_write(&s_cfg_db, k, data, len);
+    bool ok = !read_only() && kv_write(&s_cfg_db, k, data, len);
     UNLOCK();
     return ok ? STORE_OK : STORE_EFLASH;
 }
@@ -716,7 +763,7 @@ store_err_t store_cert_set(const char *scope, const char *kind, const void *pem,
     if (!s_cert_ok)
         return STORE_EFLASH;
     LOCK();
-    bool ok = kv_write(&s_cert_db, key, pem, len);
+    bool ok = !read_only() && kv_write(&s_cert_db, key, pem, len);
     UNLOCK();
     if (ok)
         notify(scope);  // the owning module reconnects with new material
@@ -730,6 +777,10 @@ char *store_cert_get(const char *scope, const char *kind)
         return NULL;
     LOCK();
     char *pem = kv_read(&s_cert_db, key, NULL);
+    if (pem && read_only()) {  // what was read may be wrong
+        free(pem);
+        pem = NULL;
+    }
     UNLOCK();
     return pem;
 }
@@ -750,7 +801,8 @@ void store_log_append(const char *line, size_t len)
     memcpy(rec + sizeof h, line, len);
     struct fdb_blob blob;
     LOCK();
-    fdb_tsl_append(&s_log_db, fdb_blob_make(&blob, rec, sizeof h + len));
+    if (!read_only())
+        fdb_tsl_append(&s_log_db, fdb_blob_make(&blob, rec, sizeof h + len));
     UNLOCK();
 }
 

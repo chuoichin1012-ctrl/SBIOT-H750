@@ -8,7 +8,11 @@
 
 static nor_t *s_nor;
 
+static bool s_read_failed;
+
 void fal_nor_set(nor_t *nor) { s_nor = nor; }
+bool fal_nor_read_failed(void) { return s_read_failed; }
+void fal_nor_rearm(void) { s_read_failed = false; }
 
 static int dev_init(void) { return s_nor ? 0 : -1; }
 
@@ -23,12 +27,13 @@ static int dev_read(long off, uint8_t *buf, size_t size)
     for (int i = 0; i < READ_TRIES; i++)
         if (!s_nor->read(s_nor, (uint32_t)off, buf, (uint32_t)size))
             return (int)size;
+    s_read_failed = true;  // read-only from now on: FlashDB must not act on what it did not read
     return -1;
 }
 
 static int dev_write(long off, const uint8_t *buf, size_t size)
 {
-    if (!s_nor || off < 0 || (uint32_t)off + size > FDB_REGION)
+    if (!s_nor || s_read_failed || off < 0 || (uint32_t)off + size > FDB_REGION)
         return -1;
     for (size_t done = 0; done < size;) {
         uint32_t at = (uint32_t)off + (uint32_t)done;
@@ -44,7 +49,7 @@ static int dev_write(long off, const uint8_t *buf, size_t size)
 
 static int dev_erase(long off, size_t size)
 {
-    if (!s_nor || off < 0 || off % NOR_SECTOR || (uint32_t)off + size > FDB_REGION)
+    if (!s_nor || s_read_failed || off < 0 || off % NOR_SECTOR || (uint32_t)off + size > FDB_REGION)
         return -1;
     for (size_t done = 0; done < size; done += NOR_SECTOR)
         if (s_nor->erase_sector(s_nor, (uint32_t)off + (uint32_t)done))

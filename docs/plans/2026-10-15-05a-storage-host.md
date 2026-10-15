@@ -87,6 +87,22 @@ Again each fix began with a test that failed first.
 
    Test: the write-failure matrix also from an empty edge database.
 
+## Codex round 3 (NOT APPROVED), and the fixes
+
+1. **`read_kv` acted on a header it did not read** (it could write `ERR_HDR` over a good KV), and the mount could format a sector whose header did not read back. Ruling 8 is therefore replaced: patching each read site of FlashDB would never end, so the guard moves under FlashDB.
+   - **A read that fails past the FAL's three tries makes the flash read-only:** every write and erase is refused until `fal_nor_rearm()`, which only a new boot (`store_init`) calls. FlashDB can then misread, but it can never write or erase on the strength of a misread.
+   - **The store notices** (`fal_nor_read_failed()`) and turns read-only until the next boot: saves are refused with 500, edge is unavailable, and certificates and edge records just read are not handed out.
+   - Tests: the FlashDB read matrix gains a third pass, three failures in a row anywhere including the mount, with half the buffer garbage, as a transfer cut short would leave it. It was RED (1 of 3618 lost the KV), then GREEN. There are also two store matrices: reads failing three in a row at every 7th read of a boot (`test_boot_read_failures`) and at every 5th read of an edge save, the remount included (`test_save_read_failures`). Nothing is lost, and nothing half saved is served.
+2. **A failed factory reset left RAM and flash apart.** Each database is now reset on its own, and the config cache is reloaded from the flash as it now is.
+   - A failed edge reset is mounted again, since edge is the one database whose state the store keeps in RAM (its generation). `test_factory_reset_fails` covers cfg and edge each failing partway, and was RED, then GREEN.
+   - A remount of cfg and of cert proved unnecessary (their mutants survived): FlashDB stays consistent there, and certificates are always read from flash. Both were removed.
+3. **The "commit not known" mutant** is now equivalent by construction, and the reason is recorded in `mutants_ota.py`. That branch needs a failed remount or a manifest that does not read back, so a read or a write failed. After a read failure the FAL refuses every write, so the branch's deletes cannot happen. New mutants pin the latch on writes and on erases, and the edge remount after a failed reset.
+4. **Two FlashDB read hunks of round 2 were dropped,** because their mutants survived once the latch was in place: `move_kv` copying only what it read, and `do_gc` keeping a sector after a failed read. The latch covers both, and every other read site of FlashDB too. The patch file is back to the four write and recovery faults.
+5. **The store mutants run faster:** about 8.5 minutes instead of 15 to 20.
+   - `STORE_FAILFAST` stops `test_store` at the first wrong case, and the runner skips the cut pass once the quick pass has failed.
+   - FlashDB is built from source only for a FlashDB mutant.
+   - Most mutants are now caught in 3 to 5 s.
+
 ## Rulings (for review)
 
 1. **Edge sector size 16 KB**, against 64 KB on the ESP32. An 8 KB record and its header fit, and 16 sectors in 256 KB keep the garbage collection fine-grained. Cost if wrong: more sector headers (a few hundred bytes).
@@ -96,7 +112,7 @@ Again each fix began with a test that failed first.
 5. **The scratch buffer of `store_set_text`** (`CFG_SMALL_BUF`) comes from `cJSON_malloc`, so it uses the caller's arena scope, or the heap otherwise. The same holds for `store_get`'s tree. `store_get_json` returns a heap copy, keeping the ESP32 contract (`api.c` frees it).
 6. **With no model saved,** a GET pins generation 0, which is one record holding the default text `[]`.
 7. **FlashDB's own messages** go to `printf` (`FDB_PRINT`). On the board, Plan 05b routes them to the log.
-8. **A read that fails persistently at mount is out of reach.** FlashDB's mount takes most read results as data, so a read failing every time while a sector header or a KV is checked can still make FlashDB format that sector. The FAL retry covers transient faults (the bench of Plan 04b saw SPI4 read overruns). A part that fails the same read over and over is a broken flash. Cost if wrong: data loss on such a part. Plan 05b's board driver logs every failed read, so it shows up.
+8. **A read that fails past three tries makes the whole storage read-only until the next boot,** not just the database it hit. That is the simplest rule that keeps every FlashDB write behind a good read. Cost if wrong: one bad read stops all saves, the DO state included, until a restart. The board logs it.
 
 ## Review Focus
 

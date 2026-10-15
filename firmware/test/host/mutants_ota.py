@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
 FW = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../..'))
 EXE = os.path.join(tempfile.gettempdir(), 'test_ota_mutant')
@@ -34,17 +35,21 @@ STORE = (CC.replace('-Werror ', '') + '-Wno-implicit-function-declaration -Icomp
          '-Icomponents/proto/include -Ithird_party/cjson test/host/test_store.c test/host/nor_sim.c '
          'components/store/store.c components/store/fal_nor.c components/cfgmodel/cfgmodel.c components/proto/ipacl.c '
          'components/proto/jsonscan.c third_party/cjson/cJSON.c ' + FDB + ' -lm -o ' + EXE)
-BUILD['store'] = STORE
-BUILD['store_small'] = STORE.replace('test/host/test_store.c', '-DSTORE_CACHE_SIZE=3800u test/host/test_store.c')
+# FlashDB from source only for a mutant in FlashDB; the others link the library make built.
+STORE_LIB = STORE.replace(FDB, 'test/host/build/libflashdb.a')
+BUILD['store'] = STORE_LIB
+BUILD['store_fdb'] = STORE
+BUILD['store_small'] = STORE_LIB.replace('test/host/test_store.c', '-DSTORE_CACHE_SIZE=3800u test/host/test_store.c')
 # test_bind reads the records tools/test_provision.py signs (main() writes them first).
 SAMPLE = os.path.join(FW, 'test/host/build/bind_sample.bin')
-ARGS = {'install': [], 'bind': [SAMPLE], 'store': [], 'store_small': []}
+ARGS = {'install': [], 'bind': [SAMPLE], 'store': [], 'store_small': [], 'store_fdb': []}
 # Extra environments to run the test with: a mutant is caught when any run fails.
-RUNS = {'store': [{}, {'STORE_CUTS': '1'}]}
+RUNS = {'store': [{}, {'STORE_CUTS': '1'}], 'store_fdb': [{}, {'STORE_CUTS': '1'}]}
 # (file, original text, mutated text, what the mutant breaks[, test: 'install' by default])
-# Not listed, as equivalent under any real fault: deleting records in store_edge_save's "commit
-# not known" branch. That branch is only reached when the remount fails, which takes failing
-# writes, so the deletes fail too; it stays as a defence.
+# Not listed, as equivalent by construction: deleting records in store_edge_save's "commit not
+# known" branch. It is reached when the remount fails or the manifest does not read back: either
+# way a read or a write failed, and after a read that fails past its retries the FAL refuses every
+# write (fal_nor.h), so those deletes cannot happen; the branch stays as a defence.
 M = [
  ('boot/install.c', '        if (p == 0)\n            memset(buf, 0xFF, sizeof IMG_MAGIC);  // the magic is programmed last, on its own\n', '', 'magic programmed with its page'),
  ('boot/install.c', '    if (img_check(dst, dof, in->kick, &back) != IMG_OK || memcmp(back.raw, h->raw, IMG_CORE))\n        return -1;\n', '    (void)back;\n', 'copy not checked'),
@@ -91,40 +96,47 @@ M = [
  ('components/store/store.c', '    for (int pass = 0; pass < 8; pass++) {', '    for (int pass = 0;; pass++) {', 'cleanup without a bound', 'store'),
  ('components/store/store.c', '{"mqtt", "port1", "port2"};', '{"mqtt", "port1", "mqtt"};', 'no port2 certificates', 'store'),
  ('components/store/fal_nor.c', '#define READ_TRIES 3', '#define READ_TRIES 1', 'FAL does not retry a read', 'store'),
- ('third_party/flashdb/src/fdb_kvdb.c', '        if (_fdb_read_failed) {', '        if (0) {', 'FlashDB GC formats after a failed read', 'store'),
- ('third_party/flashdb/src/fdb_kvdb.c', '            if (result == FDB_NO_ERR) { /* SBIOT patch: never copy what could not be read */', '            if (1) {', 'FlashDB move copies what it could not read', 'store'),
  ('third_party/flashdb/src/fdb_kvdb.c', '    if (rs.failed || rs.rescan) { /* SBIOT patch: the recovery did not finish */', '    if (0) {', 'FlashDB mount succeeds after an unfinished recovery', 'store'),
  ('components/store/store.c', '    if (!s_edge_ok) {  // nothing is known to be committed: no model, not even the default', '    if (0) {', 'unknown edge state serves a model', 'store'),
+ ('components/store/fal_nor.c', '    if (!s_nor || s_read_failed || off < 0 || (uint32_t)off + size > FDB_REGION)\n        return -1;\n    for (size_t done', '    if (!s_nor || off < 0 || (uint32_t)off + size > FDB_REGION)\n        return -1;\n    for (size_t done', 'writes allowed after a failed read', 'store'),
+ ('components/store/fal_nor.c', '    if (!s_nor || s_read_failed || off < 0 || off % NOR_SECTOR', '    if (!s_nor || off < 0 || off % NOR_SECTOR', 'erases allowed after a failed read', 'store'),
+ ('components/store/store.c', '    } else if (s_edge_ok) {\n        fdb_kvdb_deinit(&s_edge_db);', '    } else if (0) {\n        fdb_kvdb_deinit(&s_edge_db);', 'failed edge reset not remounted', 'store')
 ]
 
 
 def main():
     kinds = sys.argv[1:]
-    subprocess.run(['make', '-s', '-C', os.path.join(FW, 'test/host'), 'build/bind_sample.bin'], check=True)
+    subprocess.run(['make', '-s', '-C', os.path.join(FW, 'test/host'), 'build/bind_sample.bin', 'build/libflashdb.a'], check=True)
     caught = 0
     todo = [m for m in M if not kinds or (m[4] if len(m) > 4 else 'install') in kinds]
     for path, old, new, what, *test in todo:
+        t0 = time.time()
         path = os.path.join(FW, path)
         src = open(path).read()
         if src.count(old) != 1:
             sys.exit('mutants: the original text of "%s" is not in %s exactly once' % (what, path))
         open(path, 'w').write(src.replace(old, new))
         try:
-            b = subprocess.run(BUILD[test[0] if test else 'install'], shell=True, cwd=FW, capture_output=True, text=True)
+            bkind = 'store_fdb' if (test and test[0] == 'store' and path.endswith(('fdb_kvdb.c', 'fdb_utils.c'))) else (test[0] if test else 'install')
+            b = subprocess.run(BUILD[bkind], shell=True, cwd=FW, capture_output=True, text=True)
             if b.returncode:
                 res = 'BUILD ERROR (fix the mutant): ' + (b.stderr.splitlines() or [''])[0]
             else:
                 kind = test[0] if test else 'install'
+                if kind == 'store' and path.endswith(('fdb_kvdb.c', 'fdb_utils.c')):
+                    kind = 'store_fdb'
                 fail = False
-                for extra in RUNS.get(kind, [{}]):
-                    env = dict(os.environ, OTA_QUICK='1', ASAN_OPTIONS='detect_leaks=0', **extra)
+                for extra in RUNS.get(kind, [{}]):  # the first run that fails is enough
+                    env = dict(os.environ, OTA_QUICK='1', STORE_FAILFAST='1', ASAN_OPTIONS='detect_leaks=0', **extra)
                     r = subprocess.run([EXE] + ARGS[kind], capture_output=True, text=True, errors='replace', timeout=600, env=env)
-                    fail = fail or r.returncode != 0
+                    fail = r.returncode != 0
+                    if fail:
+                        break
                 res = 'caught' if fail else 'SURVIVED'
                 caught += fail
         finally:
             open(path, 'w').write(src)
-        print('%-36s %s' % (what, res))
+        print('%-36s %-8s %5.1f s' % (what, res, time.time() - t0), flush=True)
     print('mutants: %d of %d caught' % (caught, len(todo)))
     return 0 if caught == len(todo) else 1
 

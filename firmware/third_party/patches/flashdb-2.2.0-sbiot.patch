@@ -13,16 +13,10 @@
  
          _fdb_write_status((fdb_db_t)db, kv_addr, status_table, FDB_KV_STATUS_NUM, FDB_KV_PRE_WRITE, false);
          kv_len -= KV_MAGIC_OFFSET;
-@@ -1046,10 +1050,22 @@
-             } else {
-                 size = kv_len - len;
+@@ -1048,8 +1052,18 @@
              }
--            _fdb_flash_read((fdb_db_t)db, kv->addr.start + KV_MAGIC_OFFSET + len, (uint32_t *) buf, FDB_WG_ALIGN(size));
--            result = _fdb_flash_write((fdb_db_t)db, kv_addr + KV_MAGIC_OFFSET + len, (uint32_t *) buf, size, true);
-+            result = _fdb_flash_read((fdb_db_t)db, kv->addr.start + KV_MAGIC_OFFSET + len, (uint32_t *) buf, FDB_WG_ALIGN(size));
-+            if (result == FDB_NO_ERR) { /* SBIOT patch: never copy what could not be read */
-+                result = _fdb_flash_write((fdb_db_t)db, kv_addr + KV_MAGIC_OFFSET + len, (uint32_t *) buf, size, true);
-+            }
+             _fdb_flash_read((fdb_db_t)db, kv->addr.start + KV_MAGIC_OFFSET + len, (uint32_t *) buf, FDB_WG_ALIGN(size));
+             result = _fdb_flash_write((fdb_db_t)db, kv_addr + KV_MAGIC_OFFSET + len, (uint32_t *) buf, size, true);
 +            if (result != FDB_NO_ERR) { /* SBIOT patch: a failed copy must not stand for the KV */
 +                break;
 +            }
@@ -39,23 +33,7 @@
  
  #ifdef FDB_KV_USING_CACHE
          update_sector_empty_addr_cache(db, FDB_ALIGN_DOWN(kv_addr, db_sec_size(db)),
-@@ -1109,6 +1125,8 @@
- 
- }
- 
-+extern bool _fdb_read_failed; /* SBIOT patch, fdb_utils.c */
-+
- static bool do_gc(kv_sec_info_t sector, void *arg1, void *arg2)
- {
-     struct fdb_kv kv;
-@@ -1122,17 +1140,27 @@
-         _fdb_write_status((fdb_db_t)db, sector->addr + SECTOR_DIRTY_OFFSET, status_table, FDB_SECTOR_DIRTY_STATUS_NUM, FDB_SECTOR_DIRTY_GC, true);
-         /* search all KV */
-         kv.addr.start = sector->addr + SECTOR_HDR_DATA_SIZE;
-+        _fdb_read_failed = false; /* SBIOT patch */
-         do {
-             read_kv(db, &kv);
-             if (kv.crc_is_ok && (kv.status == FDB_KV_WRITE || kv.status == FDB_KV_PRE_DELETE)) {
+@@ -1128,6 +1142,9 @@
                  /* move the KV to new space */
                  if (move_kv(db, &kv) != FDB_NO_ERR) {
                      FDB_INFO("Error: Moved the KV (%.*s) for GC failed.\n", kv.name_len, kv.name);
@@ -65,18 +43,7 @@
                  }
              } else {
                  FDB_DEBUG("KV (%.*s) is garbage NOT need move, collect it.\n", kv.name_len, kv.name);
-             }
-         } while ((kv.addr.start = get_next_kv_addr(db, sector, &kv)) != FAILED_ADDR);
-+        if (_fdb_read_failed) {
-+            /* SBIOT patch: a KV that did not read back may have been taken for garbage, or the
-+             * scan may have ended early: keep the sector (DIRTY_GC) for the next collection */
-+            FDB_INFO("Error: a read failed while collecting the sector @0x%08" PRIX32 ", kept.\n", sector->addr);
-+            return true;
-+        }
-         format_sector(db, sector->addr, SECTOR_NOT_COMBINED);
-         last_gc_sec_addr = gc->last_gc_sec_addr;
-         gc->last_gc_sec_addr = sector->addr;
-@@ -1592,9 +1620,16 @@
+@@ -1592,9 +1609,16 @@
      return false;
  }
  
@@ -93,7 +60,7 @@
  
      /* recovery the prepare deleted KV */
      if (kv->crc_is_ok && kv->status == FDB_KV_PRE_DELETE) {
-@@ -1604,13 +1639,23 @@
+@@ -1604,13 +1628,23 @@
              FDB_DEBUG("Recovery the KV successful.\n");
          } else {
              FDB_DEBUG("Warning: Moved an KV (size %" PRIu32 ") failed when recovery. Now will GC then retry.\n", kv->len);
@@ -118,7 +85,7 @@
          return true;
      } else if (kv->crc_is_ok && kv->status == FDB_KV_WRITE) {
  #ifdef FDB_KV_USING_CACHE
-@@ -1633,6 +1678,8 @@
+@@ -1633,6 +1667,8 @@
      struct fdb_kv kv;
      struct kvdb_sec_info sector;
      size_t check_failed_count = 0;
@@ -127,7 +94,7 @@
  
      db->in_recovery_check = true;
      /* check all sector header */
-@@ -1651,11 +1698,20 @@
+@@ -1651,11 +1687,20 @@
  
  __retry:
      /* check all KV for recovery */
@@ -150,25 +117,3 @@
  
      db->in_recovery_check = false;
  
---- a/src/fdb_utils.c
-+++ b/src/fdb_utils.c
-@@ -254,6 +254,11 @@
- extern fdb_err_t _fdb_file_erase(fdb_db_t db, uint32_t addr, size_t size);
- #endif /* FDB_USING_FILE_LIBC */
- 
-+/* SBIOT patch: set by any read that failed; the garbage collector checks it before it formats a
-+ * sector, since FlashDB takes most read results as data (a KV that does not read back looks like
-+ * garbage) */
-+bool _fdb_read_failed;
-+
- fdb_err_t _fdb_flash_read(fdb_db_t db, uint32_t addr, void *buf, size_t size)
- {
-     fdb_err_t result = FDB_NO_ERR;
-@@ -268,6 +273,7 @@
- #ifdef FDB_USING_FAL_MODE
-         if (fal_partition_read(db->storage.part, addr, (uint8_t *) buf, size) < 0) {
-             result = FDB_READ_ERR;
-+            _fdb_read_failed = true;
-         }
- #endif
-     }

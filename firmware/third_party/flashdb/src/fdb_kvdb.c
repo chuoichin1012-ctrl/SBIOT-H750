@@ -1050,10 +1050,8 @@ static fdb_err_t move_kv(fdb_kvdb_t db, fdb_kv_t kv)
             } else {
                 size = kv_len - len;
             }
-            result = _fdb_flash_read((fdb_db_t)db, kv->addr.start + KV_MAGIC_OFFSET + len, (uint32_t *) buf, FDB_WG_ALIGN(size));
-            if (result == FDB_NO_ERR) { /* SBIOT patch: never copy what could not be read */
-                result = _fdb_flash_write((fdb_db_t)db, kv_addr + KV_MAGIC_OFFSET + len, (uint32_t *) buf, size, true);
-            }
+            _fdb_flash_read((fdb_db_t)db, kv->addr.start + KV_MAGIC_OFFSET + len, (uint32_t *) buf, FDB_WG_ALIGN(size));
+            result = _fdb_flash_write((fdb_db_t)db, kv_addr + KV_MAGIC_OFFSET + len, (uint32_t *) buf, size, true);
             if (result != FDB_NO_ERR) { /* SBIOT patch: a failed copy must not stand for the KV */
                 break;
             }
@@ -1125,8 +1123,6 @@ static bool gc_check_cb(kv_sec_info_t sector, void *arg1, void *arg2)
 
 }
 
-extern bool _fdb_read_failed; /* SBIOT patch, fdb_utils.c */
-
 static bool do_gc(kv_sec_info_t sector, void *arg1, void *arg2)
 {
     struct fdb_kv kv;
@@ -1140,7 +1136,6 @@ static bool do_gc(kv_sec_info_t sector, void *arg1, void *arg2)
         _fdb_write_status((fdb_db_t)db, sector->addr + SECTOR_DIRTY_OFFSET, status_table, FDB_SECTOR_DIRTY_STATUS_NUM, FDB_SECTOR_DIRTY_GC, true);
         /* search all KV */
         kv.addr.start = sector->addr + SECTOR_HDR_DATA_SIZE;
-        _fdb_read_failed = false; /* SBIOT patch */
         do {
             read_kv(db, &kv);
             if (kv.crc_is_ok && (kv.status == FDB_KV_WRITE || kv.status == FDB_KV_PRE_DELETE)) {
@@ -1155,12 +1150,6 @@ static bool do_gc(kv_sec_info_t sector, void *arg1, void *arg2)
                 FDB_DEBUG("KV (%.*s) is garbage NOT need move, collect it.\n", kv.name_len, kv.name);
             }
         } while ((kv.addr.start = get_next_kv_addr(db, sector, &kv)) != FAILED_ADDR);
-        if (_fdb_read_failed) {
-            /* SBIOT patch: a KV that did not read back may have been taken for garbage, or the
-             * scan may have ended early: keep the sector (DIRTY_GC) for the next collection */
-            FDB_INFO("Error: a read failed while collecting the sector @0x%08" PRIX32 ", kept.\n", sector->addr);
-            return true;
-        }
         format_sector(db, sector->addr, SECTOR_NOT_COMBINED);
         last_gc_sec_addr = gc->last_gc_sec_addr;
         gc->last_gc_sec_addr = sector->addr;

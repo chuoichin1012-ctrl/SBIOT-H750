@@ -634,12 +634,11 @@ Quy tắc riêng của bản STM32:
   3. **Không kiểm trạng thái sector đích.** `move_kv` bỏ qua lỗi ghi trạng thái của sector đích, nên KV bị chuyển vào một sector vẫn mang dấu "trống", và lần mount sau bỏ qua sector đó.
      - Bản vá: lỗi này cũng giữ bản gốc.
 
-  Lỗi 2 và 3 bị ma trận "một lần ghi lỗi" của `test_store` bắt được, chạy trên một chuỗi ghi đè có dọn rác. Cùng file vá còn hai chỗ nữa:
-  - `move_kv` chỉ chép những gì đọc được;
-  - một lần đọc lỗi bất kỳ trong lúc dọn một sector giữ sector đó lại, không format; lỗi đọc có thể khiến một KV trông như rác.
-
-  Khôi phục lúc mount chưa xong thì mount thất bại, không còn trông như đã hoàn tất.
-- **Lớp FAL đọc lại tối đa 3 lần.** FlashDB coi hầu hết kết quả đọc là dữ liệu, mà lỗi đọc thoáng qua trên SPI4 đã từng gặp ở bench của Plan 04b. Lỗi đọc dai dẳng lúc mount (flash hỏng) vẫn nằm ngoài tầm xử lý.
+  Lỗi 2 và 3 bị ma trận "một lần ghi lỗi" của `test_store` bắt được, chạy trên một chuỗi ghi đè có dọn rác. Ngoài ra, khôi phục lúc mount chưa xong thì mount thất bại, không còn trông như đã hoàn tất. Lỗi đọc **không** vá trong FlashDB, mà được chặn ở lớp FAL (xem dòng dưới).
+- **Lớp FAL đọc lại tối đa 3 lần.** Lý do: FlashDB coi hầu hết kết quả đọc là dữ liệu, mà lỗi đọc thoáng qua trên SPI4 đã từng gặp ở bench của Plan 04b.
+- **Đọc vẫn lỗi sau 3 lần thì flash chuyển sang chỉ đọc:** FAL từ chối mọi lệnh ghi và xóa cho tới lần boot sau. Nhờ vậy FlashDB không bao giờ ghi hay xóa dựa trên một lần đọc sai, dù ở lúc mount, lúc dọn rác hay trong `read_kv`.
+  - `store` thấy điều đó thì chuyển sang chỉ đọc: từ chối lưu (500), edge ở trạng thái không dùng được, không trả chứng chỉ hay bản ghi vừa đọc.
+  - Lần boot sau mới thử lại.
 - **Trạng thái "edge không dùng được":** khi DB `edge` không mount được, manifest có mà không đọc được, hoặc kết quả commit của một lần lưu không xác định được.
   - `store` không phục vụ model nào, kể cả mặc định: `GET` trả 503, lúc boot thì Edge tắt.
   - `store` từ chối lưu (500) và không xóa bản ghi nào, cho tới lần boot sau.

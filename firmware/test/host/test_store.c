@@ -9,12 +9,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "fal_nor.h"
 #include "flashdb.h"
 #include "nor_sim.h"
 #include "store.h"
 #include "store_port.h"
 
 static int failures;
+static bool s_failfast;  // STORE_FAILFAST=1 (mutants_ota.py): stop at the first wrong case
+
+static void stop_if_failfast(void)
+{
+    if (s_failfast) {
+        printf("FAIL (STORE_FAILFAST: stopped at the first wrong case)\ntest_store: FAILED\n");
+        _exit(1);
+    }
+}
+
 #define CHECK(cond, ...)                                \
     do {                                                \
         if (!(cond)) {                                  \
@@ -22,6 +33,7 @@ static int failures;
             printf("FAIL %s:%d: ", __FILE__, __LINE__); \
             printf(__VA_ARGS__);                        \
             printf("\n");                               \
+            stop_if_failfast();                         \
         }                                               \
     } while (0)
 
@@ -73,8 +85,10 @@ static int failing_read(nor_t *n, uint32_t off, void *buf, uint32_t len)
 {
     if (s_rfail_at >= 0 && s_rcounting && off < s_rfail_hi && off + len > s_rfail_lo) {
         long i = s_rcount++;
-        if (i >= s_rfail_at && i < s_rfail_at + s_rfail_times)
+        if (i >= s_rfail_at && i < s_rfail_at + s_rfail_times) {
+            memset(buf, 0xA5, len / 2);  // a transfer cut short: half the buffer is garbage
             return NOR_EIO;
+        }
     }
     return s_sim_read(n, off, buf, len);
 }
@@ -441,6 +455,36 @@ static void test_cache_full(void)
 #endif
 
 // ---- edgeDevices -----------------------------------------------------------------------------
+
+static void test_factory_reset_fails(void)
+{
+    flash_new(7);
+    reboot();
+    char err[200], *m = edge_model(4, 2, 1), *w = edge_oracle(m);
+    store_edge_save(m, strlen(m), err, sizeof err);
+    store_set_text("system", "{\"hostname\":\"kept\"}", 19, err, sizeof err);
+    sim_fail(&s_w, 0, 2, 0x3C000, 0x40000, NOR_EIO);  // the cfg reset fails partway: its last sector
+    CHECK(store_factory_reset() == STORE_EFLASH, "factory reset with cfg failing: 500");
+    sim_fail(&s_w, 0, 0, 0, 0, 0);
+    char *before = edge_now(), *gb = store_get_json("system");
+    reboot();
+    char *after = edge_now(), *ga = store_get_json("system");
+    CHECK((!before || (after && !strcmp(before, after))) && gb && ga && !strcmp(gb, ga),
+          "what the store serves after the failed reset is what the next boot finds");
+    free(before), free(after), free(gb), free(ga);
+
+    // the edge reset failing partway (its last sector): the generation in RAM follows the flash
+    store_edge_save(m, strlen(m), err, sizeof err);
+    sim_fail(&s_w, 0, 2, 0x7C000, 0x80000, NOR_EIO);
+    CHECK(store_factory_reset() == STORE_EFLASH, "factory reset with edge failing partway: 500");
+    sim_fail(&s_w, 0, 0, 0, 0, 0);
+    before = edge_now();
+    reboot();
+    after = edge_now();
+    CHECK(before && after && !strcmp(before, after), "the Edge model served is the one the next boot finds (%.12s / %.12s)",
+          before ? before : "-", after ? after : "-");
+    free(before), free(after), free(m), free(w);
+}
 
 static void test_edge_save_and_read(void)
 {
@@ -837,7 +881,7 @@ static void test_power_cuts(void)
         store_edge_unpin(&p);
         int keys = edge_keys("ed.");
         ok = ok && keys == (int)p.count;
-        if (!ok && bad++ < 5)
+        if (!ok && (stop_if_failfast(), bad++ < 5))
             printf("  cut at op %ld of %ld: text %s, %d records for %u\n", cut, total, e ? (!strcmp(e, wa) ? "old" : !strcmp(e, wb) ? "new" : "OTHER") : "none",
                    keys, (unsigned)p.count);
         free(e);
@@ -865,7 +909,7 @@ static void test_power_cuts(void)
         ok = ok && store_edge_save(mc, strlen(mc), err, sizeof err) == STORE_OK;
         char *e2 = edge_now();
         ok = ok && e2 && !strcmp(e2, wc);
-        if (!ok && bad++ < 5)
+        if (!ok && (stop_if_failfast(), bad++ < 5))
             printf("  3 cuts from op %ld every %ld: wrong (%s)\n", cut, period, err);
         free(e), free(e2), free(mc), free(wc);
     }
@@ -942,7 +986,7 @@ static void write_failures_from(bool empty)
         char *after = edge_now();
         bool ok = after && (!before || !strcmp(before, after)) && (!strcmp(after, wa) || !strcmp(after, wb)) &&
                   (r != STORE_OK || !strcmp(after, wb)) && clean;
-        if (!ok && bad++ < 5)
+        if (!ok && (stop_if_failfast(), bad++ < 5))
             printf("  write fails at op %ld of %ld: save %d, before %s, after %s\n", op, total, r,
                    before ? (!strcmp(before, wa) ? "old" : !strcmp(before, wb) ? "new" : "OTHER") : "none",
                    after ? (!strcmp(after, wa) ? "old" : !strcmp(after, wb) ? "new" : "OTHER") : "none");
@@ -1028,7 +1072,7 @@ static void test_gc_write_failures(void)
         s_fail_op = op;
         churn(40);
         s_fail_op = -1;
-        if (!keep_intact() && bad++ < 5)
+        if (!keep_intact() && (stop_if_failfast(), bad++ < 5))
             printf("  FlashDB: a write failing at op %ld of %ld lost the KV\n", op, total);
     }
     s_quiet = false;
@@ -1039,15 +1083,15 @@ static void test_gc_write_failures(void)
     // outlasts the retries), the garbage collector's moves among them.
     s_rfail_lo = 0x80000;
     s_rfail_hi = 0x84000;
-    for (int pass = 0; pass < 2; pass++) {
+    for (int pass = 0; pass < 3; pass++) {
         s_rfail_times = pass ? 3 : 1;
-        s_count_mount = !pass;
+        s_count_mount = pass != 1;
         restore();
         s_rcount = 0;
         s_rfail_at = 1L << 40;  // count only
         churn(40);
         long reads = s_rcount;
-        if (pass && getenv("STORE_GC_RDEBUG")) {
+        if (pass == 1 && getenv("STORE_GC_RDEBUG")) {
             restore();
             s_rcount = 0;
             s_rfail_at = atol(getenv("STORE_GC_RDEBUG"));
@@ -1062,21 +1106,132 @@ static void test_gc_write_failures(void)
         s_quiet = true;
         for (long k = 0; k < reads; k++) {
             restore();
+            fal_nor_rearm();
             s_rcount = 0;
             s_rfail_at = k;
             churn(40);
             s_rfail_at = -1;
-            if (!keep_intact() && rbad++ < 5)
+            fal_nor_rearm();  // the read fault is gone: what is left on the flash?
+            if (!keep_intact() && (stop_if_failfast(), rbad++ < 5))
                 printf("  FlashDB: read %ld of %ld failing %d time(s) lost the KV\n", k, reads, s_rfail_times);
         }
         s_quiet = false;
         CHECK(rbad == 0, "FlashDB: %d of %ld read failures (%s) lose a live KV", rbad, reads,
-              pass ? "three in a row, after the mount" : "once, anywhere");
+              pass == 0 ? "once, anywhere" : pass == 1 ? "three in a row, after the mount" : "three in a row, anywhere");
     }
     s_rfail_times = 1;
     s_count_mount = true;
     printf("store: FlashDB churn of %ld operations with garbage collection, a write failing at each\n", total);
     free(s_snap);
+}
+
+// Reads failing three times in a row (past the FAL's retries) at the k-th read of a boot: the
+// flash turns read-only, so whatever the store makes of what it read, nothing is lost: the next
+// boot with the fault gone finds the configs and the Edge model as they were.
+static void test_boot_read_failures(void)
+{
+    s_snap = malloc(0x100000);
+    flash_new(25);
+    reboot();
+    char err[200], *m = edge_model(14, 4, 1), *w = edge_oracle(m);
+    store_set_text("system", "{\"hostname\":\"read-test\"}", 24, err, sizeof err);
+    store_edge_save(m, strlen(m), err, sizeof err);
+    char *sys = store_get_json("system");
+    store_deinit();
+    snapshot();
+    s_rfail_lo = 0;
+    s_rfail_hi = 0x100000;
+    s_rfail_times = 3;
+    restore();
+    s_rcount = 0;
+    s_rfail_at = 1L << 40;
+    reboot();
+    long reads = s_rcount;
+    s_rfail_at = -1;
+    int bad = 0;
+    s_quiet = true;
+    for (long k = 0; k < reads; k += 7) {
+        store_deinit();
+        restore();
+        s_rcount = 0;
+        s_rfail_at = k;
+        store_init(&ENV, &s_spi.nor);
+        s_depth = 0;
+        char *e1 = edge_now();
+        bool ro = store_set_text("system", "{\"hostname\":\"x\"}", 16, err, sizeof err) != STORE_OK || !e1 || !strcmp(e1, w);
+        free(e1);
+        s_rfail_at = -1;
+        reboot();
+        char *e = edge_now(), *g = store_get_json("system");
+        bool ok = e && !strcmp(e, w) && g && (!strcmp(g, sys) || strstr(g, "\"x\"")) && ro;
+        if (!ok && (stop_if_failfast(), bad++ < 5))
+            printf("  boot read %ld of %ld failing three times: %s\n", k, reads, !e ? "no model" : strcmp(e, w) ? "model changed" : "config lost");
+        free(e), free(g);
+    }
+    s_quiet = false;
+    s_rfail_times = 1;
+    CHECK(bad == 0, "boot: %d of %ld read failures (three in a row) lose data", bad, (reads + 6) / 7);
+    // one failing read, the FAL's retry absorbs it: the store stays writable
+    int ro = 0;
+    for (long k = 0; k < reads; k += 97) {
+        store_deinit();
+        restore();
+        s_rcount = 0;
+        s_rfail_at = k;
+        store_init(&ENV, &s_spi.nor);
+        s_depth = 0;
+        s_rfail_at = -1;
+        ro += store_set_text("system", "{\"hostname\":\"y\"}", 16, err, sizeof err) != STORE_OK;
+    }
+    CHECK(ro == 0, "a single failing read at boot: still writable (%d read-only)", ro);
+    free(m), free(w), free(sys), free(s_snap);
+}
+
+// The same during an edge save, the remount after a failed write included: reads failing three
+// times in a row at the k-th read of the save. Nothing is lost, and nothing half saved is served.
+static void test_save_read_failures(void)
+{
+    s_snap = malloc(0x100000);
+    flash_new(26);
+    reboot();
+    char err[200], *ma = edge_model(14, 4, 1), *wa = edge_oracle(ma), *mb = edge_model(16, 4, 2), *wb = edge_oracle(mb);
+    store_edge_save(ma, strlen(ma), err, sizeof err);
+    store_deinit();
+    snapshot();
+    s_rfail_lo = 0;
+    s_rfail_hi = 0x100000;
+    s_rfail_times = 3;
+    restore();
+    reboot();
+    s_rcount = 0;
+    s_rfail_at = 1L << 40;
+    store_edge_save(mb, strlen(mb), err, sizeof err);
+    long reads = s_rcount;
+    s_rfail_at = -1;
+    int bad = 0;
+    s_quiet = true;
+    for (long k = 0; k < reads; k += 5) {
+        store_deinit();
+        restore();
+        reboot();
+        s_rcount = 0;
+        s_rfail_at = k;
+        store_err_t r = store_edge_save(mb, strlen(mb), err, sizeof err);
+        char *before = edge_now();
+        s_rfail_at = -1;
+        reboot();
+        char *after = edge_now();
+        bool ok = after && (!strcmp(after, wa) || !strcmp(after, wb)) && (!before || !strcmp(before, after)) &&
+                  (r != STORE_OK || !strcmp(after, wb));
+        if (!ok && (stop_if_failfast(), bad++ < 5))
+            printf("  save read %ld of %ld failing three times: save %d, after %s\n", k, reads, r,
+                   !after ? "none" : !strcmp(after, wa) ? "old" : !strcmp(after, wb) ? "new" : "OTHER");
+        free(before), free(after);
+    }
+    s_quiet = false;
+    s_rfail_times = 1;
+    CHECK(bad == 0, "edge save: %d of %ld read failures (three in a row) end wrong", bad, (reads + 4) / 5);
+    free(ma), free(wa), free(mb), free(wb), free(s_snap);
 }
 
 static void test_small_power_cuts(void)
@@ -1107,7 +1262,7 @@ static void test_small_power_cuts(void)
         reboot();
         char *g = store_get_json("system");
         bool ok = g && (strstr(g, "\"before\"") || strstr(g, "\"after\""));
-        if (!ok && bad++ < 3)
+        if (!ok && (stop_if_failfast(), bad++ < 3))
             printf("  small save cut at %ld: %s\n", cut, g ? g : "(none)");
         free(g);
     }
@@ -1182,7 +1337,8 @@ static void test_log(void)
 
 int main(void)
 {
-    setvbuf(stdout, NULL, _IONBF, 0);  // a hang is reported by the alarm with _exit: nothing buffered may be lost
+    setvbuf(stdout, NULL, _IONBF, 0);
+    s_failfast = getenv("STORE_FAILFAST") != NULL;  // a hang is reported by the alarm with _exit: nothing buffered may be lost
     // Power cuts longjmp out of the store while it holds heap memory (a real one clears the RAM),
     // so the Makefile runs them in a second pass, STORE_CUTS=1, without leak detection.
     if (getenv("STORE_CUTS")) {
@@ -1190,12 +1346,15 @@ int main(void)
         test_power_cuts();
         test_write_failures();
         test_gc_write_failures();
+        test_boot_read_failures();
+        test_save_read_failures();
     } else {
         test_first_boot();
         test_set_get();
         test_revalidate_at_boot();
         test_listeners_and_state();
         test_certs_and_factory_reset();
+        test_factory_reset_fails();
         test_edge_save_and_read();
         test_edge_too_large();
         test_pinning();

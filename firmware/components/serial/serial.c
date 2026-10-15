@@ -41,7 +41,7 @@ typedef struct {
     SemaphoreHandle_t bus, txn_lock, txn_done;
     StaticSemaphore_t bus_mem, txn_lock_mem, txn_done_mem;
     volatile bool txn, txn_dropped;
-    bool tail;  // a broken answer's tail: RTU timing until t3.5 of silence ends the resync (txn_lock)
+    volatile bool tail;  // a broken answer's tail: RTU timing until t3.5 of silence ends the resync (txn_lock)
     uint8_t *txn_buf;
     size_t txn_max, txn_len;
     int txn_unit;
@@ -247,6 +247,16 @@ int serial_transact(int port, const uint8_t *req, size_t len, uint8_t *resp, siz
     // window, so a busy downlink delays a poll but never starves it.
     while (now_us() < ts_get(&p->reply_until_us))
         vTaskDelay(ticks(5));
+    // The tail of a broken answer runs until t3.5 of silence: a request sent into it would collide, or
+    // be answered by the tail. serial_rx[n] clears `tail` at its end; nothing else sets it while we
+    // hold the bus.
+    for (uint64_t until = now_us() + (uint64_t)timeout_ms * 1000u; p->tail;) {
+        if (now_us() >= until) {
+            xSemaphoreGive(p->bus);
+            return 0;
+        }
+        vTaskDelay(ticks(2));
+    }
     // A frame still arriving belongs to the subscribers: let it finish first.
     for (uint64_t since; since = rx_quiet_since(p), (now_us() - since) / 1000u < p->gap_ms + 1u;)
         vTaskDelay(ticks(p->gap_ms + 1u));
@@ -270,9 +280,10 @@ int serial_transact(int port, const uint8_t *req, size_t len, uint8_t *resp, siz
     p->txn = false;
     if (got == 0)
         got = p->txn_dropped ? SERIAL_DROPPED : (int)p->txn_len;
-    // The tail of a broken answer is dropped up to t3.5 of silence, however long it runs: the port stays
-    // in RTU timing until then, and serial_rx[n] switches it back (it ends the resync, under txn_lock).
-    bool tail = got == SERIAL_DROPPED && p->rx.resync;
+    // The tail of a broken answer (a violation, a line error, whatever the result) is dropped up to t3.5
+    // of silence, however long it runs: the port stays in RTU timing until then, and serial_rx[n]
+    // switches it back (it ends the resync, under txn_lock).
+    bool tail = p->rx.resync;
     p->tail = tail;
     xSemaphoreGive(p->txn_lock);
     if (!tail)

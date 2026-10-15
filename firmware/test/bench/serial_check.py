@@ -15,7 +15,8 @@ the bench console. Cases:
    halves 20 ms apart is dropped as a t1.5 violation by the board's own count; 60 ms apart (beyond
    t3.5) is two frames and no violation; the next good answer after a violation comes in; an answer
    from another slave goes to the subscribers; with packetInterval 1, a broken answer whose tail runs
-   past 200 ms and pauses under t3.5 sends no part of it to the subscribers;
+   past 200 ms and pauses under t3.5 sends no part of it to the subscribers; a transaction asked for in
+   that tail waits for it; a line error in a transaction that times out keeps the tail from them too;
 3. 60 s of continuous RX at 230 400 on UART1 while the LAN is flooded (the flood checked to have run):
    every byte counted, 0 overrun;
 4. a parity mismatch: frames dropped and counted as line errors, also with packetLength 1;
@@ -210,7 +211,7 @@ def case_modbus():
 
 def case_tail():
     check(setup((1200, 8, 2, 1), extra1={'packetInterval': 1}), 'set up 1200 8E1, packetInterval 1 on UART1')
-    long = '0400010002' + 'aa' * 40  # 45 bytes: 412 ms at 1200 8E1
+    long = '0400010002' + 'aa' * 110  # 115 bytes: 1.05 s at 1200 8E1
     console([(0.3, 'E2 2 20 0103|' + long + '|0213fb'), (0.9, 'F1')], 1.5)
     lines = console([(0.3, 'T1 010300000002c40b')], 2.5)
     time.sleep(0.5)
@@ -220,6 +221,28 @@ def case_tail():
     check(find(lines, r'T1 dropped: t1\.5 violation') is not None and n == 0 and n2 == 1 and b2 == 5,
           'a broken answer whose tail runs past 200 ms, then pauses under t3.5: no part reaches the subscribers (%s); '
           'then a frame does (%d bytes)' % (items, b2))
+    # A second transaction asked for inside that tail waits for its t3.5 of silence, then gets its answer.
+    good = '0103040001000213fb'
+    lines = console([(0.3, 'F1'), (0.45, 'F2'), (0.6, 'E2 2 20 0103|' + long + '|0213fb'), (1.0, 'T1 010300000002c40b'),
+                     (1.6, 'E2 2 0 ' + good), (1.9, 'T1 010300000002c40b')], 4.5)
+    answers = [l for l in lines if 'T1 ' in l]
+    n, b, items = frames(1)
+    n2, b2, items2 = frames(2)  # the peer: a request sent into the tail's pause collides with its last part
+    console([(0.3, 'E2 0')], 1)
+    check(len(answers) == 2 and 'dropped' in answers[0] and good in answers[1] and n == 0 and n2 == 2 and b2 == 16,
+          'a transaction asked for inside the tail waits for its end, then gets its answer (%s; subscribers %s; '
+          'the peer got %s)' % (answers, items, items2))
+    # A line error in a transaction that times out while the tail runs on: still nothing for the
+    # subscribers. UART1 7E1 against UART2 8N1: only UART1 sees parity errors (0x01: parity 0, not 1).
+    check(setup((1200, 7, 2, 1), (1200, 8, 0, 1), extra1={'packetInterval': 1}), 'set up UART1 1200 7E1 packetInterval 1, UART2 8N1')
+    c = counters(1)
+    lines = console([(0.3, 'F1'), (0.6, 'E2 2 20 01' + 'aa' * 115 + '|8182'), (1.0, 'T1 010300000002c40b')], 3.5)
+    n, b, items = frames(1)
+    console([(0.3, 'E2 0')], 1)
+    d = counters(1)
+    check(find(lines, r'T1 no answer') is not None and d['line'] > c['line'] and n == 0,
+          'a line error, then a tail past the timeout and a pause under t3.5: no answer, line errors +%d, '
+          'nothing for the subscribers (%s)' % (d['line'] - c['line'], items))
 
 
 def case_continuous():

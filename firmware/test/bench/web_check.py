@@ -251,10 +251,25 @@ CERT = (b'-----BEGIN CERTIFICATE-----\nMIIBMTCB2aADAgECAgkAluqkgeuV/zUwCgYIKoZIz
 KEY = b'-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIAVdo8UAScxG7jiuNY2UZESNX\n-----END EC PRIVATE KEY-----\n'
 
 
+def real_ca():
+    """A CA from mkpki.py (Plan 08b), made once into a temporary directory."""
+    import subprocess
+    import tempfile
+    d = tempfile.mkdtemp(prefix='sbiot-pki-')
+    subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'host', 'mkpki.py'), d,
+                    '--now'], check=True)
+    with open(os.path.join(d, 'ca.pem'), 'rb') as f:
+        return f.read()
+
+
 def case_misc():
     h = {'Content-Type': 'application/octet-stream'}
     s, _, d = req('POST', '/api/cert?scope=port2&kind=ca', body=CERT, headers=h)
-    check(s == 200 and json.loads(d).get('restartNeeded') is True, 'a PEM certificate stored for port2')
+    check(s == 400, 'a cut-off certificate: 400 (mbedTLS parses it, Plan 08b)')
+    s, _, d = req('POST', '/api/cert?scope=port2&kind=ca', body=real_ca(), headers=h)
+    info = json.loads(d) if s == 200 else {}
+    check(s == 200 and info.get('restartNeeded') is False and 'CN=SBIOT Test CA' in info.get('subject', ''),
+          'a real CA stored for port2: its subject, no restart for a port (%s)' % info)
     s, _, _ = req('POST', '/api/cert?scope=mqtt&kind=ca', body=KEY, headers=h)
     check(s == 400, 'a key as ca: 400')
     s, _, _ = req('POST', '/api/cert?scope=wifi&kind=ca', body=CERT, headers=h)

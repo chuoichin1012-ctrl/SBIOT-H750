@@ -325,6 +325,19 @@ static void note(char *err, size_t len, const char *cfg, const char *key)
     else if (k + 2 + strlen(key) < len) snprintf(err + k, len - k, ", %s", key);
 }
 
+/** The loader takes a value only of its field's own JSON type: no "1" for a bool, no true for a port (Codex r4). */
+static bool type_ok(const field_t *f, const cJSON *v)
+{
+    switch (f->type) {
+    case F_BOOL: return cJSON_IsBool(v);
+    case F_INT:
+    case F_NUM: return cJSON_IsNumber(v);
+    case F_STR:
+    case F_ENUM: return cJSON_IsString(v);
+    }
+    return false;
+}
+
 /** Copies `base` keeping only schema keys, then overlays validated fields from `in`. `lenient` (the loader,
  * Plan 09b T3): a field that fails keeps its base value and is noted, the others are used; never refused. */
 static cJSON *object(const cfg_env_t *env, const char *cfg, const field_t *fields, size_t n, const cJSON *in,
@@ -339,6 +352,11 @@ static cJSON *object(const cfg_env_t *env, const char *cfg, const field_t *field
             if (!cJSON_AddItemToObject(out, fields[i].key, copy)) cJSON_Delete(copy);  // the key copy failed
         }
         char why[160] = "";
+        const cJSON *v = lenient ? cJSON_GetObjectItemCaseSensitive(in, fields[i].key) : NULL;
+        if (v && !type_ok(&fields[i], v)) {
+            note(err, errlen, cfg, fields[i].key);
+            continue;
+        }
         if (!take(env, cfg, &fields[i], in, out, lenient ? why : err, lenient ? sizeof why : errlen)) {
             if (lenient) {
                 note(err, errlen, cfg, fields[i].key);

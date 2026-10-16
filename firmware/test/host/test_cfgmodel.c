@@ -422,6 +422,35 @@ static void test_load_field_by_field(void)
               num_of(cJSON_GetArrayItem(o, 0), "qos") == 0,
           "an entry that is not an object is skipped; a wrong field in an entry takes its default");
     cJSON_Delete(o);
+    // A value of the wrong JSON type takes its default, even one cfg_validate would coerce (Codex r4).
+    cJSON *ed = cfg_default(&ENV, "edge"), *sd = cfg_default(&ENV, "system"), *md = cfg_default(&ENV, "mqtt");
+    o = load("edge", "{\"enabled\":2}", err, sizeof err);
+    CHECK(o && cJSON_IsBool(cJSON_GetObjectItem(o, "enabled")) &&
+              cJSON_IsTrue(cJSON_GetObjectItem(o, "enabled")) == cJSON_IsTrue(cJSON_GetObjectItem(ed, "enabled")) && strstr(err, "enabled"),
+          "a bool given a number: its default, noted (%s)", err);
+    cJSON_Delete(o);
+    o = load("system", "{\"webPort\":true,\"websocketPort\":\"6000\"}", err, sizeof err);
+    CHECK(o && num_of(o, "webPort") == num_of(sd, "webPort") && num_of(o, "websocketPort") == num_of(sd, "websocketPort") &&
+              strstr(err, "webPort") && strstr(err, "websocketPort"),
+          "an integer given a bool or a numeric string: its default, noted (%s)", err);
+    cJSON_Delete(o);
+    o = load("mqtt", "{\"cleanSession\":\"garbage\"}", err, sizeof err);
+    CHECK(o && cJSON_IsTrue(cJSON_GetObjectItem(o, "cleanSession")) == cJSON_IsTrue(cJSON_GetObjectItem(md, "cleanSession")) &&
+              strstr(err, "cleanSession"),
+          "a bool given a string: its default, noted (%s)", err);
+    cJSON_Delete(o), cJSON_Delete(ed), cJSON_Delete(sd), cJSON_Delete(md);
+    // every default loads as it is, with no note: no default relies on a coercion
+    const char *names[16];
+    size_t nn = cfg_names(&ENV, names, 16);
+    for (size_t i = 0; i < nn; i++) {
+        if (!strcmp(names[i], "edgeDevices"))
+            continue;
+        cJSON *dd = cfg_default(&ENV, names[i]);
+        err[0] = '\0';
+        cJSON *lo = cfg_load(&ENV, names[i], dd, err, sizeof err);
+        CHECK(lo && !err[0], "%s: its default loads with no note (%s)", names[i], err);
+        cJSON_Delete(lo), cJSON_Delete(dd);
+    }
     // the save-time check (cfg_validate) is unchanged: it still refuses the same port1
     cJSON *in = cJSON_Parse(json);
     CHECK(!cfg_validate(&ENV, "port1", in, NULL, err, sizeof err), "cfg_validate still refuses it (the oracle of the tests)");

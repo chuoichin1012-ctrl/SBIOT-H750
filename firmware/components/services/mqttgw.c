@@ -109,13 +109,20 @@ static void set_state(const char *s)
     taskEXIT_CRITICAL();
 }
 
-/** False when not taken in time (never expected: no holder waits); the caller then does nothing (Codex code review). */
+// No holder of the mutex ever waits on anything, so a timeout means a bug. Other tasks then give up and do nothing;
+// `mqtt` waits on, logging, because giving up half-way through its exchanges would leave coreMQTT's state and the
+// outbox's apart (Codex code review r2).
 static bool lock(void)
 {
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(LOCK_MS)) == pdTRUE)
         return true;
     SLOG_E("mqtt", "the outbox stayed locked for %u ms", (unsigned)LOCK_MS);
     return false;
+}
+static void lock_wait(void)
+{
+    while (!lock()) {
+    }
 }
 static void unlock(void) { xSemaphoreGive(s_lock); }
 
@@ -570,7 +577,7 @@ void mqttgw_start(const cJSON *sys)
     // Once for the whole run: MQTT_Init resets the packet ids (Codex plan r1).
     MQTT_Init(&s_ctx, &t, now_ms, on_event, &fb);
     MQTT_InitStatefulQoS(&s_ctx, s_out_rec, OB_MAX_IN_FLIGHT, s_in_rec, OB_MAX_IN_FLIGHT);
-    s_sess = (mqtt_sess_t){.ctx = &s_ctx, .ob = &s_ob, .subs = &s_subs, .lock = lock, .unlock = unlock, .now_ms = now_ms};
+    s_sess = (mqtt_sess_t){.ctx = &s_ctx, .ob = &s_ob, .subs = &s_subs, .lock = lock_wait, .unlock = unlock, .now_ms = now_ms};
     s_running = true;
     set_state("CONNECTING");
     static StaticTask_t mtcb, itcb;

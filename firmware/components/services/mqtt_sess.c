@@ -4,11 +4,20 @@
 
 #define FEED_BURST 8  // publishes per ms_feed: the loop then reads, and the task rests now and then (Codex code review)
 
-/** The next packet id no message waiting for an ack holds: coreMQTT's counter wraps at 65535 without looking. */
+static bool sub_waits(const mqtt_sess_t *s, uint16_t id)
+{
+    for (int i = 0; i < s->nsub_wait; i++)
+        if (s->sub_wait[i] == id)
+            return true;
+    return false;
+}
+
+/** The next packet id nothing waiting for an ack holds (a message, or a SUBSCRIBE): coreMQTT's counter wraps at 65535
+ * without looking (MQTT 3.1.1 §2.3.1, Codex code review). */
 static uint16_t next_id(mqtt_sess_t *s)
 {
     uint16_t id = MQTT_GetPacketId(s->ctx);
-    for (int k = 0; k < OB_MAX_IN_FLIGHT && ob_id_used(s->ob, id); k++)
+    for (int k = 0; k <= OB_MAX_IN_FLIGHT + SUBS_MAX && (ob_id_used(s->ob, id) || sub_waits(s, id)); k++)
         id = MQTT_GetPacketId(s->ctx);
     return id;
 }
@@ -23,8 +32,7 @@ static MQTTStatus_t publish(mqtt_sess_t *s, ob_msg_t *m, bool dup)
     if (m->qos && dup)
         id = m->id;
     else if (m->qos) {
-        if (!s->lock())
-            return MQTTIllegalState;
+        s->lock();
         id = next_id(s);
         s->unlock();
     }
@@ -33,8 +41,7 @@ static MQTTStatus_t publish(mqtt_sess_t *s, ob_msg_t *m, bool dup)
         return r;  // a resend keeps its state and id either way
     if (r != MQTTSuccess && r != MQTTSendFailed && r != MQTTBadParameter)
         return r;  // nothing went out (no memory, a state collision): it stays QUEUED, the connection is made again
-    if (!s->lock())
-        return MQTTIllegalState;
+    s->lock();
     if (r == MQTTBadParameter)
         ob_sent(s->ob, m, 0), m->state = OB_DEAD;  // a message coreMQTT refuses (bad topic): never again
     else
@@ -45,15 +52,14 @@ static MQTTStatus_t publish(mqtt_sess_t *s, ob_msg_t *m, bool dup)
 
 MQTTStatus_t ms_resume(mqtt_sess_t *s, bool kept)
 {
-    if (!s->lock())
-        return MQTTIllegalState;
+    s->lock();
     ob_session(s->ob, kept, s->now_ms());
     subs_session(s->subs);
+    s->nsub_wait = 0;  // a SUBSCRIBE is never resent: its id ended with the connection
     s->unlock();
     MQTTStatus_t r = MQTTSuccess;
     for (ob_msg_t *m = NULL; kept && r == MQTTSuccess;) {
-        if (!s->lock())
-            return MQTTIllegalState;
+        s->lock();
         m = ob_next_resend(s->ob, m);
         s->unlock();
         if (!m)
@@ -67,8 +73,7 @@ MQTTStatus_t ms_resume(mqtt_sess_t *s, bool kept)
 MQTTStatus_t ms_feed(mqtt_sess_t *s)
 {
     for (int k = 0; k < FEED_BURST; k++) {
-        if (!s->lock())
-            return MQTTIllegalState;
+        s->lock();
         ob_msg_t *m = ob_in_flight(s->ob) < OB_MAX_IN_FLIGHT ? ob_next_queued(s->ob, s->now_ms()) : NULL;
         s->unlock();
         if (!m)
@@ -83,8 +88,7 @@ MQTTStatus_t ms_feed(mqtt_sess_t *s)
 MQTTStatus_t ms_subscribe(mqtt_sess_t *s)
 {
     for (;;) {
-        if (!s->lock())
-            return MQTTIllegalState;
+        s->lock();
         sub_t *e = subs_next(s->subs), copy;
         if (e)
             copy = *e;
@@ -93,27 +97,36 @@ MQTTStatus_t ms_subscribe(mqtt_sess_t *s)
             return MQTTSuccess;
         MQTTSubscribeInfo_t si = {.qos = (MQTTQoS_t)copy.qos, .pTopicFilter = copy.topic,
                                   .topicFilterLength = (uint16_t)strlen(copy.topic)};
-        if (!s->lock())
-            return MQTTIllegalState;
+        s->lock();
         uint16_t id = next_id(s);
         s->unlock();
         MQTTStatus_t r = MQTT_Subscribe(s->ctx, &si, 1, id);
         if (r != MQTTSuccess)
             return r;
-        if (!s->lock())
-            return MQTTIllegalState;
+        s->lock();
         e->done = true;  // entries are only ever added: e is still this one
+        if (s->nsub_wait < SUBS_MAX)
+            s->sub_wait[s->nsub_wait++] = id;
         s->unlock();
     }
 }
 
 void ms_ack(mqtt_sess_t *s, uint8_t packet_type, uint16_t id)
 {
+    if (packet_type == MQTT_PACKET_TYPE_SUBACK) {
+        s->lock();
+        for (int i = 0; i < s->nsub_wait; i++)
+            if (s->sub_wait[i] == id)
+                s->sub_wait[i] = s->sub_wait[--s->nsub_wait];
+        s->unlock();
+        return;
+    }
     int t = packet_type == MQTT_PACKET_TYPE_PUBACK ? OB_PUBACK : packet_type == MQTT_PACKET_TYPE_PUBREC ? OB_PUBREC
             : packet_type == MQTT_PACKET_TYPE_PUBCOMP                                                   ? OB_PUBCOMP
                                                                                                         : -1;
-    if (t < 0 || !s->lock())
-        return;  // an ack not recorded: the message is resent on the next connect, and acked again
+    if (t < 0)
+        return;
+    s->lock();
     ob_ack(s->ob, id, t);
     s->unlock();
 }

@@ -55,6 +55,7 @@ typedef struct {
     int fd;
     bool session_present;
     int drop;               // what this connection does
+    bool hold_suback;       // SUBSCRIBEs are never answered
     // across connections: the broker's session (QoS 2 ids received, not yet released)
     uint16_t held[64];
     int nheld;
@@ -70,6 +71,8 @@ typedef struct {
     uint8_t acks[16];
     int nacks;
     bool closed;
+    uint16_t sub_ids[8];
+    int nsubs;
     pthread_t th;
 } broker_t;
 
@@ -210,7 +213,10 @@ static void *broker_run(void *arg)
                 ack(b->fd, 0x62, (uint16_t)(body[0] << 8 | body[1]));  // PUBREL
         } else if (type == 8) {  // SUBSCRIBE
             uint8_t sa[5] = {0x90, 3, body[0], body[1], 0};
-            wr(b->fd, sa, 5);
+            if (b->nsubs < 8)
+                b->sub_ids[b->nsubs++] = (uint16_t)(body[0] << 8 | body[1]);
+            if (!b->hold_suback)
+                wr(b->fd, sa, 5);
         } else if (type == 12) {
             uint8_t pr[2] = {0xD0, 0};
             wr(b->fd, pr, 2);
@@ -254,8 +260,7 @@ static int p_wait(void *c, bool write, uint32_t ms)
     return select(fd + 1, write ? NULL : &s, write ? &s : NULL, NULL, &tv);
 }
 static void p_tick(void) { usleep(1000); }
-static bool s_lock_fails;
-static bool lock(void) { return !s_lock_fails; }
+static void lock(void) {}
 static void unlock(void) {}
 
 // ---- one client for the whole test, as the board's ----------------------------------------------------
@@ -471,22 +476,6 @@ static void test_mid_publish(void)
     }
 }
 
-static void test_lock_fails(void)
-{
-    broker_t b = {0};
-    bool kept;
-    connect_to(&b, true, &kept);
-    push_m(44, 1);
-    s_lock_fails = true;
-    MQTTStatus_t r = ms_feed(&s_sess);
-    s_lock_fails = false;
-    CHECK(r != MQTTSuccess && ob_next_queued(&s_ob, now_ms()), "the mutex not taken: nothing done, the message stays queued (%s)",
-          MQTT_Status_strerror(r));
-    run(&b, 800);
-    disconnect(&b);
-    CHECK(b.delivered[44] == 1 && ob_used(&s_ob) == 0, "then sent once the mutex is free");
-}
-
 static void test_id_wrap(void)
 {
     broker_t b = {.drop = HOLD_ACKS};
@@ -502,6 +491,29 @@ static void test_id_wrap(void)
     CHECK(b.npub == 2 && b.ids[1] != held && b.delivered[46], "a wrapped packet id skips the one in use (%u, %u)", held,
           b.npub > 1 ? b.ids[1] : 0);
     b.drop = DROP_NONE;
+    connect_to(&b, true, &kept);
+    run(&b, 800);
+    disconnect(&b);
+    CHECK(ob_used(&s_ob) == 0, "the outbox empty");
+}
+
+static void test_sub_wrap(void)
+{
+    broker_t b = {.hold_suback = true};
+    bool kept;
+    subs_t saved = s_subs;
+    subs_add(&s_subs, "cmd/#", 1, 7);
+    connect_to(&b, true, &kept);  // subscribes; the SUBACK never comes
+    run(&b, 200);
+    uint16_t sid = b.nsubs ? b.sub_ids[0] : 0;
+    s_ctx.nextPacketId = sid;  // the counter wrapped onto it
+    push_m(47, 1);
+    run(&b, 500);
+    disconnect(&b);
+    CHECK(sid && b.npub == 1 && b.ids[0] != sid, "a packet id skips a SUBSCRIBE still waiting for its SUBACK (%u, %u)", sid,
+          b.npub ? b.ids[0] : 0);
+    s_subs = saved;
+    b = (broker_t){0};
     connect_to(&b, true, &kept);
     run(&b, 800);
     disconnect(&b);
@@ -540,8 +552,8 @@ int main(void)
     test_window();
     test_big_and_ids();
     test_mid_publish();
-    test_lock_fails();
     test_id_wrap();
+    test_sub_wrap();
     test_oversized();
     printf("test_mqtt_session: %s\n", failures ? "FAILED" : "ok");
     return failures ? 1 : 0;

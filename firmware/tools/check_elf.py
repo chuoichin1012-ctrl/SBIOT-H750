@@ -48,7 +48,7 @@ SRAM4 = (0x38000000, 0x38010000)
 APP_SRAM4 = ['s_up_mem', 's_down_mem']
 # The only callers of coreMQTT (spec §6.4, Plan 09): the `mqtt` task's functions and mqtt_sess, which it runs;
 # mqttgw_start initialises the context once, before the task exists.
-MQTT_CALLERS = {'mqttgw_start', 'mqtt_task', 'dial', 'publish', 'ms_resume', 'ms_feed', 'ms_subscribe'}
+MQTT_CALLERS = {'mqttgw_start', 'mqtt_task', 'dial', 'publish', 'next_id', 'ms_resume', 'ms_feed', 'ms_subscribe'}
 # newlib's close/fcntl on an lwIP socket would leak it (LWIP_POSIX_SOCKETS_IO_NAMES 0, Plan 08a).
 APP_NO_LIBC_IO = ['close', 'fcntl']  # _close is syscalls.c's stub, always there
 # The JSON arena, the Edge and certificate body and the web stack: static, in AXI (spec §5.3, Plan 06b).

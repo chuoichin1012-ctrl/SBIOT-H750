@@ -41,6 +41,8 @@
 
 @layer base {
   html { background: var(--color-canvas); color: var(--color-ink); }
+  /* A field scrolled into view (Tab, an error) stops above the sticky save bar, not under it. */
+  html { scroll-padding-top: 4rem; scroll-padding-bottom: 5rem; }
   body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; }
   :focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
   input, select, textarea { font: inherit; }

@@ -486,9 +486,10 @@ cJSON *store_get(const char *name)
     cJSON *in = i >= 0 ? cJSON_ParseWithLength(s_pool + s_cache[i].off, s_cache[i].len) : NULL;
     UNLOCK();
     char err[160] = "";
-    cJSON *doc = in ? cfg_load(&s_env, name, in, err, sizeof err) : NULL;  // the loader: keys filled, rules checked
-    if (in && !doc && err[0])
-        store_port_log("%s: %s", name, err);
+    // The loader (Plan 09b T3): field by field, a wrong field takes its default; the note names them.
+    cJSON *doc = in ? cfg_load(&s_env, name, in, err, sizeof err) : NULL;
+    if (in && err[0])
+        store_port_log("%s", err);
     cJSON_Delete(in);
     return doc;
 }

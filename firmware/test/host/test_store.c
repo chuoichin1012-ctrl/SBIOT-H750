@@ -362,7 +362,9 @@ static void test_set_get(void)
     BALANCED("rejected sets");
 
     cJSON *tree = store_get("system");
-    CHECK(!tree, "store_get refuses a stored system with an empty password (the loader's check)");
+    const char *pw = tree ? cJSON_GetStringValue(cJSON_GetObjectItem(tree, "password")) : NULL;
+    CHECK(pw && !*pw, "store_get runs the stored system as given, an empty password too (Plan 09b T3)");
+    cJSON_Delete(tree);
     CHECK(store_set_text("system", in, strlen(in), err, sizeof err) == STORE_OK, "a valid system again (%s)", err);
     tree = store_get("system");
     CHECK(tree && cJSON_IsString(cJSON_GetObjectItem(tree, "hostname")) && cJSON_GetObjectItem(tree, "username"),
@@ -501,6 +503,53 @@ static void test_certs_and_factory_reset(void)
     free(edef);
     reboot();
     CHECK(edge_keys("ed.") == 0, "no edge records left");  // the log is checked in test_log
+}
+
+// ---- Plan 09b T3: configs saved by the previous firmware ------------------------------------------
+
+static bool count_dev(void *ctx, const cJSON *dev, int index) { (void)dev, (void)index; ((int *)ctx)[0]++; return true; }
+static bool count_node(void *ctx, const cJSON *node, int dev) { (void)node, (void)dev; ((int *)ctx)[1]++; return true; }
+static bool grow(void *ctx, const char *t, size_t n)
+{
+    char **b = ctx;
+    size_t k = *b ? strlen(*b) : 0;
+    *b = realloc(*b, k + n + 1);
+    memcpy(*b + k, t, n);
+    (*b)[k + n] = '\0';
+    return true;
+}
+
+static void test_previous_firmware(void)
+{
+    flash_new(37);
+    reboot();
+    // What the previous save path stored: cfg_validate_text's normalised text, every field filled.
+    char old[CFG_SMALL_BUF], err[200];
+    cJSON *cur = cfg_default(&ENV, "mqtt");
+    const char *body = "{\"enabled\":1,\"host\":\"broker.example\",\"port\":1884,\"keepAlive\":45}";
+    CHECK(cfg_validate_text(&ENV, "mqtt", body, strlen(body), cur, old, sizeof old, err, sizeof err) == CFG_OK, "oracle: %s", err);
+    cJSON_Delete(cur);
+    raw_put("cfg", "mqtt", old);
+    char *got = store_get_json("mqtt");
+    CHECK(got && !strcmp(got, old), "GET returns the previous firmware's bytes");
+    free(got);
+    cJSON *doc = store_get("mqtt");
+    char *printed = doc ? cJSON_PrintUnformatted(doc) : NULL;
+    CHECK(printed && !strcmp(printed, old), "and the runtime gets every value as stored");
+    free(printed), cJSON_Delete(doc);
+    // Its Edge model: cfg_edge_text's normalised output, cut by byte into 8 KB records.
+    char *m = edge_model(20, 5, 7), *norm = NULL;
+    CHECK(cfg_edge_text(&ENV, m, strlen(m), true, CFG_EDGE_MAX, grow, &norm, err, sizeof err) == CFG_OK, "oracle: %s", err);
+    CHECK(norm && store_edge_save(norm, strlen(norm), err, sizeof err) == STORE_OK, "stored (%s)", err);
+    reboot();
+    char *e = edge_now();
+    CHECK(e && norm && !strcmp(e, norm), "GET of the model returns its bytes");
+    int counts[2] = {0, 0};
+    CHECK(e && cfg_edge_load(&ENV, e, strlen(e), count_dev, count_node, counts, err, sizeof err) == CFG_OK && counts[0] == 20 &&
+              counts[1] == 100,
+          "the boot loads it as before: %d devices, %d points (%s)", counts[0], counts[1], err);
+    free(e), free(norm), free(m);
+    BALANCED("previous firmware");
 }
 
 // ---- Plan 09b T1: the defaults in FlashDB, the factory reset ----------------------------------
@@ -1660,6 +1709,7 @@ int main(void)
         test_state_read_failures();
         test_certs_and_factory_reset();
         test_factory_reset_fails();
+        test_previous_firmware();
         test_defaults_stored();
         test_reset_blocks_and_restarts();
         test_reset_read_back();

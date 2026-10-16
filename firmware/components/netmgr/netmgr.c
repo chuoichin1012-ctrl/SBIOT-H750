@@ -8,6 +8,12 @@
 #include "lwip/ip4_addr.h"
 #include "lwip/memp.h"
 #include "lwip/netif.h"
+#include "inet.h"
+#include "lwip/inet_chksum.h"
+#include "lwip/prot/icmp.h"
+#include "lwip/prot/ip4.h"
+#include "lwip/raw.h"
+#include "lwip/timeouts.h"
 #include "lwip/priv/tcp_priv.h"  // tcp_active_pcbs: the aborts on a route change (Plan 10 ruling 6)
 #include "lwip/stats.h"
 #include "lwip/tcpip.h"
@@ -89,9 +95,109 @@ static void abort_others(struct netif *keep)
         blog("net: %d connections on the old link closed\r\n", n);
 }
 
+// ---- the Internet check per link (ruling 14): ICMP echo to 8.8.8.8 and 1.1.1.1 every 30 s, on each link --------
+
+#define PROBE_MS 30000
+#define PROBE_WAIT_MS 2000
+#define PROBE_ID 0x5B10
+static struct raw_pcb *s_probe;
+static inet_t s_inet[2];          // 0 Ethernet, 1 the cell
+static bool s_probed[2], s_replied[2];
+static uint16_t s_probe_round;
+static const uint32_t k_targets[2] = {0x08080808u, 0x01010101u};
+
+static u8_t probe_recv(void *arg, struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *addr)
+{
+    (void)arg;
+    (void)pcb;
+    (void)addr;
+    struct ip_hdr ih;
+    struct icmp_echo_hdr e;
+    if (pbuf_copy_partial(p, &ih, sizeof ih, 0) != sizeof ih)
+        return 0;
+    u16_t hl = (u16_t)IPH_HL_BYTES(&ih);
+    if (pbuf_copy_partial(p, &e, sizeof e, hl) != sizeof e || e.type != ICMP_ER || lwip_ntohs(e.id) != PROBE_ID)
+        return 0;  // not ours: lwIP goes on with it
+    u16_t seq = lwip_ntohs(e.seqno);
+    if ((seq >> 2) == (s_probe_round & 0x3FFF))
+        s_replied[(seq >> 1) & 1] = true;
+    pbuf_free(p);
+    return 1;
+}
+
+static void probe_send(int link, struct netif *nif, int target)
+{
+    struct pbuf *p = pbuf_alloc(PBUF_IP, (u16_t)(sizeof(struct icmp_echo_hdr) + 8), PBUF_RAM);
+    if (!p)
+        return;
+    struct icmp_echo_hdr *e = p->payload;
+    memset(e, 0, p->len);
+    e->type = ICMP_ECHO;
+    e->id = lwip_htons(PROBE_ID);
+    e->seqno = lwip_htons((u16_t)((s_probe_round & 0x3FFF) << 2 | link << 1 | target));
+    e->chksum = inet_chksum(e, p->len);
+    ip_addr_t dst;
+    ip_addr_set_ip4_u32_val(dst, lwip_htonl(k_targets[target]));
+    raw_sendto_if_src(s_probe, p, &dst, nif, netif_ip_addr4(nif));  // through this link, from its own address
+    pbuf_free(p);
+}
+
+static void route_check(void);
+
+static void probe_judge(void *arg)
+{
+    (void)arg;
+    for (int l = 0; l < 2; l++) {
+        bool was = s_inet[l].ok;
+        if (s_probed[l])
+            inet_result(&s_inet[l], s_replied[l]);
+        else
+            inet_init(&s_inet[l]);  // no address: taken to have Internet again once it gets one
+        if (was != s_inet[l].ok)
+            blog("net: %s %s Internet\r\n", l ? "LTE" : "Ethernet", s_inet[l].ok ? "has" : "has no");
+    }
+    route_check();
+}
+
+static void probe_round(void *arg)
+{
+    (void)arg;
+    s_probe_round++;
+    s_probed[0] = eth_ok();
+    s_probed[1] = s_cell_up && s_cell;
+    s_replied[0] = s_replied[1] = false;
+    for (int t = 0; t < 2; t++) {
+        if (s_probed[0])
+            probe_send(0, &s_netif, t);
+        if (s_probed[1])
+            probe_send(1, s_cell, t);
+    }
+    sys_timeout(PROBE_WAIT_MS, probe_judge, NULL);
+    sys_timeout(PROBE_MS, probe_round, NULL);
+}
+
+static void probe_start(void)
+{
+    inet_init(&s_inet[0]);
+    inet_init(&s_inet[1]);
+    s_probe = raw_new(IP_PROTO_ICMP);
+    if (!s_probe)
+        return;
+    raw_recv(s_probe, probe_recv, NULL);
+    sys_timeout(PROBE_MS, probe_round, NULL);
+}
+
+void netmgr_internet(bool *eth, bool *cell)
+{
+    LOCK_TCPIP_CORE();
+    *eth = eth_ok() && s_inet[0].ok;
+    *cell = s_cell_up && s_inet[1].ok;
+    UNLOCK_TCPIP_CORE();
+}
+
 static void route_check(void)
 {
-    net_route_t r = netcfg_pick(s_cfg.priority, eth_ok(), s_cell_up);
+    net_route_t r = netcfg_pick_inet(s_cfg.priority, eth_ok(), s_inet[0].ok, s_cell_up, s_inet[1].ok);
     struct netif *want = r == NET_ROUTE_ETH ? &s_netif : r == NET_ROUTE_CELL ? s_cell : NULL;
     if (r != s_route) {
         s_route = r;
@@ -160,6 +266,7 @@ static void tcpip_ready(void *arg)
     netif_set_status_callback(&s_netif, eth_changed);  // an address (DHCP, static)
     netif_set_link_callback(&s_netif, eth_changed);    // the link (eth_drv's poll)
     netif_set_default(&s_netif);
+    probe_start();
     netif_set_up(&s_netif);
     if (s_cfg.dhcp && dhcp_start(&s_netif) != ERR_OK)
         s_result = -2;

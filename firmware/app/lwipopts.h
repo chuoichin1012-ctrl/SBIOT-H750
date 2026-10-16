@@ -45,7 +45,7 @@ void *netmgr_static_thread(void (*fn)(void *), const char *name, unsigned words,
 #define MEMP_NUM_IGMP_GROUP 8
 #define MEMP_NUM_REASSDATA 4
 #define MEMP_NUM_FRAG_PBUF 16
-#define MEMP_NUM_SYS_TIMEOUT (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 4)
+#define MEMP_NUM_SYS_TIMEOUT (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 6)  // + netmgr's Internet check (2), Plan 10
 #define PBUF_POOL_SIZE 16  // PPPoS input only (Plan 09): ETH RX has its own pool
 #define PBUF_POOL_BUFSIZE 512
 #define ARP_TABLE_SIZE 16

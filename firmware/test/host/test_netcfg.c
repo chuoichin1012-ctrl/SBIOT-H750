@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "cJSON.h"
+#include "inet.h"
 #include "netcfg.h"
 #include "sha256.h"
 
@@ -136,6 +137,44 @@ static void test_pick(void)
           "2: LTE first");
 }
 
+static void test_inet(void)
+{
+    inet_t s;
+    inet_init(&s);
+    CHECK(s.ok, "Internet at the start");
+    inet_result(&s, false);
+    inet_result(&s, false);
+    CHECK(s.ok, "still Internet after 2 misses");
+    inet_result(&s, false);
+    CHECK(!s.ok, "no Internet at the 3rd");
+    inet_result(&s, false);
+    CHECK(!s.ok, "and after more");
+    inet_result(&s, true);
+    CHECK(s.ok && s.misses == 0, "back after one reply");
+    inet_result(&s, false);
+    inet_result(&s, true);
+    inet_result(&s, false);
+    inet_result(&s, false);
+    CHECK(s.ok, "misses count in a row only");
+}
+
+static void test_pick_inet(void)
+{
+    // priority 1: Ethernet first
+    CHECK(netcfg_pick_inet(1, true, false, true, true) == NET_ROUTE_CELL, "1: Ethernet without Internet, LTE with: LTE");
+    CHECK(netcfg_pick_inet(1, true, false, true, false) == NET_ROUTE_ETH, "1: neither has Internet: by address, Ethernet");
+    CHECK(netcfg_pick_inet(1, true, false, false, true) == NET_ROUTE_ETH, "1: LTE without an address: Ethernet");
+    CHECK(netcfg_pick_inet(1, true, true, true, true) == NET_ROUTE_ETH, "1: both well: Ethernet");
+    CHECK(netcfg_pick_inet(1, false, true, true, false) == NET_ROUTE_CELL, "1: Ethernet without an address: LTE, Internet or not");
+    // priority 2, mirrored
+    CHECK(netcfg_pick_inet(2, true, true, true, false) == NET_ROUTE_ETH, "2: LTE without Internet, Ethernet with: Ethernet");
+    CHECK(netcfg_pick_inet(2, true, false, true, false) == NET_ROUTE_CELL, "2: neither: by address, LTE");
+    CHECK(netcfg_pick_inet(2, false, true, true, false) == NET_ROUTE_CELL, "2: Ethernet without an address: LTE");
+    // priority 0: Ethernet only
+    CHECK(netcfg_pick_inet(0, true, false, true, true) == NET_ROUTE_ETH && netcfg_pick_inet(0, false, true, true, true) == NET_ROUTE_NONE,
+          "0: Ethernet only");
+}
+
 static net_dns_t s_d;
 static uint32_t s_globals[2];
 static net_route_t s_route;
@@ -208,6 +247,8 @@ int main(void)
     test_cell_fields();
     test_pick();
     test_dns();
+    test_inet();
+    test_pick_inet();
     printf("test_netcfg: %s\n", failures ? "FAILED" : "ok");
     return failures ? 1 : 0;
 }

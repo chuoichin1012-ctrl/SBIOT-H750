@@ -167,6 +167,9 @@ static void status_get(struct mg_connection *c)
     add_ip(eth, "gateway", ns.gw);
     add_ip(eth, "dns1", ns.dns1);
     add_ip(eth, "dns2", ns.dns2);
+    bool inet_eth, inet_cell;
+    netmgr_internet(&inet_eth, &inet_cell);
+    cJSON_AddBoolToObject(eth, "internet", inet_eth);
     cJSON *cell = cJSON_AddObjectToObject(o, "cell");  // LTE (Plan 10 ruling 8)
     cJSON_AddStringToObject(cell, "iccid", li.iccid);
     add_ip_or_empty(cell, "ip", li.ip);
@@ -175,6 +178,7 @@ static void status_get(struct mg_connection *c)
     cJSON_AddNumberToObject(cell, "signal", li.csq);
     cJSON_AddStringToObject(cell, "netType", li.net_type);
     cJSON_AddStringToObject(cell, "state", li.state);
+    cJSON_AddBoolToObject(cell, "internet", inet_cell);
     cJSON_AddStringToObject(cell, "modem", li.modem);
     cJSON_AddStringToObject(cell, "mux", li.mux);
     cJSON_AddStringToObject(cell, "sim", li.sim);

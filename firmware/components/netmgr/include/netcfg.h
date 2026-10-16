@@ -25,6 +25,9 @@ typedef struct {
 typedef enum { NET_ROUTE_NONE, NET_ROUTE_ETH, NET_ROUTE_CELL } net_route_t;
 /** The default route for network.priority and the links that hold an address. */
 net_route_t netcfg_pick(int priority, bool eth_ok, bool cell_ok);
+/** As netcfg_pick, with the Internet check (Plan 10 ruling 14): a link with an address but no Internet is left
+ *  only for the other one when that one has both; when neither has Internet, by address alone. */
+net_route_t netcfg_pick_inet(int priority, bool eth_ok, bool eth_inet, bool cell_ok, bool cell_inet);
 
 /** Each link's DNS servers from their own sources (Plan 10 ruling 5): the config when manual, otherwise the
  *  DHCP lease's (Ethernet) or the ones PPP negotiated (the cell); 0 for none. */

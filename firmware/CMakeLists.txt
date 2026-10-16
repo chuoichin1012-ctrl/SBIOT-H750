@@ -115,7 +115,7 @@ set(APP_OWN
   ${BOARD}/board_io.c ${BOARD}/now_us.c ${BOARD}/tick64.c ${BOARD}/wdog.c ${BOARD}/blog.c ${BOARD}/crc32.c
   ${BOARD}/syscalls.c ${BOARD}/spi_nor.c ${OTA}/sha256.c ${OTA}/ota_image.c ${OTA}/ota_app.c ${OTA}/bind.c
   app/store_port.c ${STORE}/store.c ${STORE}/fal_nor.c ${CMAKE_SOURCE_DIR}/components/syslog/syslog.c ${CFGM}/cfgmodel.c ${PROTO}/ipacl.c ${PROTO}/jsonscan.c
-  ${BOARD}/board_rng.c ${BOARD}/rng_core.c ${NET}/ip101.c ${NET}/netcfg.c ${NET}/eth_drv.c ${NET}/netmgr.c ${NET}/lte.c ${NET}/lte_uart.c ${NET}/lte_power.c ${PROTO}/cmux.c ${PROTO}/at_parse.c app/fdset_check.c
+  ${BOARD}/board_rng.c ${BOARD}/rng_core.c ${NET}/ip101.c ${NET}/netcfg.c ${NET}/eth_drv.c ${NET}/netmgr.c ${NET}/lte.c ${NET}/lte_uart.c ${NET}/lte_power.c ${NET}/inet.c ${PROTO}/cmux.c ${PROTO}/at_parse.c app/fdset_check.c
   ${SYS}/clock.c ${SYS}/sysmgr.c ${WEB}/web_core.c ${WEB}/web.c ${WEB}/api.c ${WEB}/console.c ${WEB}/mg_port.c
   ${CMAKE_SOURCE_DIR}/components/arena/arena.c
   ${SER}/serial_frame.c ${SER}/uart_drv.c ${SER}/serial.c

@@ -161,7 +161,7 @@ $(BUILD)/test_ip101: test_ip101.c $(NET)/ip101.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -I$(NET)/include $^ -o $@
 
-$(BUILD)/test_netcfg: test_netcfg.c $(NET)/netcfg.c ../../components/ota/sha256.c $(CJSON)/cJSON.c
+$(BUILD)/test_netcfg: test_netcfg.c $(NET)/netcfg.c $(NET)/inet.c ../../components/ota/sha256.c $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -I$(NET)/include $^ -lm -o $@
 

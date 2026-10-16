@@ -564,7 +564,11 @@ Quy tắc riêng của bản STM32:
   - 2: ưu tiên LTE.
 
   Default route chuyển sang link kia khi link đang ưu tiên mất địa chỉ (`netmgr.c:34`).
-  - **Giới hạn, giữ như ESP32:** firmware không phát hiện trường hợp mất Internet trong khi link vẫn còn địa chỉ.
+  - **Kiểm Internet theo từng link** (Plan 10 ruling 14, thay cho giới hạn của bản ESP32):
+    - timer lwIP trong thread `tcpip`, mỗi 30 s gửi ICMP echo tới 8.8.8.8 và 1.1.1.1 qua đúng từng link (`raw_sendto_if_src`, địa chỉ của chính link đó);
+    - một trong hai trả lời trong 2 s là có Internet; 3 vòng liên tiếp không trả lời là mất, 1 lần trả lời là có lại;
+    - chỉ rời link ưu tiên khi nó mất Internet và link kia có cả địa chỉ lẫn Internet; cả hai đều không ping được thì chọn theo địa chỉ như cũ; priority 0 chỉ dùng Ethernet;
+    - `/api/status` có `eth.internet` và `cell.internet`; tốn khoảng 12 KB mỗi giờ trên LTE.
   - DNS dùng server của link đang giữ default route.
   - Khi đổi route, các kết nối TCP/TLS đang mở (bridge client, MQTT, Modbus TCP) bị đóng và kết nối lại qua link mới.
 - Các chuỗi hiển thị trên UI đổi từ EC800 sang EC600U.

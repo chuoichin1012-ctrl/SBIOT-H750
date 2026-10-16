@@ -99,6 +99,16 @@ net_route_t netcfg_pick(int priority, bool eth_ok, bool cell_ok)
     return eth_ok ? NET_ROUTE_ETH : NET_ROUTE_NONE;  // 0: Ethernet only
 }
 
+net_route_t netcfg_pick_inet(int priority, bool eth_ok, bool eth_inet, bool cell_ok, bool cell_inet)
+{
+    if (priority != 1 && priority != 2)
+        return netcfg_pick(priority, eth_ok, false);  // 0: Ethernet only, whatever the check says
+    // A link without Internet counts only while the other one has no address or no Internet either.
+    bool eth_use = eth_ok && (eth_inet || !(cell_ok && cell_inet));
+    bool cell_use = cell_ok && (cell_inet || !(eth_ok && eth_inet));
+    return netcfg_pick(priority, eth_use, cell_use);
+}
+
 void netcfg_dns(const net_dns_t *d, net_route_t route, uint32_t out[2])
 {
     const uint32_t *p = route == NET_ROUTE_CELL ? (d->cell_manual ? d->cell_cfg : d->cell_peer)

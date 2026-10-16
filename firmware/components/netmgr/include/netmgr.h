@@ -36,3 +36,5 @@ struct netif;
 void netmgr_cell(struct netif *nif, bool up, const uint32_t dns[2]);
 /** "ETH", "LTE" or "NONE": the link holding the default route. */
 const char *netmgr_route_name(void);
+/** The Internet check per link (Plan 10 ruling 14): an address and replies to the probe. */
+void netmgr_internet(bool *eth, bool *cell);

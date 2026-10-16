@@ -57,6 +57,28 @@ size_t js_count(js_span_t container);
  */
 bool js_key_is(js_span_t key, const char *lit, bool nocase);
 
+/**
+ * The same validity as js_parse_root, over text that arrives in pieces (Plan 09c: an edgeDevices body is
+ * checked as it streams into the store's records). Feed it in any chunks; js_stream_end then says whether the
+ * whole was exactly one JSON value of the wanted root type (JS_INVALID: any), surrounded by whitespace only.
+ */
+typedef struct {
+    unsigned char stack[JS_MAX_DEPTH];  // '{' or '[' per open container
+    int depth;
+    int state, sub;       // where the scanner is; a counter within that state
+    unsigned long u;      // a \uXXXX escape's value so far
+    unsigned char lead;   // a UTF-8 sequence's first byte
+    bool key, high, bad;  // in a key; a high surrogate wants its low one; invalid for good
+    js_type_t want, root;
+    const char *lit;      // the literal being matched
+} js_stream_t;
+
+void js_stream_init(js_stream_t *s, js_type_t want);
+/** False once the text so far can no longer be valid; further feeds change nothing. */
+bool js_stream_feed(js_stream_t *s, const char *data, size_t n);
+/** True when everything fed is one whole JSON value of the wanted type. */
+bool js_stream_end(js_stream_t *s);
+
 #ifdef __cplusplus
 }
 #endif

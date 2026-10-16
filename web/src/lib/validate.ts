@@ -46,6 +46,24 @@ export function allowListError(s: string): string | null {
 }
 export const isHex = (s: string) => /^([0-9a-fA-F]{2})+$/.test(s.replace(/\s+/g, ''));
 
+/**
+ * A data field's text after its HEX/ASCII switch moves to `toHex`: "SBIOT" <-> "5342494F54" (UTF-8 bytes).
+ * Text that is not the other format (not hex, or bytes that are not printable text) stays as typed.
+ */
+export function convertData(s: string, toHex: boolean): string {
+  if (!s) return s;
+  if (toHex) return Array.from(new TextEncoder().encode(s), (b) => b.toString(16).padStart(2, '0').toUpperCase()).join('');
+  if (!isHex(s)) return s;
+  const bytes = Uint8Array.from(s.replace(/\s+/g, '').match(/../g)!, (h) => parseInt(h, 16));
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return s;
+  }
+  return /[\u0000-\u001f\u007f]/.test(text) ? s : text;
+}
+
 export function rangeError(n: number, min?: number, max?: number, zeroOk?: boolean): string | null {
   if (!Number.isFinite(n) || !Number.isInteger(n)) return 'Enter a whole number.';
   if (zeroOk && n === 0) return null;

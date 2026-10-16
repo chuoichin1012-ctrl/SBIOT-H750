@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EDGE_BODY_MAX, REPORT_MAX, body, edgeBodyError, listenClash, systemPortClash, templateError26k, templateSize } from '../../src/lib/rules.js';
-import { fieldError } from '../../src/lib/validate.js';
+import { convertData, fieldError } from '../../src/lib/validate.js';
 
 const server = (port: number) => ({ workMode: 3, listenPort: port });
 const sys = { webPort: 80, websocketPort: 6432 };
@@ -78,4 +78,17 @@ test('the Edge model is refused over 96 000 bytes, counted as the body the gatew
     'The devices and points take 96 001 bytes; the gateway takes at most 96 000. Remove points or shorten names and formulas.');
   // UTF-8 bytes, not characters: "é" is 2 bytes.
   assert.ok(edgeBodyError(slaves('é'.repeat((96000 - fixed) / 2 + 1))) !== null);
+});
+
+test('a data field follows its HEX/ASCII format switch, and back (the user, 2026-10-17)', () => {
+  assert.equal(convertData('5342494F54', false), 'SBIOT');
+  assert.equal(convertData('53 42 49 4f 54', false), 'SBIOT');
+  assert.equal(convertData('SBIOT', true), '5342494F54');
+  assert.equal(convertData(convertData('www.sbiot.vn', true), false), 'www.sbiot.vn');
+  assert.equal(convertData('', true), '');
+});
+
+test('data that is not the other format is left as typed', () => {
+  assert.equal(convertData('not hex', false), 'not hex');  // switched to ASCII, but it was never hex
+  assert.equal(convertData('7E01FF', false), '7E01FF');    // bytes that are not printable text stay hex
 });

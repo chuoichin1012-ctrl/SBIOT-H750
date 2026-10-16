@@ -1568,11 +1568,19 @@ uint8_t * MQTT_SerializeConnectFixedHeader( uint8_t * pIndex,
     pIndexLocal = encodeRemainingLength( pIndexLocal, remainingLength );
 
     /* The string "MQTT" is placed at the beginning of the CONNECT packet's variable
-     * header. This string is 4 bytes long. */
-    pIndexLocal = encodeString( pIndexLocal, "MQTT", 4 );
+     * header. This string is 4 bytes long. SBIOT patch: MQTT 3.1 uses "MQIsdp", level 3. */
+    if( pConnectInfo->mqtt31 == true )
+    {
+        pIndexLocal = encodeString( pIndexLocal, "MQIsdp", 6 );
+        *pIndexLocal = 3U;
+    }
+    else
+    {
+        pIndexLocal = encodeString( pIndexLocal, "MQTT", 4 );
+        *pIndexLocal = MQTT_VERSION_3_1_1;
+    }
 
     /* The MQTT protocol version is the second field of the variable header. */
-    *pIndexLocal = MQTT_VERSION_3_1_1;
     pIndexLocal++;
 
     /* Set the clean session flag if needed. */
@@ -1729,6 +1737,12 @@ MQTTStatus_t MQTT_GetConnectPacketSize( const MQTTConnectInfo_t * pConnectInfo,
     }
     else
     {
+        /* SBIOT patch: "MQIsdp" is 2 bytes longer than "MQTT". */
+        if( pConnectInfo->mqtt31 == true )
+        {
+            connectPacketSize += 2U;
+        }
+
         /* Add the length of the client identifier. */
         connectPacketSize += pConnectInfo->clientIdentifierLength + sizeof( uint16_t );
 

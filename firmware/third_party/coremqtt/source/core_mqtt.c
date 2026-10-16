@@ -427,6 +427,7 @@ static MQTTStatus_t validateSubscribeUnsubscribeParams( const MQTTContext_t * pC
 static MQTTStatus_t receiveConnack( const MQTTContext_t * pContext,
                                     uint32_t timeoutMs,
                                     bool cleanSession,
+                                    bool mqtt31,
                                     MQTTPacketInfo_t * pIncomingPacket,
                                     bool * pSessionPresent );
 
@@ -2188,8 +2189,9 @@ static MQTTStatus_t sendConnectWithoutCopy( MQTTContext_t * pContext,
      * Protocol Name (MQTT)     + 4 = 11
      * Protocol level           + 1 = 12
      * Connect flags            + 1 = 13
-     * Keep alive               + 2 = 15 */
-    uint8_t connectPacketHeader[ 15U ];
+     * Keep alive               + 2 = 15
+     * SBIOT patch: "MQIsdp"    + 2 = 17 */
+    uint8_t connectPacketHeader[ 17U ];
 
     /* The maximum vectors required to encode and send a connect packet. The
      * breakdown is shown below.
@@ -2312,6 +2314,7 @@ static MQTTStatus_t sendConnectWithoutCopy( MQTTContext_t * pContext,
 static MQTTStatus_t receiveConnack( const MQTTContext_t * pContext,
                                     uint32_t timeoutMs,
                                     bool cleanSession,
+                                    bool mqtt31,
                                     MQTTPacketInfo_t * pIncomingPacket,
                                     bool * pSessionPresent )
 {
@@ -2402,8 +2405,20 @@ static MQTTStatus_t receiveConnack( const MQTTContext_t * pContext,
         /* Update the packet info pointer to the buffer read. */
         pIncomingPacket->pRemainingData = pContext->networkBuffer.pBuffer;
 
+        /* SBIOT patch: an MQTT 3.1 CONNACK's first byte is reserved, with no Session Present. */
+        if( ( mqtt31 == true ) && ( pIncomingPacket->remainingLength == 2U ) )
+        {
+            pContext->networkBuffer.pBuffer[ 0 ] = 0U;
+        }
+
         /* Deserialize CONNACK. */
         status = MQTT_DeserializeAck( pIncomingPacket, NULL, pSessionPresent );
+
+        /* SBIOT patch: in 3.1 the session is kept exactly when it was asked for. */
+        if( ( status == MQTTSuccess ) && ( mqtt31 == true ) )
+        {
+            *pSessionPresent = !cleanSession;
+        }
     }
 
     /* If a clean session is requested, a session present should not be set by
@@ -2728,6 +2743,7 @@ MQTTStatus_t MQTT_Connect( MQTTContext_t * pContext,
         status = receiveConnack( pContext,
                                  timeoutMs,
                                  pConnectInfo->cleanSession,
+                                 pConnectInfo->mqtt31,
                                  &incomingPacket,
                                  pSessionPresent );
     }

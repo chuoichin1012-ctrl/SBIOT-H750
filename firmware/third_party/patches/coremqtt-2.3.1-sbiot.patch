@@ -1,0 +1,118 @@
+diff --git a/source/core_mqtt.c b/source/core_mqtt.c
+index 0c71f3f..048505f 100644
+--- a/source/core_mqtt.c
++++ b/source/core_mqtt.c
+@@ -427,6 +427,7 @@ static MQTTStatus_t validateSubscribeUnsubscribeParams( const MQTTContext_t * pC
+ static MQTTStatus_t receiveConnack( const MQTTContext_t * pContext,
+                                     uint32_t timeoutMs,
+                                     bool cleanSession,
++                                    bool mqtt31,
+                                     MQTTPacketInfo_t * pIncomingPacket,
+                                     bool * pSessionPresent );
+ 
+@@ -2188,8 +2189,9 @@ static MQTTStatus_t sendConnectWithoutCopy( MQTTContext_t * pContext,
+      * Protocol Name (MQTT)     + 4 = 11
+      * Protocol level           + 1 = 12
+      * Connect flags            + 1 = 13
+-     * Keep alive               + 2 = 15 */
+-    uint8_t connectPacketHeader[ 15U ];
++     * Keep alive               + 2 = 15
++     * SBIOT patch: "MQIsdp"    + 2 = 17 */
++    uint8_t connectPacketHeader[ 17U ];
+ 
+     /* The maximum vectors required to encode and send a connect packet. The
+      * breakdown is shown below.
+@@ -2312,6 +2314,7 @@ static MQTTStatus_t sendConnectWithoutCopy( MQTTContext_t * pContext,
+ static MQTTStatus_t receiveConnack( const MQTTContext_t * pContext,
+                                     uint32_t timeoutMs,
+                                     bool cleanSession,
++                                    bool mqtt31,
+                                     MQTTPacketInfo_t * pIncomingPacket,
+                                     bool * pSessionPresent )
+ {
+@@ -2402,8 +2405,20 @@ static MQTTStatus_t receiveConnack( const MQTTContext_t * pContext,
+         /* Update the packet info pointer to the buffer read. */
+         pIncomingPacket->pRemainingData = pContext->networkBuffer.pBuffer;
+ 
++        /* SBIOT patch: an MQTT 3.1 CONNACK's first byte is reserved, with no Session Present. */
++        if( ( mqtt31 == true ) && ( pIncomingPacket->remainingLength == 2U ) )
++        {
++            pContext->networkBuffer.pBuffer[ 0 ] = 0U;
++        }
++
+         /* Deserialize CONNACK. */
+         status = MQTT_DeserializeAck( pIncomingPacket, NULL, pSessionPresent );
++
++        /* SBIOT patch: in 3.1 the session is kept exactly when it was asked for. */
++        if( ( status == MQTTSuccess ) && ( mqtt31 == true ) )
++        {
++            *pSessionPresent = !cleanSession;
++        }
+     }
+ 
+     /* If a clean session is requested, a session present should not be set by
+@@ -2728,6 +2743,7 @@ MQTTStatus_t MQTT_Connect( MQTTContext_t * pContext,
+         status = receiveConnack( pContext,
+                                  timeoutMs,
+                                  pConnectInfo->cleanSession,
++                                 pConnectInfo->mqtt31,
+                                  &incomingPacket,
+                                  pSessionPresent );
+     }
+diff --git a/source/core_mqtt_serializer.c b/source/core_mqtt_serializer.c
+index 7877941..7c4df3a 100644
+--- a/source/core_mqtt_serializer.c
++++ b/source/core_mqtt_serializer.c
+@@ -1568,11 +1568,19 @@ uint8_t * MQTT_SerializeConnectFixedHeader( uint8_t * pIndex,
+     pIndexLocal = encodeRemainingLength( pIndexLocal, remainingLength );
+ 
+     /* The string "MQTT" is placed at the beginning of the CONNECT packet's variable
+-     * header. This string is 4 bytes long. */
+-    pIndexLocal = encodeString( pIndexLocal, "MQTT", 4 );
++     * header. This string is 4 bytes long. SBIOT patch: MQTT 3.1 uses "MQIsdp", level 3. */
++    if( pConnectInfo->mqtt31 == true )
++    {
++        pIndexLocal = encodeString( pIndexLocal, "MQIsdp", 6 );
++        *pIndexLocal = 3U;
++    }
++    else
++    {
++        pIndexLocal = encodeString( pIndexLocal, "MQTT", 4 );
++        *pIndexLocal = MQTT_VERSION_3_1_1;
++    }
+ 
+     /* The MQTT protocol version is the second field of the variable header. */
+-    *pIndexLocal = MQTT_VERSION_3_1_1;
+     pIndexLocal++;
+ 
+     /* Set the clean session flag if needed. */
+@@ -1729,6 +1737,12 @@ MQTTStatus_t MQTT_GetConnectPacketSize( const MQTTConnectInfo_t * pConnectInfo,
+     }
+     else
+     {
++        /* SBIOT patch: "MQIsdp" is 2 bytes longer than "MQTT". */
++        if( pConnectInfo->mqtt31 == true )
++        {
++            connectPacketSize += 2U;
++        }
++
+         /* Add the length of the client identifier. */
+         connectPacketSize += pConnectInfo->clientIdentifierLength + sizeof( uint16_t );
+ 
+diff --git a/source/include/core_mqtt_serializer.h b/source/include/core_mqtt_serializer.h
+index 077b8d0..d7b04ae 100644
+--- a/source/include/core_mqtt_serializer.h
++++ b/source/include/core_mqtt_serializer.h
+@@ -170,6 +170,12 @@ typedef struct MQTTConnectInfo
+      * @brief Length of MQTT password. Set to 0 if not used.
+      */
+     uint16_t passwordLength;
++
++    /**
++     * @brief SBIOT patch: MQTT 3.1 (protocol name "MQIsdp", level 3) instead of 3.1.1. Its CONNACK has no
++     * Session Present: the session is kept exactly when cleanSession is false.
++     */
++    bool mqtt31;
+ } MQTTConnectInfo_t;
+ 
+ /**

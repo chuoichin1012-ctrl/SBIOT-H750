@@ -170,6 +170,12 @@ typedef struct MQTTConnectInfo
      * @brief Length of MQTT password. Set to 0 if not used.
      */
     uint16_t passwordLength;
+
+    /**
+     * @brief SBIOT patch: MQTT 3.1 (protocol name "MQIsdp", level 3) instead of 3.1.1. Its CONNACK has no
+     * Session Present: the session is kept exactly when cleanSession is false.
+     */
+    bool mqtt31;
 } MQTTConnectInfo_t;
 
 /**

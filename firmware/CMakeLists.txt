@@ -129,6 +129,9 @@ endif()
 set(LWIP ${CMAKE_SOURCE_DIR}/third_party/lwip)
 file(GLOB LWIP_SRC ${LWIP}/src/core/*.c ${LWIP}/src/core/ipv4/*.c ${LWIP}/src/api/*.c)
 list(APPEND LWIP_SRC ${LWIP}/src/netif/ethernet.c ${LWIP}/contrib/ports/freertos/sys_arch.c ${LWIP}/src/apps/sntp/sntp.c)
+# MQTT (Plan 09): coreMQTT 2.3.1 with the SBIOT patch (third_party/coremqtt/README.md).
+set(CMQTT ${CMAKE_SOURCE_DIR}/third_party/coremqtt/source)
+set(CMQTT_SRC ${CMQTT}/core_mqtt.c ${CMQTT}/core_mqtt_serializer.c ${CMQTT}/core_mqtt_state.c)
 # TLS (Plan 08b): mbedTLS 3.6.7 LTS (third_party/mbedtls/README.md), its settings in tls_config.h.
 set(MBED ${CMAKE_SOURCE_DIR}/third_party/mbedtls)
 file(GLOB MBED_SRC ${MBED}/library/*.c)
@@ -137,14 +140,14 @@ set(FDB ${CMAKE_SOURCE_DIR}/third_party/flashdb)
 set(UPSTREAM_APP ${FDB}/src/fdb.c ${FDB}/src/fdb_kvdb.c ${FDB}/src/fdb_tsdb.c ${FDB}/src/fdb_utils.c
   ${FDB}/port/fal/src/fal.c ${FDB}/port/fal/src/fal_flash.c ${FDB}/port/fal/src/fal_partition.c
   ${CMAKE_SOURCE_DIR}/third_party/cjson/cJSON.c ${LWIP_SRC} ${CMAKE_SOURCE_DIR}/third_party/mongoose/mongoose.c
-  ${CMAKE_SOURCE_DIR}/third_party/tlsf/tlsf.c ${MBED_SRC})
+  ${CMAKE_SOURCE_DIR}/third_party/tlsf/tlsf.c ${MBED_SRC} ${CMQTT_SRC})
 add_executable(app ${APP_CUBE} ${APP_HAL} ${APP_RTOS} ${APP_OWN} ${MONO_SRC} ${UPSTREAM_APP} ${APP_WWW})
 image_includes(app ${CUBE}/app)
 target_include_directories(app PRIVATE app ${RTOS}/include ${RTOS}/portable/GCC/ARM_CM4F ${OTA}/include ${MONO} ${CMAKE_BINARY_DIR}/gen
   ${CMAKE_SOURCE_DIR}/components/syslog/include ${STORE}/include ${STORE}/port ${FDB}/inc ${FDB}/port/fal/inc ${CFGM}/include ${PROTO}/include ${CMAKE_SOURCE_DIR}/third_party/cjson
   ${NET}/include ${LWIP}/src/include ${LWIP}/contrib/ports/freertos/include
   ${SYS}/include ${WEB}/include ${SER}/include ${IOM}/include ${SVC}/include ${CMAKE_SOURCE_DIR}/components/arena/include ${CMAKE_SOURCE_DIR}/third_party/tlsf
-  ${CMAKE_SOURCE_DIR}/third_party/mongoose ${MBED}/include)
+  ${CMAKE_SOURCE_DIR}/third_party/mongoose ${MBED}/include ${CMQTT}/include ${CMQTT}/interface)
 target_compile_definitions(app PRIVATE MBEDTLS_CONFIG_FILE="tls_config.h")
 set_source_files_properties(${APP_OWN} TARGET_DIRECTORY app PROPERTIES COMPILE_OPTIONS "${STRICT}")
 # The copy loops of Reset_Handler must stay loops: memcpy/memset run from ITCM, which they fill.

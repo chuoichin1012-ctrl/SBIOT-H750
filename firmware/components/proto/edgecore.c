@@ -393,7 +393,7 @@ edge_tmpl_t *edge_tmpl_compile(const char *tmpl, edge_resolve_fn resolve, void *
     if (!ph) {
         strcpy(t->ph, "null");
     } else {
-        cJSON *lit = cJSON_Parse(ph);
+        cJSON *lit = cJSON_ParseWithOpts(ph, NULL, true);  // all of it, or "1abc" would pass as 1 (Plan 10c task 10)
         bool literal = lit && !cJSON_IsObject(lit) && !cJSON_IsArray(lit);
         cJSON_Delete(lit);
         if (literal) snprintf(t->ph, sizeof t->ph, "%s", ph);

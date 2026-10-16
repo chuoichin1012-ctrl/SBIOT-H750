@@ -339,6 +339,14 @@ static void test_edge(void)
     tmpl("{\"c\":\"a\\u0001b\",\"q\":\"quoted\"}", false, NULL, "{\"c\":\"a\\u0001b\",\"q\":\"say \\\"hi\\\"\\n\"}", 1);
     // NaN from a float register would not be JSON: the placeholder instead.
     tmpl("{\"f\":\"broken\"}", false, "-1", "{\"f\":-1}", 1);
+    // Plan 10c task 10 (Codex review, Important 10): a placeholder is a literal only when all of it parses;
+    // "1abc" copied raw made the whole report invalid JSON.
+    tmpl("{\"d\":\"dead\"}", false, "1abc", "{\"d\":\"1abc\"}", 1);
+    tmpl("{\"d\":\"dead\"}", false, "null-device", "{\"d\":\"null-device\"}", 1);
+    tmpl("{\"d\":\"dead\"}", false, "truex", "{\"d\":\"truex\"}", 1);
+    tmpl("{\"d\":\"dead\"}", false, "2.5", "{\"d\":2.5}", 1);
+    tmpl("{\"d\":\"dead\"}", false, "true", "{\"d\":true}", 1);
+    tmpl("{\"d\":\"dead\"}", false, "null", "{\"d\":null}", 1);
 
     edge_index_t ix;
     CHECK(edge_index_init(&ix, 300) && ix.cap >= 600, "index init");

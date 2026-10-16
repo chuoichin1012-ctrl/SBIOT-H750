@@ -146,7 +146,7 @@ Mọi thao tác trên slot **xóa** theo sector 4 KB và **ghi** theo page 256 B
 |---|---|---|---|
 | ITCM | 64 KB | Code nóng chép từ QSPI lúc khởi động: kernel FreeRTOS, các ISR (ETH, USART, DMA, TIM), `memcpy`/`memset`, lõi bignum của mbedTLS | Section `.itcm_text` |
 | DTCM | 128 KB | MSP 4 KB, `.data`/`.bss` nhỏ, stack tĩnh của mọi task **trừ** `web` và `edge_tcpN` (khoảng 95 KB theo §6.1, kể cả `init`, timer và `cmux_rx`), TCB. Tổng DTCM ≤ 120 KB, kiểm bằng file map của linker | ETH và DMA1/2 không truy cập được vùng này. §5.4 bảo đảm không DMA nào đọc hay ghi trực tiếp ở đây |
-| AXI SRAM (D1) | 512 KB | **Tĩnh** (các section, tổng khoảng 193 KB): arena JSON 64 KB (§9.3), buffer văn bản Edge 48 KB (§9.3), mô hình Edge lúc chạy và cache giá trị khoảng 20 KB, cache văn bản cấu hình của `store` 20 KB cộng bộ đệm bản ghi Edge 8 KB, stack của `web` và `edge_tcpN` khoảng 33 KB, stack của `bridge[n]` 2 × 6 KB (Plan 08a). **Heap** (`heap_5`, vùng heap duy nhất) **256 KB**, dự kiến dùng bên trong như sau: 3 phiên TLS khoảng 105 KB cộng đỉnh lúc handshake khoảng 30 KB, Mongoose khoảng 40 KB, buffer report ≤ 26 KB (§9.4), buffer mạng coreMQTT 2 × 4 KB, các cấp phát nhỏ lúc chạy khoảng 20 KB, tổng khoảng 229 KB. **Mỗi allocation chỉ tính một lần**, hoặc ở phần tĩnh, hoặc ở phần heap | Cacheable (write-back). Các pool memp và `PBUF_POOL` của lwIP chiếm 26 KB tĩnh (§5.6), nên phần AXI chưa cấp còn khoảng 37 KB. Phần heap còn dư khoảng 27 KB, kiểm bằng §12.3 |
+| AXI SRAM (D1) | 512 KB | **Tĩnh** (các section, tổng khoảng 193 KB): arena JSON 64 KB (§9.3), buffer văn bản Edge 48 KB (§9.3), mô hình Edge lúc chạy và cache giá trị khoảng 20 KB, cache văn bản cấu hình của `store` 20 KB cộng bộ đệm bản ghi Edge 8 KB, stack của `web` và `edge_tcpN` khoảng 33 KB, stack của `bridge[n]` 2 × 6 KB (Plan 08a). **Heap** (`heap_5`, vùng heap duy nhất) **256 KB**, dự kiến dùng bên trong như sau: 3 phiên TLS khoảng 105 KB cộng đỉnh lúc handshake khoảng 30 KB, Mongoose khoảng 40 KB, buffer report ≤ 26 KB (§9.4), buffer mạng coreMQTT 2 × 4 KB, các cấp phát nhỏ lúc chạy khoảng 20 KB, tổng khoảng 229 KB. **Mỗi allocation chỉ tính một lần**, hoặc ở phần tĩnh, hoặc ở phần heap | Cacheable (write-back). Các pool memp và `PBUF_POOL` của lwIP chiếm 26 KB tĩnh (§5.6), nên phần AXI chưa cấp còn khoảng 37 KB. Phần heap còn dư khoảng 27 KB, kiểm bằng §12.3. Đo trên bench (Plan 08b): một phiên TLS 27,9 KB; port1 trong phiên cộng các request HTTPS của port2 dùng tối đa 58,7 KB trên mức nghỉ (heap thấp nhất còn 200 KB) |
 | SRAM1 (D2) | 128 KB | Chỉ những gì DMA chạm tới, cộng heap `MEM` của lwIP 64 KB: descriptor, buffer RX và buffer TX của ETH, ring DMA RX và buffer TX của USART1/2/3, buffer trung chuyển SPI4. Các pool memp của lwIP chỉ CPU dùng nên nằm ở AXI (Plan 06a). Sau 06a đã dùng 99 KB, còn khoảng 29 KB cho USART (14 KB, Plan 07). Số lượng và kích thước chốt trong bảng pool lwIP (§5.6) | **Non-cacheable qua MPU.** Startup bật clock SRAM D2 trước khi khởi tạo `.data` |
 | SRAM2+3 (D2) | 160 KB | Hàng đợi serial → mạng của mỗi cổng, 8 KB hoặc 32 KB khi bật `bufferOffline`, cấp tĩnh 2 × 32 KB. Trạng thái và buffer của hai bridge khoảng 24 KB (Plan 08a). Outbox MQTT 64 KB. Còn khoảng 8 KB cho metadata và căn lề | Cacheable |
 | SRAM4 (D3) | 64 KB | Ring syslog 32 KB, ring của `mqtt_io` 2 × 12 KB, **buffer BDMA của ADC3** (800 B) trong region non-cacheable 1 KB riêng ở 0x3800FC00 (§6.6). Còn khoảng 7 KB | Region 1 KB của ADC đặt non-cacheable qua MPU, phần còn lại cacheable |
@@ -192,7 +192,7 @@ Nhờ quy tắc này, stack và buffer trong DTCM hay AXI đều an toàn với 
   - `_sbrk` luôn trả lỗi, nên không cấp phát nào lọt ra ngoài heap.
   - Heap và các hook được khởi tạo trong `board_early()` (§6.3), **trước mọi cấp phát**.
   - Kiểm bằng symbol map: chỉ có một bản `malloc` trong binary, và không có tham chiếu nào tới `_sbrk_r` thật.
-- **mbedTLS** dùng `MBEDTLS_PLATFORM_MEMORY` trỏ về wrapper trên. **Mongoose** cũng vậy. **coreMQTT** không tự cấp phát.
+- **mbedTLS** gọi `calloc`/`free`, vốn đã là wrapper trên, nên không cần `MBEDTLS_PLATFORM_MEMORY` (Plan 08b). **Mongoose** cũng vậy. **coreMQTT** không tự cấp phát.
 - **cJSON:** hook toàn cục `json_malloc`/`json_free` định tuyến **theo chủ sở hữu**.
   - Task đang ở trong một phạm vi arena (`arena_begin()` đặt con trỏ thread-local) thì cấp phát từ arena. Mọi trường hợp khác cấp phát từ heap.
   - `json_free` trả block về đúng nơi đã cấp nó, nhận biết theo khoảng địa chỉ.
@@ -573,11 +573,14 @@ Quy tắc riêng của bản STM32:
   - SNI;
   - deadline cho handshake và cho thao tác ghi;
   - kiểm chứng chỉ khi upload (F20).
-- `mbedtls_config.h`, dùng **mbedTLS 3.6 LTS** (khóa phiên bản cụ thể trong `third_party`):
+- File cấu hình `tls_config.h` (truyền qua `MBEDTLS_CONFIG_FILE`; không được đặt tên `mbedtls_config.h`, vì `build_info.h` sẽ tìm thấy config mặc định của thư viện trong chính thư mục của nó trước), dùng **mbedTLS 3.6 LTS**, khóa ở 3.6.7 trong `third_party/mbedtls` (Plan 08b):
   - `MBEDTLS_SSL_IN_CONTENT_LEN` 16384, `OUT` 4096;
   - `MBEDTLS_HAVE_TIME_DATE`, với hàm giờ trả về giờ hệ thống;
   - entropy từ RNG phần cứng (`MBEDTLS_ENTROPY_HARDWARE_ALT`);
-  - cipher suite: chỉ ECDHE kèm AES-GCM/CHACHA20 và RSA kèm AES-GCM, chỉ TLS 1.2.
+  - cipher suite: chỉ ECDHE kèm AES-GCM/CHACHA20 và RSA kèm AES-GCM, chỉ TLS 1.2;
+  - các hàm port (`tls_port.c`, `tls_core.c`) đúng là những gì thư viện để trống với cấu hình này: `mbedtls_hardware_poll` (RNG phần cứng), `tls_port_time` (giờ hệ thống, 0 khi chưa có giờ, không bao giờ là giờ hiển thị 2020), `mbedtls_ms_time`, `mbedtls_platform_gmtime_r` (trên `clock_from_unix`);
+  - không bật `MBEDTLS_THREADING_C`: mỗi phiên tự sở hữu mọi context (ssl, config, DRBG, entropy, chứng chỉ, khóa), cấu hình này không có trạng thái dùng chung, và `board_rng` đã có mutex.
+- **Tên host luôn được truyền** cho `mbedtls_ssl_set_hostname` (CVE-2025-27809: từ 3.6.3, client kiểm server mà không đặt tên host thì handshake thất bại). **Giới hạn đã biết:** khi dial bằng địa chỉ IP, mbedTLS gửi chuỗi IP trong SNI (RFC 6066 không cho phép), và 3.6 không có tùy chọn bỏ riêng SNI mà giữ việc kiểm tên. Không bao giờ bỏ kiểm danh tính server vì điều này. OpenSSL (Python, nginx, Mosquitto) chấp nhận; server nào từ chối SNI là IP thì phải dial bằng tên.
 - **Khi chưa có giờ** (§10.4), áp dụng cho mọi kết nối TLS kể cả MQTT, **khi `tlsVerify` ≥ 1**:
   - chỉ bỏ qua hai cờ lỗi về ngày (`MBEDTLS_X509_BADCERT_EXPIRED` và `_FUTURE`) và ghi cảnh báo;
   - chuỗi chứng chỉ, CA và tên host vẫn kiểm đủ;
@@ -838,7 +841,7 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
 |---|---|
 | `GET /api/device` | `portmax` = 2. `io` = `{do: 2, di: 2, ai: 2, ao: 0}`. Model và phần cứng là `SBIOT-H750` |
 | `/api/config/port2` | Schema đã có từ ESP32 nhưng bị tắt theo phần cứng. Nay được **bật trên phần cứng STM32**. TLS có trên cả hai cổng |
-| `/api/cert?scope=` | Thêm `port2`. Tới Plan 08 (mbedTLS) chỉ kiểm cấu trúc PEM: một cặp BEGIN/END đúng loại, chỉ ký tự base64 ở giữa, từ chối khóa mã hóa. Trả `{restartNeeded: true}`, chưa có `subject`, `validTo`, `pairMatches` |
+| `/api/cert?scope=` | Thêm `port2`. Kiểm cấu trúc PEM trước (một cặp BEGIN/END đúng loại, chỉ ký tự base64 ở giữa, từ chối khóa mã hóa), rồi mbedTLS parse (F20, Plan 08b). Trả `subject` và `validTo` (chứng chỉ), `expired` (chỉ khi đã có giờ), `keyType` (khóa), `pairMatches` (khi nửa kia của cặp client đã lưu và đọc được; không khớp thì vẫn lưu, chỉ báo), `restartNeeded` (chỉ `mqtt`, vì các cổng đọc file ở mỗi kết nối) |
 | `/api/io` | Trả 503 cho tới khi có `iomgr` (Plan 07) |
 | `port<n>` | Bỏ `rfc2217` |
 | `system` | Bỏ `telnet`, `telnetPort` |
@@ -864,7 +867,8 @@ Chép từ `src/` ở gốc, rồi sửa trực tiếp:
   - report theo `interval`, `onChange` và ngưỡng AI vẫn chạy;
   - report theo `schedule` và 6 timer chưa kích hoạt;
   - các trường `sys_time` để trống;
-  - log ghi dạng `[boot N +hh:mm:ss]`.
+  - log ghi dạng `[boot N +hh:mm:ss]`;
+  - **phần hiển thị** (giờ trên `/api/status` và dòng trạng thái của console) đọc 2020-01-01 00:00:00 cộng uptime, kèm `clockSet: false` (Plan 08b). Đây chỉ là hiển thị: TLS, timer IO, log và `sys_time` vẫn thấy "chưa có giờ". `POST /api/time` không nhận năm trước 2024, nên giờ hiển thị này không thể bị đặt lại vào đồng hồ.
 - Nguồn giờ giữ như ESP32: NTP hoặc `POST /api/time`. **Không thêm** RTC giữ giờ hay giờ mạng LTE.
 
 ## 11. Bootloader, OTA và an toàn

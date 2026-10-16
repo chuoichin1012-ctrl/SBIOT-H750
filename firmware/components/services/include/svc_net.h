@@ -7,10 +7,11 @@
 #include <stdint.h>
 #include "bridge_core.h"  // NET_AGAIN, NET_FAIL
 #include "lwip/sockets.h"
+#include "tlsconn.h"
 
 typedef struct {
     int fd;
-    void *tls;  // Plan 08b; NULL until then
+    tls_conn_t *tls;  // the TLS session over fd (Plan 08b), or NULL
 } conn_t;
 
 bool net_resolve(const char *host, uint16_t port, struct sockaddr_in *out);
@@ -23,4 +24,7 @@ int conn_send_some(conn_t *c, const uint8_t *data, size_t len);
 bool conn_send_all(conn_t *c, const void *data, size_t len, uint32_t timeout_ms);
 /** >0 bytes, 0 closed by the peer, NET_AGAIN nothing yet, NET_FAIL. */
 int conn_recv(conn_t *c, uint8_t *buf, size_t max);
+/** Bytes already inside the TLS session, which select() cannot see (tls_pending). */
+bool conn_pending(const conn_t *c);
+/** Ends the TLS session (if any), then the socket. */
 void conn_close(conn_t *c);

@@ -88,7 +88,7 @@ function status(): StatusInfo {
   return {
     system: {
       uptime: 86400 * 3 + 7200 + t, os: 'FreeRTOS (STM32H750)', mac: 'D4:AD:20:00:12:34', imei: '', sn: 'SB2410000123',
-      activeNet: 'ETH', time: new Date().toISOString().replace('T', ' ').slice(0, 19),
+      activeNet: 'ETH', time: new Date().toISOString().replace('T', ' ').slice(0, 19), clockSet: true,
       heapFree: 182000, heapMin: 151000, psramFree: 3900000,
     },
     eth: { ip: '192.168.0.7', mask: '255.255.255.0', gateway: '192.168.0.1', dns1: '119.29.29.29', dns2: '8.8.8.8' },

@@ -44,6 +44,8 @@ export interface StatusInfo {
     sn: string;
     activeNet: 'ETH' | 'LTE' | 'NONE';
     time: string;
+    /** False while the clock is not set: `time` then reads 2020-01-01 00:00:00 plus the uptime. */
+    clockSet?: boolean;
     /** Bytes: free internal RAM now, its low-water mark since boot, free PSRAM. */
     heapFree: number;
     heapMin: number;

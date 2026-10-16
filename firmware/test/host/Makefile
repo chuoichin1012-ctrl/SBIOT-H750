@@ -8,7 +8,7 @@ BUILD := build
 CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c ../../components/proto/jsonscan.c
 ARENA := ../../components/arena/arena.c $(TLSF)/tlsf.c
 
-all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/bind_sample.bin $(BUILD)/test_bind $(BUILD)/test_store $(BUILD)/test_store_small $(BUILD)/test_heap $(BUILD)/test_ip101 $(BUILD)/test_netcfg $(BUILD)/test_dhcp_dns $(BUILD)/test_rng $(BUILD)/test_clock $(BUILD)/test_web_core $(BUILD)/test_serial_frame $(BUILD)/test_io_core $(BUILD)/test_adc_core $(BUILD)/test_reload $(BUILD)/test_bridge_core $(BUILD)/test_io_mb
+all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/bind_sample.bin $(BUILD)/test_bind $(BUILD)/test_store $(BUILD)/test_store_small $(BUILD)/test_heap $(BUILD)/test_ip101 $(BUILD)/test_netcfg $(BUILD)/test_dhcp_dns $(BUILD)/test_rng $(BUILD)/test_clock $(BUILD)/test_web_core $(BUILD)/test_serial_frame $(BUILD)/test_io_core $(BUILD)/test_adc_core $(BUILD)/test_reload $(BUILD)/test_bridge_core $(BUILD)/test_io_mb $(BUILD)/test_tls_core $(BUILD)/test_tlsconn
 	$(BUILD)/test_cfgmodel
 	$(BUILD)/test_proto
 	$(BUILD)/test_jsonscan
@@ -36,6 +36,8 @@ all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/
 	$(BUILD)/test_reload
 	$(BUILD)/test_bridge_core
 	$(BUILD)/test_io_mb
+	$(BUILD)/test_tls_core
+	$(BUILD)/test_tlsconn
 
 $(BUILD)/test_cfgmodel: test_cfgmodel.c $(CFG) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
@@ -186,3 +188,23 @@ $(BUILD)/test_bridge_core: test_bridge_core.c ../../components/services/bridge_c
 $(BUILD)/test_io_mb: test_io_mb.c ../../components/iomgr/io_mb.c ../../components/proto/modbus.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -I../../components/iomgr/include $^ -o $@
+
+# mbedTLS 3.6 (Plan 08b): the library once, as the board builds it (tls_config.h) plus the test server
+# (TLS_HOST_TEST), without sanitizers; our own TLS code keeps them. Fixtures from mkpki.py.
+MBED := ../../third_party/mbedtls
+MBED_INC := -I$(MBED)/include -I../../components/services/include -DMBEDTLS_CONFIG_FILE='"tls_config.h"' -DTLS_HOST_TEST
+MBED_OBJ := $(patsubst $(MBED)/library/%.c,$(BUILD)/mbedtls/%.o,$(wildcard $(MBED)/library/*.c))
+$(BUILD)/mbedtls/%.o: $(MBED)/library/%.c ../../components/services/include/tls_config.h
+	mkdir -p $(BUILD)/mbedtls
+	$(CC) -std=c11 -O1 -g -D_DEFAULT_SOURCE $(MBED_INC) -I$(MBED)/library -c $< -o $@
+$(BUILD)/libmbedtls_host.a: $(MBED_OBJ)
+	rm -f $@
+	ar rcs $@ $^
+$(BUILD)/pki/ca.pem: mkpki.py
+	python3 mkpki.py $(BUILD)/pki --ip 127.0.0.1 --dns localhost
+
+$(BUILD)/test_tls_core: test_tls_core.c tls_test_port.c ../../components/services/tls_core.c ../../components/sysmgr/clock.c $(BUILD)/libmbedtls_host.a $(BUILD)/pki/ca.pem
+	$(CC) $(CFLAGS) -D_DEFAULT_SOURCE $(MBED_INC) -I../../components/services/include -I../../components/sysmgr/include $(filter %.c %.a,$^) -o $@
+
+$(BUILD)/test_tlsconn: test_tlsconn.c tls_test_port.c ../../components/services/tlsconn.c ../../components/services/tls_core.c ../../components/services/bridge_core.c ../../components/sysmgr/clock.c ../../components/proto/ipacl.c ../../components/proto/modbus.c $(CJSON)/cJSON.c $(BUILD)/libmbedtls_host.a $(BUILD)/pki/ca.pem
+	$(CC) $(CFLAGS) -D_DEFAULT_SOURCE $(MBED_INC) -I../../components/sysmgr/include $(filter %.c %.a,$^) -lpthread -Wl,--wrap=calloc -o $@

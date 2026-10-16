@@ -10,9 +10,14 @@ MODE tcpserver  port, secs, delay_ms (listen only after), send_hex + send_ms (to
      http       port, secs, reply (the body)
      mcast      group, port, iface, send_hex, send_ms
      stuckpair  host, port, secs: two clients of a TCP server, one never reading, one logging what it got
+     tlsserver  port, secs, cert, key (Windows paths), clientca (require a client certificate), send_hex +
+                send_ms (after the handshake), big=N (one send of N bytes after the handshake), silent=1 (accept
+                TCP, never answer the handshake); events hs (cipher, sni, peer), hsfail, data, close (Plan 08b)
+     https      port, secs, cert, key, reply: the http mode over TLS
 """
 import json
 import socket
+import ssl
 import struct
 import sys
 import threading
@@ -135,6 +140,103 @@ def http(args):
         c.close()
 
 
+def tls_ctx(args, sni):
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(args['cert'], args['key'])
+    if args.get('clientca'):
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.load_verify_locations(args['clientca'])
+    ctx.sni_callback = lambda sobj, name, c: sni.append(name)
+    return ctx
+
+
+def tls_conn(c, a, args, ctx, sni):
+    if args.get('silent') == '1':  # TCP only: the handshake never gets an answer
+        c.settimeout(0.2)
+        while time.time() - T0 < float(args.get('secs', 20)):
+            try:
+                if not c.recv(4096):
+                    break
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+        c.close()
+        return
+    c.settimeout(15)
+    try:
+        t = ctx.wrap_socket(c, server_side=True)
+    except (ssl.SSLError, OSError) as e:
+        out(ev='hsfail', err=str(e)[:160])
+        c.close()
+        return
+    peer = t.getpeercert()
+    cn = dict(x[0] for x in peer['subject']).get('commonName') if peer else None
+    out(ev='hs', cipher=t.cipher()[0], version=t.version(), sni=sni[-1] if sni else None, peer=cn)
+    if args.get('big'):
+        n = int(args['big'])
+        t.sendall(bytes(i % 256 for i in range(n)))
+    tcp_conn(t, a, args, False)
+
+
+def tlsserver(args):
+    sni = []
+    ctx = tls_ctx(args, sni)
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(('0.0.0.0', int(args['port'])))
+    s.listen(4)
+    s.settimeout(0.2)
+    out(ev='listen')
+    while time.time() - T0 < float(args.get('secs', 20)):
+        try:
+            c, a = s.accept()
+        except socket.timeout:
+            continue
+        out(ev='accept', peer=a[0])
+        threading.Thread(target=tls_conn, args=(c, a, args, ctx, sni), daemon=True).start()
+    time.sleep(0.2)
+
+
+def https(args):
+    sni = []
+    ctx = tls_ctx(args, sni)
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(('0.0.0.0', int(args['port'])))
+    s.listen(4)
+    s.settimeout(0.2)
+    while time.time() - T0 < float(args.get('secs', 20)):
+        try:
+            c, a = s.accept()
+        except socket.timeout:
+            continue
+        c.settimeout(10)
+        try:
+            t = ctx.wrap_socket(c, server_side=True)
+        except (ssl.SSLError, OSError) as e:
+            out(ev='hsfail', err=str(e)[:160])
+            c.close()
+            continue
+        data = b''
+        try:
+            while b'\r\n\r\n' not in data:
+                d = t.recv(4096)
+                if not d:
+                    break
+                data += d
+        except (ssl.SSLError, OSError):
+            pass
+        line = data.split(b'\r\n', 1)[0].decode(errors='replace').split(' ')
+        out(ev='request', method=line[0], path=line[1] if len(line) > 1 else '', sni=sni[-1] if sni else None)
+        try:
+            t.sendall(b'HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\n' + args.get('reply', 'OK').encode())
+            t.close()
+        except (ssl.SSLError, OSError):
+            pass
+
+
 def mcast(args):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(args['iface']))
@@ -169,4 +271,5 @@ def stuckpair(args):
 if __name__ == '__main__':
     mode = sys.argv[1]
     a = dict(x.split('=', 1) for x in sys.argv[2:])
-    {'tcpserver': tcpserver, 'udp': udp, 'http': http, 'mcast': mcast, 'stuckpair': stuckpair}[mode](a)
+    {'tcpserver': tcpserver, 'udp': udp, 'http': http, 'mcast': mcast, 'stuckpair': stuckpair, 'tlsserver': tlsserver,
+     'https': https}[mode](a)

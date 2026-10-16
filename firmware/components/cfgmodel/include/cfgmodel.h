@@ -30,6 +30,12 @@ size_t cfg_names(const cfg_env_t *env, const char **out, size_t max);
 
 /** New default document for `name` (caller deletes), or NULL if unknown. */
 cJSON *cfg_default(const cfg_env_t *env, const char *name);
+/**
+ * The listen ports across configs (Plan 08b T0): a port whose bridge is a TCP server (workMode 3) may not
+ * listen where the other port's TCP server does, nor on system.webPort or system.websocketPort. Any of
+ * the three may be NULL (not configured). False with a message for the user when two clash.
+ */
+bool cfg_listen_ok(const cJSON *port1, const cJSON *port2, const cJSON *system, char *err, size_t errlen);
 
 /**
  * Validates `in` against the schema of `name` and returns a normalised copy:

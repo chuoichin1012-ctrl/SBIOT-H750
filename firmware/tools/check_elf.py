@@ -31,7 +31,9 @@ APP_ITCM = ['vTaskSwitchContext', 'xTaskIncrementTick', 'PendSV_Handler', 'SysTi
             'USART1_IRQHandler', 'USART2_IRQHandler', 'DMA1_Stream2_IRQHandler', 'DMA1_Stream3_IRQHandler',
             'DMA1_Stream4_IRQHandler', 'DMA1_Stream5_IRQHandler', 'TIM2_IRQHandler',
             # the ADC (Plan 07b)
-            'BDMA_Channel0_IRQHandler', 'ADC3_IRQHandler']
+            'BDMA_Channel0_IRQHandler', 'ADC3_IRQHandler',
+            # mbedTLS's bignum core (Plan 08b)
+            'mbedtls_mpi_core_mla']
 ITCM = (0x00000400, 0x00010000)
 AXI = (0x24000000, 0x24080000)
 SRAM1 = (0x30000000, 0x30020000)

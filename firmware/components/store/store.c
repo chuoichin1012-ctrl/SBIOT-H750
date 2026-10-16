@@ -492,6 +492,31 @@ static store_err_t from_cfg(cfg_result_t r, char *err, size_t errlen)
     }
 }
 
+// The listen ports with `name` as it would be saved (`text`) and the others as stored. Under LOCK.
+static store_err_t listen_check(const char *name, const char *text, char *err, size_t errlen)
+{
+    static const char *const NAMES[] = {"port1", "port2", "system"};
+    cJSON *c[3] = {NULL, NULL, NULL};
+    bool missing = false;  // a config that is there but did not parse: out of memory (Codex 08b r1)
+    for (int k = 0; k < 3; k++) {
+        if (!strcmp(name, NAMES[k])) {
+            c[k] = cJSON_Parse(text);
+            missing |= !c[k];
+        } else {
+            int i = cache_find(NAMES[k]);
+            if (i >= 0) {
+                c[k] = cJSON_ParseWithLength(s_pool + s_cache[i].off, s_cache[i].len);
+                missing |= !c[k];
+            }
+        }
+    }
+    store_err_t r = missing ? from_cfg(CFG_NO_MEMORY, err, errlen)
+                    : cfg_listen_ok(c[0], c[1], c[2], err, errlen) ? STORE_OK : STORE_EINVALID;
+    for (int k = 0; k < 3; k++)
+        cJSON_Delete(c[k]);
+    return r;
+}
+
 store_err_t store_set_text(const char *name, const char *text, size_t len, char *err, size_t errlen)
 {
     err[0] = '\0';
@@ -514,6 +539,8 @@ store_err_t store_set_text(const char *name, const char *text, size_t len, char 
     store_err_t e = cur ? from_cfg(cfg_validate_text(&s_env, name, text, len, cur, out, CFG_SMALL_BUF, err, errlen), err, errlen)
                         : from_cfg(CFG_NO_MEMORY, err, errlen);
     cJSON_Delete(cur);
+    if (e == STORE_OK && (!strcmp(name, "port1") || !strcmp(name, "port2") || !strcmp(name, "system")))
+        e = listen_check(name, out, err, errlen);  // Plan 08b T0: across the configs
     size_t n = e == STORE_OK ? strlen(out) : 0;
     if (e == STORE_OK && !cache_fits(name, n)) {
         snprintf(err, errlen, "The settings do not fit in the gateway's memory.");

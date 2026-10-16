@@ -68,9 +68,9 @@ void console_status_line(char *out, size_t cap)
     net_status_t ns;
     netmgr_status(&ns);
     char t[20];
-    sysmgr_time_str(t);
-    snprintf(out, cap, "firmware %s, up %lus, time %s, eth %lu.%lu.%lu.%lu (link %s), free heap %u\n", APP_VERSION,
-             (unsigned long)sysmgr_uptime_s(), t[0] ? t : "not set", (unsigned long)(ns.ip >> 24), (unsigned long)(ns.ip >> 16 & 255),
+    sysmgr_display_time(t);
+    snprintf(out, cap, "firmware %s, up %lus, time %s%s, eth %lu.%lu.%lu.%lu (link %s), free heap %u\n", APP_VERSION,
+             (unsigned long)sysmgr_uptime_s(), t, sysmgr_clock_set() ? "" : " (not set)", (unsigned long)(ns.ip >> 24), (unsigned long)(ns.ip >> 16 & 255),
              (unsigned long)(ns.ip >> 8 & 255), (unsigned long)(ns.ip & 255), ns.eth.up ? "up" : "down", (unsigned)heap_free_now());
 }
 

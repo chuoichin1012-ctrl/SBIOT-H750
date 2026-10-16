@@ -284,9 +284,29 @@ static void test_stm32_scope(void)
     }
 }
 
+static void test_listen_ports(void)
+{
+    cJSON *a = cJSON_Parse("{\"workMode\":3,\"listenPort\":23}"), *b = cJSON_Parse("{\"workMode\":3,\"listenPort\":23}");
+    cJSON *b24 = cJSON_Parse("{\"workMode\":3,\"listenPort\":24}"), *bcl = cJSON_Parse("{\"workMode\":1,\"listenPort\":23}");
+    cJSON *sys = cJSON_Parse("{\"webPort\":80,\"websocketPort\":6432}"), *w23 = cJSON_Parse("{\"webPort\":23,\"websocketPort\":6432}");
+    cJSON *a80 = cJSON_Parse("{\"workMode\":3,\"listenPort\":80}"), *a6432 = cJSON_Parse("{\"workMode\":3,\"listenPort\":6432}");
+    char err[160] = "";
+    CHECK(!cfg_listen_ok(a, b, sys, err, sizeof err) && strstr(err, "23"), "both TCP servers on 23: refused (%s)", err);
+    CHECK(cfg_listen_ok(a, b24, sys, err, sizeof err), "23 and 24: fine");
+    CHECK(cfg_listen_ok(a, bcl, sys, err, sizeof err), "port2 not a TCP server: its listenPort does not count");
+    CHECK(!cfg_listen_ok(a80, b24, sys, err, sizeof err) && strstr(err, "80"), "UART1 on the web port: refused (%s)", err);
+    CHECK(!cfg_listen_ok(a, a6432, sys, err, sizeof err), "UART2 on the WebSocket port: refused");
+    CHECK(!cfg_listen_ok(a, b24, w23, err, sizeof err), "system: the web port moved onto UART1's: refused");
+    CHECK(cfg_listen_ok(a, NULL, NULL, err, sizeof err), "nothing else configured: fine");
+    cJSON *all[] = {a, b, b24, bcl, sys, w23, a80, a6432};
+    for (size_t i = 0; i < sizeof all / sizeof all[0]; i++)
+        cJSON_Delete(all[i]);
+}
+
 int main(void)
 {
     test_stm32_scope();
+    test_listen_ports();
     test_two_port_values();
     test_edge_strict();
     test_defaults_validate();

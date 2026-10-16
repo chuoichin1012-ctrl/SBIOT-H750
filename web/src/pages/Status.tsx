@@ -35,7 +35,7 @@ export function StatusPage(_: { path?: string }) {
 
   if (!st.data) return <Pending error={st.error} retry={st.reload} />;
   const s: StatusInfo = st.data;
-  const timeSuspect = s.system.time.startsWith('1970');
+  const timeSuspect = s.system.clockSet === false;
 
   const panel: [string, LedState, string][] = [
     ['Ethernet', s.system.activeNet === 'ETH' ? 'ok' : s.eth.ip ? 'warn' : 'off', s.eth.ip || 'No address'],

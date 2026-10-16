@@ -130,9 +130,39 @@ static size_t heartbeat(bridge_t *b, uint8_t *out, size_t max)
 
 typedef void (*reply_fn)(void *ctx, const uint8_t *data, size_t len);
 
-static void reply_tcp(void *ctx, const uint8_t *data, size_t len)
+static int send_cl(void *ctx, const uint8_t *data, size_t len);
+
+typedef struct {
+    bridge_t *b;
+    client_t *cl;
+} tcp_reply_t;
+
+// Waits up to 10 ms for room on the client's socket (tx_finish's pace).
+static void wait_writable(void *ctx)
 {
     client_t *cl = ctx;
+    fd_set w;
+    FD_ZERO(&w);
+    FD_SET(cl->c.fd, &w);
+    struct timeval tv = {.tv_sec = 0, .tv_usec = 10000};
+    if (lwip_select(cl->c.fd + 1, NULL, &w, NULL, &tv) < 0)
+        vTaskDelay(1);
+}
+
+// A reply on a connection: a frame still in flight on it goes out whole first (tx_finish, Codex 08b code review).
+static void reply_tcp(void *ctx, const uint8_t *data, size_t len)
+{
+    tcp_reply_t *t = ctx;
+    client_t *cl = t->cl;
+    if (cl->pend && cl->tx.busy) {
+        if (tx_finish(&cl->tx, t->b->frame, t->b->frame_len, send_cl, cl, now_ms, wait_writable, REPLY_MS) != TX_DONE) {
+            conn_close(&cl->c);  // the caller drops it
+            return;
+        }
+        cl->pend = false;
+        svc_net_activity();
+        t->b->last_io_us = now_us();
+    }
     if (!conn_send_all(&cl->c, data, len, REPLY_MS))
         conn_close(&cl->c);  // the caller drops it
 }
@@ -296,12 +326,15 @@ static bool send_frames(bridge_t *b, bool reg_prefix)
 }
 
 // select() for the clients (and the listener when given): readable, and writable for a frame in flight.
+// A TLS client whose bytes are already inside mbedTLS counts as readable: select cannot see them, so
+// the wait is 0 and its fd is added to rd (Plan 08b, wait_ready).
 static int wait(bridge_t *b, int lfd, fd_set *rd, uint32_t ms)
 {
     fd_set wr;
     FD_ZERO(rd);
     FD_ZERO(&wr);
     int maxfd = -1;
+    bool held = false;
     if (lfd >= 0) {
         FD_SET(lfd, rd);
         maxfd = lfd;
@@ -312,13 +345,22 @@ static int wait(bridge_t *b, int lfd, fd_set *rd, uint32_t ms)
             FD_SET(b->cli[i].c.fd, &wr);
         if (b->cli[i].c.fd > maxfd)
             maxfd = b->cli[i].c.fd;
+        held |= conn_pending(&b->cli[i].c);
     }
     if (maxfd < 0) {
         vTaskDelay(pdMS_TO_TICKS(ms ? ms : 1));
         return 0;
     }
-    struct timeval tv = {.tv_sec = 0, .tv_usec = (long)ms * 1000};
-    return lwip_select(maxfd + 1, rd, &wr, NULL, &tv);
+    struct timeval tv = {.tv_sec = 0, .tv_usec = held ? 0 : (long)ms * 1000};
+    int n = lwip_select(maxfd + 1, rd, &wr, NULL, &tv), extra = 0;
+    if (n < 0)
+        FD_ZERO(rd);
+    for (int i = 0; held && i < b->ncli; i++)
+        if (conn_pending(&b->cli[i].c) && !FD_ISSET(b->cli[i].c.fd, rd)) {
+            FD_SET(b->cli[i].c.fd, rd);
+            extra++;
+        }
+    return wait_ready(n, extra);
 }
 
 // Reads what the clients sent, at most PASS_READS reads; drops those that closed. True when it read.
@@ -335,8 +377,10 @@ static bool read_clients(bridge_t *b, fd_set *rd)
         int r = conn_recv(&cl->c, buf, NET_BUF);
         reads++;
         work = true;
-        if (r > 0)
-            from_network(b, cl, buf, (size_t)r, reply_tcp, cl);
+        if (r > 0) {
+            tcp_reply_t rc = {b, cl};
+            from_network(b, cl, buf, (size_t)r, reply_tcp, &rc);
+        }
         if (r == 0 || r == NET_FAIL || cl->c.fd < 0)
             gone[i] = true;
     }
@@ -347,6 +391,21 @@ static bool read_clients(bridge_t *b, fd_set *rd)
             drop_client(b, i);
         }
     return work;
+}
+
+// ---- TLS (Plan 08b) ----------------------------------------------------------------------------
+
+static const char *const SCOPE[] = {"port1", "port2"};  // the certificates' scope (store_cert_get)
+
+// The bench reads this once per boot and kind (6 KB stacks, RSA-2048 handshakes: spec §6.1, Plan 08b).
+static void headroom(bridge_t *b, int kind, const char *what)
+{
+    static bool s_done[SERIAL_PORTS][2];
+    if (s_done[b->n - 1][kind])
+        return;
+    s_done[b->n - 1][kind] = true;
+    SLOG_I("bridge", "UART%d: stack headroom after %s: %u bytes", b->n, what,
+           (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
 }
 
 // ---- TCP server --------------------------------------------------------------------------------
@@ -439,12 +498,23 @@ static void tcp_client(bridge_t *b)
             }
             set_state(b, "CONNECTING");
             int fd = net_tcp_connect(b->C.host, b->C.remote_port, b->C.local_port, 10000);
+            tls_conn_t *tls = NULL;
+            if (fd >= 0 && b->C.tls) {  // the session before CONNECTED: a failed handshake is a failed connect
+                tls = tls_open(fd, SCOPE[b->n - 1], b->C.host, b->C.tls_verify, 10000, NULL);
+                if (!tls) {
+                    closesocket(fd);
+                    fd = -1;
+                } else {
+                    headroom(b, 0, "the TLS handshake");
+                }
+            }
             if (fd < 0) {
                 next_try = now_us() + (uint64_t)(b->C.reconnect_s > 0 ? b->C.reconnect_s : 1) * 1000000u;
                 continue;
             }
             memset(cl, 0, sizeof *cl);
             cl->c.fd = fd;
+            cl->c.tls = tls;
             b->ncli = 1;
             b->have = false;
             SLOG_I("bridge", "UART%d: connected to %s:%u", b->n, b->C.host, b->C.remote_port);
@@ -610,6 +680,11 @@ static void http_request(bridge_t *b)
     set_state(b, "CONNECTING");
     uint32_t timeout_ms = (uint32_t)b->C.http_timeout_s * 1000u;
     conn_t c = {.fd = net_tcp_connect(b->C.http_host, b->C.http_port, b->C.http_local, timeout_ms)};
+    if (c.fd >= 0 && b->C.tls) {  // HTTPS
+        c.tls = tls_open(c.fd, SCOPE[b->n - 1], b->C.http_host, b->C.tls_verify, timeout_ms, NULL);
+        if (!c.tls)
+            conn_close(&c);
+    }
     if (c.fd < 0) {
         SLOG_W("bridge", "UART%d: HTTP server %s:%u unreachable", b->n, b->C.http_host, b->C.http_port);
         set_state(b, "WAITING");
@@ -631,6 +706,8 @@ static void http_request(bridge_t *b)
             break;
         got += (size_t)r;
     }
+    if (c.tls)
+        headroom(b, 1, "HTTPS");
     conn_close(&c);
     if (!got) {
         SLOG_W("bridge", "UART%d: no HTTP response from %s", b->n, b->C.http_host);
@@ -695,11 +772,6 @@ int bridge_start(int port, const cJSON *pcfg, const cJSON *sys)
     if (b->C.acl_bad)
         SLOG_W("bridge", "UART%d: allowedClients ignored: not a valid list", port);
     b->on = true;
-    if (b->C.tls) {
-        SLOG_E("bridge", "UART%d: TLS comes with Plan 08b: the socket is off", port);
-        set_state(b, "TLS UNAVAILABLE");
-        return -1;
-    }
     size_t size = b->C.keep_offline ? RB_OFFLINE : RB_ONLINE;
     b->mb = xMessageBufferCreateStatic(size, s_mb_store[port - 1], &b->mb_mem);
     serial_subscribe(port, on_serial, b);

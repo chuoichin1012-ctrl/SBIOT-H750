@@ -454,7 +454,7 @@ def case_load():
     w.req('POST', '/api/config/port2', body=json.dumps(p2).encode())
     check(setup(1, **base(baudRate=230400)), 'set up a TCP server, UART1 and UART2 at 230 400, DO1 pulse 2 s')
     s = socket.create_connection((GW, 23), 5)
-    a0 = sc.find(sc.console([(0.3, 'a')], 1), r'windows (\d+) late (\d+)')
+    a0 = adc_pace()  # on the board's clock
     import threading
     stop = [False]
     got = [0]
@@ -485,13 +485,12 @@ def case_load():
         w.req('POST', '/api/io', body=json.dumps({'do': 0, 'value': True}).encode())
     lines = [l for _, l in board.listen(64, sends=[(0.3, 'E'), (0.4, '2 3 60\r'), (29.0, 'D'), (35.0, 'D')], during=pulse)]
     out, _ = flood.communicate()
-    a1 = sc.find(sc.console([(0.3, 'a')], 1), r'windows (\d+) late (\d+)')
+    a1 = adc_pace()
     stop[0] = True
     th.join(2)
     s.close()
-    el = time.time() - t0
-    wins = (int(a1.group(1)) - int(a0.group(1))) / el if a0 and a1 else -1
-    late = int(a1.group(2)) - int(a0.group(2)) if a0 and a1 else -1
+    wins = (a1[1] - a0[1]) / (a1[0] - a0[0]) if a0 and a1 else -1
+    late = a1[2] - a0[2] if a0 and a1 else -1
     outs = [(int(m.group(2)), int(m.group(1), 16)) for l in lines for m in [re.search(r'outputs 0x(\w+) at (\d+) ms', l)] if m]
     on = [t for t, v in outs if v & 1]
     off = [t for t, v in outs if not v & 1 and on and t > on[0]]

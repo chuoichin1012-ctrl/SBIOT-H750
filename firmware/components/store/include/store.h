@@ -20,7 +20,7 @@ typedef enum {
     STORE_EBUSY,      // 503: another edgeDevices save is in progress (Plan 09c)
 } store_err_t;
 
-#define STORE_EDGE_RECORD 8192u  // bytes of normalised text per edgeDevices record
+#define STORE_EDGE_RECORD 16000u  // bytes of body text per edgeDevices record: one fills a 16 KB sector (Plan 09d)
 #ifndef STORE_CACHE_SIZE
 #define STORE_CACHE_SIZE 20480u  // RAM for the compact text of every small config (spec §5.3)
 #endif

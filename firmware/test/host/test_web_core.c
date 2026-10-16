@@ -72,8 +72,8 @@ static void test_policy(void)
     CHECK(web_body_check(WEB_EP_PLAIN, true, false, 10241, slot) == 413, "10 241 bytes");
     CHECK(web_body_check(WEB_EP_PLAIN, false, false, 0, slot) == 0, "a GET: no body, no length");
     CHECK(web_body_check(WEB_EP_PLAIN, true, true, 10, slot) == 411, "chunked");
-    CHECK(web_body_check(WEB_EP_EDGE, true, false, 49152, slot) == 0, "Edge 48 KB");
-    CHECK(web_body_check(WEB_EP_EDGE, true, false, 49153, slot) == 413, "Edge over 48 KB");
+    CHECK(web_body_check(WEB_EP_EDGE, true, false, 96000, slot) == 0, "Edge 96 000 bytes");
+    CHECK(web_body_check(WEB_EP_EDGE, true, false, 96001, slot) == 413, "Edge 96 001 bytes");
     CHECK(web_body_check(WEB_EP_EDGE, false, false, 0, slot) == 411, "Edge without a length");
     CHECK(web_body_check(WEB_EP_CERT, true, false, 12288, slot) == 0, "cert 12 KB");
     CHECK(web_body_check(WEB_EP_CERT, true, false, 12289, slot) == 413, "cert over 12 KB");

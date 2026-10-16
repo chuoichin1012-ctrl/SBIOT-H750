@@ -194,6 +194,18 @@ static char *edge_model(int devs, int per, int tag)
     return b;
 }
 
+/** `m` (freed) padded with spaces before its last ']' to exactly n bytes: a body as large as the limit (Plan 09d). */
+static char *padded(char *m, size_t n)
+{
+    size_t len = strlen(m);
+    char *b = malloc(n + 1);
+    memcpy(b, m, len - 1);
+    memset(b + len - 1, ' ', n - len);
+    b[n - 1] = ']', b[n] = '\0';
+    free(m);
+    return b;
+}
+
 static char *edge_now(void)
 {
     char *b = malloc(CFG_EDGE_MAX + 2);
@@ -529,7 +541,7 @@ static void test_edge_stream(void)
 {
     flash_new(41);
     reboot();
-    char err[200], *m0 = edge_model(10, 3, 1), *m = edge_model(100, 3, 2);
+    char err[200], *m0 = edge_model(10, 3, 1), *m = padded(edge_model(100, 3, 2), 40000);
     size_t len = strlen(m);
     CHECK(store_edge_save(m0, strlen(m0), err, sizeof err) == STORE_OK, "a first model (%s)", err);
     CHECK(len > 2 * STORE_EDGE_RECORD, "the body spans three records (%zu bytes)", len);
@@ -580,7 +592,9 @@ static void test_edge_stream(void)
     e = edge_now();
     CHECK(e && !strcmp(e, m0) && edge_keys("ed.") == 1, "the first model stands, no record of the refused bodies");
     free(e);
-    CHECK(store_edge_begin(CFG_EDGE_MAX + 1, err, sizeof err) == STORE_ETOOLARGE, "over 48 KB announced: 413");
+    CHECK(store_edge_begin(96001, err, sizeof err) == STORE_ETOOLARGE, "96 001 bytes announced: 413");
+    CHECK(store_edge_begin(96000, err, sizeof err) == STORE_OK, "96 000 bytes announced: a session");
+    store_edge_abort();
     CHECK(store_edge_begin(len, err, sizeof err) == STORE_OK && store_edge_begin(len, err, sizeof err) == STORE_EBUSY,
           "a second session while one is open: 503");
     store_edge_abort();
@@ -868,10 +882,10 @@ static void test_edge_save_and_read(void)
     CHECK(store_edge_save("[", 1, err, sizeof err) == STORE_EINVALID, "not JSON: 400");
     CHECK(store_edge_save("{}", 2, err, sizeof err) == STORE_EINVALID && !strcmp(err, "The settings must be a JSON array."),
           "not an array: 400 (%s)", err);
-    char *huge = malloc(CFG_EDGE_MAX + 2);
-    memset(huge, ' ', CFG_EDGE_MAX + 1);
-    huge[0] = '[', huge[CFG_EDGE_MAX] = ']', huge[CFG_EDGE_MAX + 1] = '\0';
-    CHECK(store_edge_save(huge, CFG_EDGE_MAX + 1, err, sizeof err) == STORE_ETOOLARGE, "49 153 bytes: 413");
+    char *huge = malloc(96001 + 1);
+    memset(huge, ' ', 96001);
+    huge[0] = '[', huge[96000] = ']', huge[96001] = '\0';
+    CHECK(store_edge_save(huge, 96001, err, sizeof err) == STORE_ETOOLARGE, "96 001 bytes: 413");
     free(huge);
     store_edge_pin(&p);
     e = edge_now();
@@ -893,24 +907,30 @@ static void test_edge_save_and_read(void)
 
 static void test_edge_too_large(void)
 {
-    // Exactly 49 152 bytes, a 2-byte UTF-8 letter cut by every record boundary: stored and read back as sent.
+    // Exactly 96 000 bytes (Plan 09d), a 2-byte UTF-8 letter cut by every record boundary: stored in 6 records
+    // and read back as sent.
+    const size_t max = 96000;
     flash_new(11);
     reboot();
-    char *m = malloc(CFG_EDGE_MAX + 1), err[200];
+    char *m = malloc(max + 1), err[200];
     size_t o = 0;
     o += (size_t)sprintf(m, "[{\"name\":\"");
-    while (o < CFG_EDGE_MAX - 3) {
+    while (o < max - 3) {
         if (o % STORE_EDGE_RECORD == STORE_EDGE_RECORD - 1)
             m[o++] = (char)0xC3, m[o++] = (char)0xA9;  // "é" across the boundary
         else
             m[o++] = 'a';
     }
-    while (o < CFG_EDGE_MAX - 3)
+    while (o < max - 3)
         m[o++] = 'a';
     memcpy(m + o, "\"}]", 3), o += 3;
     m[o] = '\0';
-    CHECK(o == CFG_EDGE_MAX, "the body is 49 152 bytes (%zu)", o);
-    CHECK(store_edge_save(m, o, err, sizeof err) == STORE_OK, "a 48 KB body: saved (%s)", err);
+    CHECK(o == max, "the body is 96 000 bytes (%zu)", o);
+    CHECK(store_edge_save(m, o, err, sizeof err) == STORE_OK, "a 96 000-byte body: saved (%s)", err);
+    store_edge_pin_t p;
+    store_edge_pin(&p);
+    store_edge_unpin(&p);
+    CHECK(p.count == 6 && edge_keys("ed.") == 6, "in 6 records (%u)", (unsigned)p.count);
     char *e = edge_now();
     CHECK(e && !strcmp(e, m), "read back byte for byte, UTF-8 cut across records");
     free(e);
@@ -1116,6 +1136,35 @@ static void test_orphans(void)
     free(e), free(m), free(w);
 }
 
+/** A generation saved by Plan 09c's firmware, in 8 KB records: read back the same; the next save rewrites it in
+ * 16 000-byte records (Plan 09d ruling 1). */
+static void test_old_records(void)
+{
+    flash_new(43);
+    reboot();
+    char err[200], *m = padded(edge_model(10, 4, 3), 20000), part[8193];
+    for (int i = 0; i < 3; i++) {
+        size_t n = strlen(m + i * 8192) < 8192 ? strlen(m + i * 8192) : 8192;
+        memcpy(part, m + i * 8192, n), part[n] = '\0';
+        char key[] = "ed.1.0";
+        key[5] = (char)('0' + i);
+        raw_put("edge", key, part);
+    }
+    raw_put("edge", "edgeDevices", "@1,3");
+    char *e = edge_now();
+    CHECK(e && !strcmp(e, m), "8 KB records of an earlier firmware: read back the same");
+    free(e);
+    char *m2 = padded(edge_model(10, 4, 4), 20000);
+    CHECK(store_edge_save(m2, strlen(m2), err, sizeof err) == STORE_OK, "the next save (%s)", err);
+    store_edge_pin_t p;
+    store_edge_pin(&p);
+    store_edge_unpin(&p);
+    e = edge_now();
+    CHECK(e && !strcmp(e, m2) && p.gen == 2 && p.count == 2 && edge_keys("ed.1.") == 0 && edge_keys("ed.2.") == 2,
+          "rewritten in 16 000-byte records: generation %u, %u records", (unsigned)p.gen, (unsigned)p.count);
+    free(e), free(m), free(m2);
+}
+
 // ---- power cuts ------------------------------------------------------------------------------
 
 static uint8_t *s_snap;
@@ -1164,13 +1213,17 @@ static long erases_in_save(const char *mb)
     return s_erases - e0;
 }
 
-static void test_power_cuts(void)
+// big: the measured save is a 96 000-byte body (Plan 09d), 6 records over the committed one.
+static void power_cuts(bool big)
 {
     s_snap = malloc(0x100000);
-    flash_new(20);
+    flash_new(big ? 25 : 20);
     reboot();
     char err[200];
-    char *ma = edge_model(14, 4, 1), *wa = edge_oracle(ma), *mb = edge_model(16, 4, 2), *wb = edge_oracle(mb);
+    char *ma = edge_model(14, 4, 1), *wa = edge_oracle(ma), *mb = edge_model(16, 4, 2);
+    if (big)
+        mb = padded(mb, 96000);
+    char *wb = edge_oracle(mb);
     // Fill the edge database until the next save of mb has to collect garbage, then save ma.
     for (int i = 0; i < 40; i++) {
         char *m = edge_model(16, 4, 50 + i);
@@ -1270,25 +1323,36 @@ static void test_power_cuts(void)
     free(ma), free(wa), free(mb), free(wb), free(s_snap);
 }
 
+static void test_power_cuts(void)
+{
+    power_cuts(false);
+    power_cuts(true);
+}
+
 // A write failing once (NOR_EIO, nothing written) at every operation of an edge save: whatever
 // the save answers, the model it leaves in RAM is the one the reboot finds, and it is exactly the
 // old or the new one (a commit that FlashDB reports as failed must not lose the new records).
-static void write_failures_from(bool empty);
+static void write_failures_from(bool empty, bool big);
 
 static void test_write_failures(void)
 {
-    write_failures_from(false);
-    write_failures_from(true);
+    write_failures_from(false, false);
+    write_failures_from(true, false);
+    write_failures_from(false, true);
 }
 
 // empty: no model saved before the measured save (old generation 0, the default text).
-static void write_failures_from(bool empty)
+// big: the measured save is a 96 000-byte body (Plan 09d).
+static void write_failures_from(bool empty, bool big)
 {
     s_snap = malloc(0x100000);
-    flash_new(empty ? 24 : 22);
+    flash_new(empty ? 24 : big ? 26 : 22);
     reboot();
     char err[200];
-    char *ma = edge_model(14, 4, 1), *mb = edge_model(16, 4, 2), *wb = edge_oracle(mb);
+    char *ma = edge_model(14, 4, 1), *mb = edge_model(16, 4, 2);
+    if (big)
+        mb = padded(mb, 96000);
+    char *wb = edge_oracle(mb);
     char *wa = empty ? default_text("edgeDevices") : edge_oracle(ma);
     for (int i = 0; !empty && i < 40; i++) {  // as in test_power_cuts: the measured save collects garbage
         char *m = edge_model(16, 4, 50 + i);
@@ -1345,7 +1409,8 @@ static void write_failures_from(bool empty)
         free(before), free(after);
     }
     s_quiet = false;
-    CHECK(bad == 0, "edge save%s: %d of %ld single write failures end inconsistent", empty ? " (no model before)" : "", bad, total);
+    CHECK(bad == 0, "edge save%s: %d of %ld single write failures end inconsistent",
+          empty ? " (no model before)" : big ? " (96 000 bytes)" : "", bad, total);
     free(ma), free(wa), free(mb), free(wb), free(s_snap);
 }
 
@@ -1840,6 +1905,7 @@ int main(void)
         test_lost_manifest();
         test_no_endless_loops();
         test_orphans();
+        test_old_records();
         test_log();
 #if STORE_CACHE_SIZE < 5000
         test_cache_full();

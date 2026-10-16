@@ -75,6 +75,13 @@ typedef struct {
      * anything, so a bad address in the middle changes nothing. NULL = no check.
      */
     bool (*exists)(void *ctx, uint8_t fc, uint16_t addr);
+    /**
+     * Optional, around a whole FC3/FC4 read (Plan 10c task 5): the registers come from one snapshot, so a 32/64-bit
+     * value is never made of two samples. begin false: exception 04 (device failure), nothing read, no end; after
+     * a true begin, end exactly once.
+     */
+    bool (*begin)(void *ctx);
+    void (*end)(void *ctx);
     void *ctx;
 } mb_map_t;
 

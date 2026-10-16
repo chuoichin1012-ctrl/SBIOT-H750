@@ -100,6 +100,45 @@ static uint8_t wbit(void *ctx, uint16_t a, bool on)
 }
 static bool exists(void *ctx, uint8_t fc, uint16_t a) { return a < 4; }
 
+// Plan 10c task 5 (Codex review, Important 5): one snapshot per register read. begin/end wrap the whole
+// FC3/FC4 loop, so a 32-bit value is never made of two samples.
+static int s_begins, s_ends, s_inside_reads, s_outside_reads, s_fail_reg = -1;
+static bool s_begin_ok = true, s_in;
+static bool hbegin(void *ctx) { s_begins++; if (s_begin_ok) s_in = true; return s_begin_ok; }
+static void hend(void *ctx) { s_ends++; s_in = false; }
+static uint8_t hreg(void *ctx, uint8_t fc, uint16_t a, uint16_t *v)
+{
+    if (s_in) s_inside_reads++; else s_outside_reads++;
+    if ((int)a == s_fail_reg) return MB_EX_ILLEGAL_ADDRESS;
+    *v = (uint16_t)(a * 10);
+    return 0;
+}
+
+static void test_serve_snapshot(void)
+{
+    const mb_map_t map = {.read_reg = hreg, .begin = hbegin, .end = hend};
+    uint8_t out[64];
+    const uint8_t rd4[] = {7, 3, 0, 0, 0, 4};
+    size_t n = mb_serve(&map, rd4, sizeof rd4, out, sizeof out);
+    CHECK(n == 11 && s_begins == 1 && s_ends == 1 && s_inside_reads == 4 && s_outside_reads == 0,
+          "4 registers: begin once, 4 reads inside, end once (%d %d %d %d)", s_begins, s_ends, s_inside_reads, s_outside_reads);
+    s_begins = s_ends = s_inside_reads = s_outside_reads = 0;
+    s_begin_ok = false;
+    n = mb_serve(&map, rd4, sizeof rd4, out, sizeof out);
+    CHECK(n == 3 && out[1] == 0x83 && out[2] == MB_EX_DEVICE_FAILURE && s_ends == 0 && s_inside_reads + s_outside_reads == 0,
+          "begin fails: device failure, nothing read, no end (%u %d)", out[2], s_ends);
+    s_begin_ok = true;
+    s_begins = s_ends = s_inside_reads = s_outside_reads = 0;
+    s_fail_reg = 2;
+    n = mb_serve(&map, rd4, sizeof rd4, out, sizeof out);
+    CHECK(n == 3 && out[2] == MB_EX_ILLEGAL_ADDRESS && s_begins == 1 && s_ends == 1, "a read fails on the 3rd: exception, end once (%d)", s_ends);
+    s_fail_reg = -1;
+    const mb_map_t plain = {.read_reg = hreg};
+    s_in = false;
+    n = mb_serve(&plain, rd4, sizeof rd4, out, sizeof out);
+    CHECK(n == 11 && out[4] == 0 && out[6] == 10, "a map without hooks reads as before");
+}
+
 static void test_serve(void)
 {
     const mb_map_t map = {.read_bit = rbit, .read_reg = rreg, .write_bit = wbit, .exists = exists};
@@ -439,6 +478,7 @@ int main(void)
     test_crc();
     test_tcp();
     test_serve();
+    test_serve_snapshot();
     printf(failures ? "%d FAILED\n" : "proto: all tests passed\n", failures);
     return failures != 0;
 }

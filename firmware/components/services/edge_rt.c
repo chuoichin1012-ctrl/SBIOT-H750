@@ -493,19 +493,19 @@ static uint8_t map_read_bit(void *ctx, uint8_t fc, uint16_t addr, bool *out)
     return ok ? 0 : MB_EX_TARGET_NO_RESPONSE;  // it exists, but its last read failed (or none yet)
 }
 
+/** FC3/FC4, one register: under the cache lock map_begin took for the whole read (Plan 10c task 5). */
 static uint8_t map_read_reg(void *ctx, uint8_t fc, uint16_t addr, uint16_t *out)
 {
     int off;
     edge_pt_t *p = edge_point_at(ctx, fc, addr, &off);
     if (!p)
         return MB_EX_ILLEGAL_ADDRESS;
-    if (!cache_lock())
-        return MB_EX_DEVICE_FAILURE;
-    bool ok = p->valid;
     *out = p->raw[off];
-    cache_unlock();
-    return ok ? 0 : MB_EX_TARGET_NO_RESPONSE;
+    return p->valid ? 0 : MB_EX_TARGET_NO_RESPONSE;
 }
+
+static bool map_begin(void *ctx) { return cache_lock(); }
+static void map_end(void *ctx) { cache_unlock(); }
 
 static uint8_t map_write_bit(void *ctx, uint16_t addr, bool on)
 {
@@ -560,7 +560,8 @@ static size_t serve_mapped(edge_dev_t *d, const uint8_t *req, size_t len, uint8_
     const mb_map_t map = {.read_bit = map_read_bit, .read_reg = map_read_reg,
                           .write_bit = R.remote_write ? map_write_bit : NULL,
                           .write_reg = R.remote_write ? map_write_reg : NULL,
-                          .write_regs = R.remote_write ? map_write_regs : NULL, .exists = map_exists, .ctx = d};
+                          .write_regs = R.remote_write ? map_write_regs : NULL, .exists = map_exists,
+                          .begin = map_begin, .end = map_end, .ctx = d};
     return mb_serve(&map, req, len, out, max);
 }
 

@@ -62,10 +62,10 @@ def req(method, path, body=None, auth=AUTH, headers=None, timeout=20, sock=None)
 RETRY_PAUSE = 2
 
 
-def req_retry(method, path, body=None, headers=None, timeout=20):
-    """req's status, and whether its connect was tried again: a connect that times out is tried once more,
-    RETRY_PAUSE s later (on this bench, WSL NAT, one in a few thousand does while the board answers the next).
-    A timeout once connected, sending or waiting for the reply, fails as in req."""
+def connect_retry(timeout=20):
+    """A socket connected to the board, and whether its connect was tried again: a connect that times out is
+    tried once more, RETRY_PAUSE s later (on this bench, WSL NAT, one in a few thousand does while the board
+    answers the next). For req(sock=...): a timeout once connected fails as in req."""
     again = False
     try:
         sock = socket.create_connection((HOST, PORT), 5)
@@ -74,6 +74,12 @@ def req_retry(method, path, body=None, headers=None, timeout=20):
         time.sleep(RETRY_PAUSE)
         sock = socket.create_connection((HOST, PORT), 5)
     sock.settimeout(timeout)
+    return sock, again
+
+
+def req_retry(method, path, body=None, headers=None, timeout=20):
+    """req's status over connect_retry, and whether its connect was tried again."""
+    sock, again = connect_retry(timeout)
     return req(method, path, body=body, headers=headers, timeout=timeout, sock=sock)[0], again
 
 
@@ -368,16 +374,17 @@ def edge_model(devs, per):
 
 
 def case_edge():
-    model = edge_model(10, 10)  # 100 points, the STM32 limit
+    model = edge_model(30, 10)  # 300 points, the STM32 limit (Plan 09d)
     text = json.dumps(model).encode()
-    body = text[:-1] + b' ' * (40 * 1024 - len(text)) + b']'  # whitespace up to 40 KB: still the same model
+    body = text[:-1] + b' ' * (96000 - len(text)) + b']'  # whitespace up to 96 000 bytes: still the same model
     s, _, d = req('POST', '/api/config/edgeDevices', body=body, timeout=60)
-    s2, back = get_json('/api/config/edgeDevices')
-    names = [n['name'] for dev in (back or []) for n in dev.get('nodes', [])]
-    check(s == 200 and s2 == 200 and len(names) == 100 and names[0] == 'p0' and names[-1] == 'p99',
-          'edgeDevices: a 40 KB body (100 points) saved and read back (%d, %d points)' % (s, len(names)))
-    s, _, _ = req('POST', '/api/config/edgeDevices', body=b' ' * 49153)
-    check(s == 413, 'edgeDevices over 48 KB: 413 (got %d)' % s)
+    s2, _, raw_back = req('GET', '/api/config/edgeDevices')
+    back = json.loads(raw_back) if s2 == 200 else []
+    names = [n['name'] for dev in back for n in dev.get('nodes', [])]
+    check(s == 200 and s2 == 200 and raw_back == body and len(names) == 300 and names[0] == 'p0' and names[-1] == 'p299',
+          'edgeDevices: a 96 000-byte body (300 points) saved and read back as sent (%d, %d points)' % (s, len(names)))
+    s, _, _ = req('POST', '/api/config/edgeDevices', body=b' ' * 96001)
+    check(s == 413, 'edgeDevices over 96 000 bytes: 413 (got %d)' % s)
     req('POST', '/api/config/edgeDevices', body=b'[]')
 
 
@@ -506,7 +513,7 @@ def case_review(ws_port):
     check(after['hostname'] == before['hostname'], 'a body cut short by the client: nothing saved')
 
     # 1b. On one connection, a POST with a body, then a GET without the login: both answered (r2).
-    pb = json.dumps({'hostname': before['hostname']}).encode()
+    pb = json.dumps(before, separators=(',', ':')).encode()  # the whole config: a body replaces it (Plan 09b)
     r = raw(b'POST /api/config/system HTTP/1.1\r\nHost: x\r\nAuthorization: ' + AUTH.encode() +
             b'\r\nContent-Length: %d\r\n\r\n' % len(pb) + pb + b'GET /api/device HTTP/1.1\r\nHost: x\r\n\r\n')
     check(b'HTTP/1.1 200' in r and b'HTTP/1.1 401' in r, 'a POST, then a GET without login on one connection: 200, then 401')
@@ -572,7 +579,7 @@ def case_review(ws_port):
 
     # 5. Edge GETs that hold 4 generations: the fifth gets 503, not an empty 200; closing frees them.
     big = json.dumps(edge_model(10, 10)).encode()
-    big = big[:-1] + b" " * (17 * 1024 - len(big)) + b"]"  # stored as sent (Plan 09b): 3 records, so a slow GET stays pinned
+    big = big[:-1] + b" " * (17 * 1024 - len(big)) + b"]"  # stored as sent (Plan 09b): 2 records of 16 000 B (Plan 09d), so a slow GET stays pinned
     holders = []
     for i in range(4):
         req('POST', '/api/config/edgeDevices', body=big.replace(b'"p0"', b'"q%d"' % i), timeout=60)

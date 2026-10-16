@@ -4,6 +4,7 @@ import { useDevice } from '../../lib/device';
 import { session } from '../../lib/auth';
 import { allNodeNames } from '../../lib/edge';
 import { useAsync } from '../../lib/hooks';
+import { edgeBodyError } from '../../lib/rules';
 import { useSaver } from '../../lib/save';
 import { ON_OFF, coerce, formErrors } from '../../lib/validate';
 import { Button, PageHeader, Panel, Pending, SaveBar, Tabs } from '../../components/ui';
@@ -63,6 +64,7 @@ export function EdgePage(props: { path?: string; tab?: string }) {
   };
   const rErrors = cfg.enabled ? formErrors(rDefs, cfg.report) : {};
   const rBad = Object.keys(rErrors).length > 0;
+  const sizeBad = edgeBodyError(cfg.slaves) !== null;  // shown on the Data acquisition tab
 
   return (
     <>
@@ -81,7 +83,7 @@ export function EdgePage(props: { path?: string; tab?: string }) {
       ) : (
         <>
           <Tabs base="/edge" active={tab} tabs={[
-            ['acquisition', 'Data acquisition'],
+            ['acquisition', `Data acquisition${sizeBad ? ' (check)' : ''}`],
             ['report', `Query & report${rBad ? ' (check)' : ''}`],
             ['linkage', 'Linkage'],
           ]} />
@@ -98,10 +100,10 @@ export function EdgePage(props: { path?: string; tab?: string }) {
 
       <SaveBar
         busy={save.busy}
-        disabled={rBad || !dirty}
+        disabled={rBad || sizeBad || !dirty}
         label="Save edge settings"
         busyLabel={`Saving ${step}…`}
-        note={rBad ? 'Query & report has fields that need attention.' : dirty ? 'Unsaved changes. They are kept while you visit other pages, until you save or discard.' : undefined}
+        note={sizeBad ? 'The data acquisition model is too large for the gateway.' : rBad ? 'Query & report has fields that need attention.' : dirty ? 'Unsaved changes. They are kept while you visit other pages, until you save or discard.' : undefined}
         onSave={() => save.run(async () => {
           await api.saveEdge(cfg, setStep);
           draft = null;

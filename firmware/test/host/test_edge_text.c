@@ -216,7 +216,7 @@ static void test_random(void)
 // ---- Limits and the arena -------------------------------------------------------------
 
 
-/** The largest model this firmware accepts: 64 devices, 100 points, every text field at its limit. */
+/** The largest model this firmware accepts: 64 devices, 300 points, every text field at its limit (Plan 09d). */
 static void largest_model(char *b, size_t cap)
 {
     size_t o = (size_t)snprintf(b, cap, "[");
@@ -225,7 +225,7 @@ static void largest_model(char *b, size_t cap)
                               "%s{\"name\":\"device_%02d_abcdef\",\"source\":\"uart\",\"uart\":%d,\"ip\":\"192.168.100.200\",\"ethPort\":502,"
                               "\"protocol\":\"modbus\",\"addr\":\"%d\",\"poll\":1000,\"mapEn\":false,\"mapAddr\":1,\"merge\":true,\"nodes\":[",
                               d ? "," : "", d, 1 + d % 2, d + 1);
-        int per = 100 / 64 + (d < 100 % 64);
+        int per = 300 / 64 + (d < 300 % 64);
         for (int i = 0; i < per; i++, k++) {
             o += (size_t)snprintf(b + o, cap - o,
                                   "%s{\"name\":\"point_%03d_abcdef\",\"fc\":3,\"reg\":%d,\"di\":\"\",\"dtype\":\"float32_abcd\",\"timeout\":200,"
@@ -240,7 +240,7 @@ static void largest_model(char *b, size_t cap)
 
 static void test_limits(void)
 {
-    static char b[65536];
+    static char b[131072];
     largest_model(b, sizeof b);
     char err[200];
     sbuf_t out = {0};
@@ -262,7 +262,7 @@ static void test_limits(void)
 /** Unknown keys are skipped without being parsed, and a heap that runs out is reported, never half a model. */
 static void test_memory_edges(void)
 {
-    static char b[49152];
+    static char b[131072];
     char err[200];
     size_t o = (size_t)snprintf(b, sizeof b, "[{\"name\":\"a\",\"junk\":[");
     while (o < 40000) o += (size_t)snprintf(b + o, sizeof b - o, "1,");
@@ -272,7 +272,8 @@ static void test_memory_edges(void)
     cfg_result_t r = cfg_edge_text(&ENV, b, strlen(b), true, CFG_EDGE_MAX, sink, &out, err, sizeof err);
     size_t peak = meter_peak_restart();
     CHECK(r == CFG_OK, "a 40 KB unknown key must be skipped (%d: %s)", r, err);
-    CHECK(peak < 20 * 1024, "the unknown key was parsed: heap peak %zu bytes", peak);
+    // the summary tables for 300 points raise the peak to about 22 KB (Plan 09d); a parsed 40 KB array would take over 1 MB
+    CHECK(peak < 32 * 1024, "the unknown key was parsed: heap peak %zu bytes", peak);
     free(out.p);
 
     largest_model(b, sizeof b);

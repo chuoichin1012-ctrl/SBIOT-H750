@@ -69,7 +69,7 @@ typedef enum {
 
 /** Exact limits of the accepted normalised text, in bytes (spec §9.3, §9.4). */
 #define CFG_SMALL_MAX 10240
-#define CFG_EDGE_MAX 49152
+#define CFG_EDGE_MAX 96000  // the edgeDevices body, 6 records (Plan 09d)
 /** cJSON_PrintPreallocated needs 5 bytes beyond the text (cJSON.h); size buffers for cfg_validate_text with this. */
 #define CFG_SMALL_BUF (CFG_SMALL_MAX + 6)
 

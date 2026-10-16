@@ -1,7 +1,7 @@
 // Unit tests for src/lib/rules.ts (Plan 09b T4): npm run test:unit (tsc to CommonJS, then node --test).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { REPORT_MAX, body, listenClash, systemPortClash, templateError26k, templateSize } from '../../src/lib/rules.js';
+import { EDGE_BODY_MAX, REPORT_MAX, body, edgeBodyError, listenClash, systemPortClash, templateError26k, templateSize } from '../../src/lib/rules.js';
 import { fieldError } from '../../src/lib/validate.js';
 
 const server = (port: number) => ({ workMode: 3, listenPort: port });
@@ -67,4 +67,15 @@ test('a text limit counts UTF-8 bytes, as the firmware buffers do', () => {
   assert.match(fieldError(def, { username: 'é'.repeat(9) }) ?? '', /16 bytes/);  // 18 bytes, 9 characters
   assert.equal(fieldError(def, { username: 'a'.repeat(16) }), null);
   assert.match(fieldError(def, { username: 'é'.repeat(8) + ' ' }) ?? '', /16 bytes/);  // 17 bytes as sent, untrimmed
+});
+
+test('the Edge model is refused over 96 000 bytes, counted as the body the gateway receives (Plan 09d)', () => {
+  assert.equal(EDGE_BODY_MAX, 96000);
+  const slaves = (name: string) => [{ name, nodes: [] }];
+  const fixed = body(slaves('')).length;
+  assert.equal(edgeBodyError(slaves('a'.repeat(96000 - fixed))), null);
+  assert.equal(edgeBodyError(slaves('a'.repeat(96001 - fixed))),
+    'The devices and points take 96 001 bytes; the gateway takes at most 96 000. Remove points or shorten names and formulas.');
+  // UTF-8 bytes, not characters: "é" is 2 bytes.
+  assert.ok(edgeBodyError(slaves('é'.repeat((96000 - fixed) / 2 + 1))) !== null);
 });

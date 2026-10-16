@@ -41,6 +41,10 @@ struct edge_dev {
     uint16_t port;
     edge_pt_t *pts;
     int npts;
+    // its reads in poll order, planned once (edge_plan_batches), in the model's arrays
+    edge_pt_t **order;
+    struct edge_batch *batches;
+    int nbatch;
     // runtime (edge_rt.c)
     int64_t next_poll;
     int cursor;              // the next block or point to read (one per polling interval)
@@ -55,7 +59,7 @@ void edge_pt_from_json(const cJSON *n, edge_dev_t *dev, edge_pt_t *out);
 
 // ---- Reading ----------------------------------------------------------------------------------------
 
-typedef struct {
+typedef struct edge_batch {
     int first, count;  // order[first .. first+count)
     int fc, timeout_ms;
     uint16_t start, qty;
@@ -151,6 +155,8 @@ typedef struct {
 typedef struct {
     edge_dev_t *devs;
     edge_pt_t *pts;
+    edge_pt_t **order;      // the devices' reads (edge_plan_batches): a slice of each per device
+    edge_batch_t *batches;
     edge_link_t *links;
     double *snap_value;
     bool *snap_valid;
@@ -162,4 +168,7 @@ typedef void *(*edge_alloc_fn)(size_t n);  // zeroed memory, or NULL
 typedef void (*edge_free_fn)(void *p);
 /** Every block Edge needs, or none: on false everything reserved so far is freed and *m is zeroed. */
 bool edge_reserve(const edge_counts_t *c, edge_mem_t *m, edge_alloc_fn alloc, edge_free_fn release);
+/** Once the model is filled (devs[i].pts in m->pts): each device's reads in poll order, into m->order and
+ * m->batches (Plan 09d: off the poll tasks' stacks, where 300 points on one device would take 7 KB). */
+void edge_plan_batches(edge_mem_t *m, int ndev);
 void edge_unreserve(edge_mem_t *m, edge_free_fn release);

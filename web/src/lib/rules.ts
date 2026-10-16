@@ -75,3 +75,14 @@ export function templateError26k(template: string, names: string[]): string | nu
 
 /** A body for the gateway: minified JSON (Plan 09b ruling 8), as stored byte for byte. */
 export const body = (value: unknown) => JSON.stringify(value);
+
+/** The gateway's limit for the edgeDevices body, in bytes (Plan 09d, firmware CFG_EDGE_MAX). */
+export const EDGE_BODY_MAX = 96000;
+
+/** The Edge model's size check, over the body as it is sent (minified, UTF-8 bytes). */
+export function edgeBodyError(slaves: unknown): string | null {
+  const n = new TextEncoder().encode(body(slaves)).length;
+  return n > EDGE_BODY_MAX
+    ? `The devices and points take ${n.toLocaleString('en-US').replace(/,/g, ' ')} bytes; the gateway takes at most 96 000. Remove points or shorten names and formulas.`
+    : null;
+}

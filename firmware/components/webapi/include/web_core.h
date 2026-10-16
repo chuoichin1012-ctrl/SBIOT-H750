@@ -7,7 +7,7 @@
 
 #define WEB_BODY_MAX 10240u      // every endpoint that is not streamed (§9.3)
 #define WEB_CERT_MAX 12288u      // a PEM file
-#define WEB_EDGE_MAX 49152u      // the edgeDevices body (§9.4)
+#define WEB_EDGE_MAX 96000u      // the edgeDevices body (§9.4, Plan 09d)
 #define WEB_STALL_MS (2u * 15000u)  // two 15 s waits without a byte: 408
 
 typedef enum { WEB_EP_PLAIN, WEB_EP_OTA, WEB_EP_CERT, WEB_EP_EDGE } web_ep_t;

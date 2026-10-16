@@ -354,14 +354,11 @@ static void store_value(edge_pt_t *p, double raw)
 // One block (the user's polling interval: each block, then the interval), or all of them for a read-back.
 static void poll_modbus(edge_dev_t *d, bool all)
 {
-    edge_pt_t *order[d->npts ? d->npts : 1];
-    edge_batch_t batches[d->npts ? d->npts : 1];
-    for (int i = 0; i < d->npts; i++)
-        order[i] = &d->pts[i];
-    int nb = edge_batches(d, order, batches, d->npts);
+    edge_pt_t **order = d->order;  // planned at the start (edge_plan_batches), not on this task's stack
+    int nb = d->nbatch;
     int k0 = all ? 0 : edge_step(d, nb), k1 = all ? nb : k0 + 1;
     for (int k = k0; k >= 0 && k < k1; k++) {
-        edge_batch_t *b = &batches[k];
+        edge_batch_t *b = &d->batches[k];
         uint8_t data[256];
         int n = modbus_read(d, b->fc, b->start, b->qty, b->timeout_ms, data);
         if (!cache_lock())
@@ -895,6 +892,7 @@ void edge_start(void)
         if (!edge_index_put(&s_index, M.pts[i].name, &M.pts[i]))
             SLOG_W("edge", "point name %s used twice", M.pts[i].name);
     if (ok) {
+        edge_plan_batches(&M, s_ndev);
         resolve_formulas();
         fill_links(links);
     }

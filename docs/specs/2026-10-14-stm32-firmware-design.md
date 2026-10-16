@@ -32,7 +32,7 @@ Tiêu chí hoàn thành:
 | D3 | Web | Mongoose 7.x đảm nhận toàn bộ `webapi`: HTTP (UI, `/api/*`, upload) và WebSocket console. Chạy trên socket lwIP, **build không có TLS** |
 | D4 | Phạm vi phần cứng | Đủ cả board: UART1 và UART2, mỗi cổng có socket riêng và TLS riêng; Edge trên cả hai bus; 2 AI. **UART1 không phân biệt RS232/RS485** |
 | D5 | Build | CMake + arm-none-eabi-gcc. CubeMX chỉ dùng để sinh HAL/LL, clock, pinmux, startup vào thư mục `cube/` |
-| D6 | Edge | **Tối đa 100 điểm** (bản ESP32: 300). `edgeDevices` xử lý **theo từng node** trong một arena cố định (§9) |
+| D6 | Edge | **Tối đa 300 điểm** (Plan 09d; trước đó 100; bản ESP32: 300), body `edgeDevices` ≤ 96.000 byte. `edgeDevices` xử lý **theo từng node** trong một arena cố định (§9) |
 | D7 | Kiểm thử | Host unit test cộng bench HIL trên board thật. E2E chỉ kiểm **UART1** |
 | D8 | MQTT | coreMQTT v2.3.1, chạy trong task riêng, đặt trên `tlsconn.c` chép từ ESP32. Outbox tự viết. Vá CONNECT để hỗ trợ MQTT 3.1 |
 | D9 | Bootloader/OTA | Bootloader tự viết trong flash nội. Slot staging và slot firmware gốc nằm trên SPI flash. Cài đặt kiểm bằng SHA-256, mất điện thì cài lại từ đầu. **Không tự cứu hộ, không boot thử, không rollback tự động**: có sự cố thì người dùng giữ nút Reload để khôi phục firmware gốc (§11.2) |
@@ -94,7 +94,7 @@ stm32/
 | Module | Cách xử lý | Thay đổi |
 |---|---|---|
 | `proto` | Chép nguyên | Không chép `rfc2217.c`. Thêm `jsonscan.c` (§9) và `cmux.c` (§7.2) |
-| `cfgmodel` | Chép, sửa | Bật TLS cho `port2`, thêm chứng chỉ `scope=port2`. Xóa `telnet`, `telnetPort`, `rfc2217`. `MAX_NODES` = 100. API validate theo node (§9) |
+| `cfgmodel` | Chép, sửa | Bật TLS cho `port2`, thêm chứng chỉ `scope=port2`. Xóa `telnet`, `telnetPort`, `rfc2217`. `MAX_NODES` = 300 (Plan 09d). API validate theo node (§9) |
 | `services/bridge.c` | Chép, sửa | **Một instance cho mỗi cổng**: bỏ khoảng 22 chỗ viết cứng UART1. Bỏ nhánh RFC 2217 và PUSR |
 | `services/edge_rt.c` | Chép, sửa | `edge_bus[n]` cho mỗi bus. Mô hình nạp vào struct C bằng đường xử lý theo node |
 | `services/net.c`, `tlsconn.c` | Chép, sửa nhẹ | Gần như giữ nguyên: socket lwIP và mbedTLS dùng chung được cho cả hai nền tảng |
@@ -146,7 +146,7 @@ Mọi thao tác trên slot **xóa** theo sector 4 KB và **ghi** theo page 256 B
 |---|---|---|---|
 | ITCM | 64 KB | Code nóng chép từ QSPI lúc khởi động: kernel FreeRTOS, các ISR (ETH, USART, DMA, TIM), `memcpy`/`memset`, lõi bignum của mbedTLS | Section `.itcm_text` |
 | DTCM | 128 KB | MSP 4 KB, `.data`/`.bss` nhỏ, stack tĩnh của mọi task **trừ** `web` và `edge_tcpN` (khoảng 95 KB theo §6.1, kể cả `init`, timer và `cmux_rx`), TCB. Tổng DTCM ≤ 120 KB, kiểm bằng file map của linker | ETH và DMA1/2 không truy cập được vùng này. §5.4 bảo đảm không DMA nào đọc hay ghi trực tiếp ở đây |
-| AXI SRAM (D1) | 512 KB | **Plan 09c:** arena JSON và buffer văn bản Edge 48 KB đã bỏ; heap tăng lên **352 KB**; AXI dùng 475.072 B, còn khoảng 48 KB trống. Phần dưới đây là bố trí trước 09c. **Tĩnh** (các section, tổng khoảng 193 KB): arena JSON 64 KB (§9.3), buffer văn bản Edge 48 KB (§9.3), cache văn bản cấu hình của `store` 20 KB cộng bộ đệm bản ghi Edge 8 KB, stack của `web` 8 KB, stack của `bridge[n]` 2 × 6 KB (Plan 08a), bảng topic, cấu hình và buffer tin nhận của MQTT khoảng 16,5 KB (Plan 09: DTCM chỉ giữ stack). **Heap** (`heap_5`, vùng heap duy nhất) **256 KB**, dự kiến dùng bên trong như sau: 3 phiên TLS khoảng 105 KB cộng đỉnh lúc handshake khoảng 30 KB, Mongoose khoảng 40 KB, buffer report ≤ 26 KB (§9.4), mô hình Edge lúc chạy (216 B mỗi điểm, 96 B mỗi thiết bị) và stack các task Edge (tối đa khoảng 45 KB, chỉ khi Edge bật; Plan 08c: AXI và DTCM không còn chỗ cho phương án tĩnh), buffer mạng coreMQTT 2 × 4 KB, các cấp phát nhỏ lúc chạy khoảng 20 KB, tổng khoảng 229 KB. **Mỗi allocation chỉ tính một lần**, hoặc ở phần tĩnh, hoặc ở phần heap | Cacheable (write-back). Các pool memp và `PBUF_POOL` của lwIP chiếm 26 KB tĩnh (§5.6), nên phần AXI chưa cấp còn khoảng 37 KB, sau Plan 09 còn khoảng 22 KB. Phần heap còn dư khoảng 27 KB, kiểm bằng §12.3. Đo trên bench (Plan 08b): một phiên TLS 27,9 KB; port1 trong phiên cộng các request HTTPS của port2 dùng tối đa 58,7 KB trên mức nghỉ (heap thấp nhất còn 200 KB) |
+| AXI SRAM (D1) | 512 KB | **Plan 09d:** record Edge 16.000 B, nên `s_chunk` của store và `s_record` của web mỗi cái thêm 7.808 B; AXI dùng 490.688 B, còn khoảng 33 KB. Kế hoạch đọc Modbus của mỗi thiết bị (`order`, `batches`) được tính một lần lúc nạp, vào mảng của model (`edge_plan_batches`); trước đây nó nằm trên stack của task polling, và 300 điểm trên một thiết bị cần 7,2 KB, làm tràn stack 6 KB. Với 300 điểm và các phiên TLS (scenario (e) của `mem_check`): heap còn trống 127.912 B, thấp nhất 64.296 B, khối lớn nhất 107.120 B. **Plan 09c:** arena JSON và buffer văn bản Edge 48 KB đã bỏ; heap tăng lên **352 KB**; AXI dùng 475.072 B, còn khoảng 48 KB trống. Phần dưới đây là bố trí trước 09c. **Tĩnh** (các section, tổng khoảng 193 KB): arena JSON 64 KB (§9.3), buffer văn bản Edge 48 KB (§9.3), cache văn bản cấu hình của `store` 20 KB cộng bộ đệm bản ghi Edge 8 KB, stack của `web` 8 KB, stack của `bridge[n]` 2 × 6 KB (Plan 08a), bảng topic, cấu hình và buffer tin nhận của MQTT khoảng 16,5 KB (Plan 09: DTCM chỉ giữ stack). **Heap** (`heap_5`, vùng heap duy nhất) **256 KB**, dự kiến dùng bên trong như sau: 3 phiên TLS khoảng 105 KB cộng đỉnh lúc handshake khoảng 30 KB, Mongoose khoảng 40 KB, buffer report ≤ 26 KB (§9.4), mô hình Edge lúc chạy (216 B mỗi điểm, cộng 24 B cho kế hoạch đọc từ Plan 09d; 96 B mỗi thiết bị) và stack các task Edge (tối đa khoảng 45 KB, chỉ khi Edge bật; Plan 08c: AXI và DTCM không còn chỗ cho phương án tĩnh), buffer mạng coreMQTT 2 × 4 KB, các cấp phát nhỏ lúc chạy khoảng 20 KB, tổng khoảng 229 KB. **Mỗi allocation chỉ tính một lần**, hoặc ở phần tĩnh, hoặc ở phần heap | Cacheable (write-back). Các pool memp và `PBUF_POOL` của lwIP chiếm 26 KB tĩnh (§5.6), nên phần AXI chưa cấp còn khoảng 37 KB, sau Plan 09 còn khoảng 22 KB. Phần heap còn dư khoảng 27 KB, kiểm bằng §12.3. Đo trên bench (Plan 08b): một phiên TLS 27,9 KB; port1 trong phiên cộng các request HTTPS của port2 dùng tối đa 58,7 KB trên mức nghỉ (heap thấp nhất còn 200 KB) |
 | SRAM1 (D2) | 128 KB | Chỉ những gì DMA chạm tới, cộng heap `MEM` của lwIP 64 KB: descriptor, buffer RX và buffer TX của ETH, ring DMA RX và buffer TX của USART1/2/3, buffer trung chuyển SPI4. Các pool memp của lwIP chỉ CPU dùng nên nằm ở AXI (Plan 06a). Sau 06a đã dùng 99 KB, còn khoảng 29 KB cho USART (14 KB, Plan 07). Số lượng và kích thước chốt trong bảng pool lwIP (§5.6) | **Non-cacheable qua MPU.** Startup bật clock SRAM D2 trước khi khởi tạo `.data` |
 | SRAM2+3 (D2) | 160 KB | Hàng đợi serial → mạng của mỗi cổng, 8 KB hoặc 32 KB khi bật `bufferOffline`, cấp tĩnh 2 × 32 KB. Trạng thái và buffer của hai bridge khoảng 24 KB (Plan 08a). Outbox MQTT 64 KB. Còn khoảng 8 KB cho metadata và căn lề | Cacheable |
 | SRAM4 (D3) | 64 KB | Ring syslog 32 KB, ring của `mqtt_io` 24 KB (serial → `mqtt_io` 6 KB mỗi cổng, broker → `mqtt_io` 12 KB; Plan 09), **buffer BDMA của ADC3** (800 B) trong region non-cacheable 1 KB riêng ở 0x3800FC00 (§6.6). Còn khoảng 7 KB | Region 1 KB của ADC đặt non-cacheable qua MPU, phần còn lại cacheable |
@@ -719,7 +719,7 @@ Quy tắc riêng của bản STM32:
     - FlashDB vẫn có thể hành xử chưa tối ưu khi ghi hỏng liên tục;
     - không tự phục hồi phần cứng hỏng;
     - **flash mang layout sector khác** (Plan 06b, B4): FlashDB chỉ kiểm header ở biên 16 KB. Một partition từng được format với sector 4 KB vẫn được nhận, và các bản ghi lớn đầu tiên bị hỏng vì ghi đè lên header cũ. Board trắng không gặp lỗi này, và kích thước sector không bao giờ đổi giữa các bản firmware. Factory reset sẽ format lại.
-- Mỗi DB dùng sector 16 KB. Riêng `edge` chứa vừa bản ghi 8 KB cùng header của nó, và dọn rác mịn trong 256 KB.
+- Mỗi DB dùng sector 16 KB. Riêng `edge` chứa bản ghi 16.000 B (Plan 09d; trước đó 8 KB) cùng header của nó: mỗi record một sector, model 96.000 B là 6 record. Hai thế hệ như vậy chiếm 12 sector; 4 sector còn lại giữ manifest, các key nhỏ và chỗ cho GC. Record 8 KB của firmware trước 09d vẫn đọc được; lần lưu sau ghi lại thành record 16.000 B.
 
 ### 9.2 Vì sao phải xử lý theo node
 
@@ -734,8 +734,8 @@ Với 100 điểm, đỉnh vẫn khoảng 235 KB. H750 không có PSRAM, nên kh
 
 **Plan 09c:** cả hai vùng đã bỏ.
 - cJSON cấp phát từ heap qua allocator đếm lỗi (`json_alloc_install`, cài trước `store_init`). Không còn scope arena, nên mọi handler phải tự giải phóng cây và chuỗi của mình; bench `heap_loop` kiểm điều đó.
-- Body `edgeDevices` đi thẳng vào record 8 KB của store (`store_edge_begin`, `store_edge_write`, `store_edge_commit`, `store_edge_abort`; mỗi lúc một phiên; chỉ request đã `begin` mới sở hữu phiên). Cú pháp được kiểm bằng scanner theo luồng `js_stream_*`, cho cùng kết quả với `js_parse_root` dù body bị cắt thành chunk thế nào.
-- Lúc boot, model được đọc vào một buffer heap tạm (49.153 B), giải phóng trước khi các task Edge chạy.
+- Body `edgeDevices` đi thẳng vào record của store (16.000 B từ Plan 09d) (`store_edge_begin`, `store_edge_write`, `store_edge_commit`, `store_edge_abort`; mỗi lúc một phiên; chỉ request đã `begin` mới sở hữu phiên). Cú pháp được kiểm bằng scanner theo luồng `js_stream_*`, cho cùng kết quả với `js_parse_root` dù body bị cắt thành chunk thế nào.
+- Lúc boot, model được đọc vào một buffer heap tạm (96.001 B từ Plan 09d; 49.153 B ở 09c), giải phóng trước khi các task Edge chạy.
 - Chứng chỉ dùng buffer heap 12.289 B, chỉ trong lúc upload; với khóa riêng, nội dung được xóa trước khi giải phóng.
 
 Phần dưới đây là thiết kế trước 09c, giữ lại làm lịch sử.
@@ -773,6 +773,14 @@ Có hai vùng tĩnh riêng trong AXI, vì chúng có vòng đời khác nhau.
 - Ước tính `mqttPublish` 16 topic đầy đủ (khoảng 4 KB văn bản) có đỉnh khoảng 46 KB, lấy theo tỷ lệ cây/văn bản khoảng 5,7 đã đo. Host test chốt con số thật.
 
 ### 9.4 Lưu `edgeDevices`
+
+**Plan 09d: 300 điểm, body ≤ 96.000 byte** (6 record 16.000 B; `CFG_EDGE_MAX`, `WEB_EDGE_MAX`).
+- Mô hình 300 điểm UI gửi (minified, đủ mọi trường) ước khoảng 68 KB. Mô hình lớn nhất (64 thiết bị, 300 điểm, mọi trường văn bản ở giới hạn) là 90.304 B (`test_edge_text`).
+- UI kiểm kích thước body trước khi lưu (`edgeBodyError`, §10.3). Gateway trả 413 cho body trên 96.000 byte.
+- Buffer report giữ ở 26 KB: cả 300 điểm đều được poll và dùng cho linkage và truy cập từ xa, còn một report mang khoảng 100 giá trị (`templateSize`).
+- Giới hạn đã biết: một GET chậm ghim thế hệ đang commit. Một lần lưu trong lúc đó vẫn commit. Lần lưu thứ hai trong cùng GET đó cần thế hệ thứ ba, không còn chỗ, nên trả 500. Lưu lại sau khi GET xong thì được.
+
+Phần dưới đây là giới hạn trước 09d.
 
 **Giới hạn kích thước** (đo bằng `cfgmodel` hiện có):
 - Mô hình 100 điểm gửi lên ở dạng gọn chỉ khoảng 11–16 KB.
@@ -860,7 +868,7 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
 - **Body:**
   - Với `/api/ota`, `/api/cert` và `POST edgeDevices`: xử lý ở `MG_EV_HTTP_HDRS`, tự đọc `c->recv` theo luồng.
     - Các endpoint này bắt buộc có `Content-Length`. Request dùng chunked thì trả 411.
-    - Giới hạn áp lên số byte thực nhận: OTA ≤ kích thước slot, chứng chỉ ≤ 12 KB, Edge ≤ 48 KB.
+    - Giới hạn áp lên số byte thực nhận: OTA ≤ kích thước slot, chứng chỉ ≤ 12 KB, Edge ≤ 96.000 B (Plan 09d; trước đó 48 KB).
   - Các endpoint khác: giới hạn body 10.240 byte (§9.3), vượt quá thì trả 413. `MG_MAX_RECV_SIZE` đặt 12 KB.
   - **Cách làm (Plan 06b):**
     - Giới hạn được quyết tại `MG_EV_HTTP_HDRS`, mỗi request một lần, vì Mongoose phát lại sự kiện này ở mỗi lần đọc và poll khi body chưa đủ. Request dùng chunked bị trả 411 ở mọi endpoint.
@@ -889,7 +897,7 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
 | `/api/io` | Trả 503 cho tới khi có `iomgr` (Plan 07) |
 | `port<n>` | Bỏ `rfc2217` |
 | `system` | Bỏ `telnet`, `telnetPort` |
-| `edgeDevices` | Tối đa 100 điểm, 64 thiết bị. Body ≤ 48 KB, văn bản chuẩn hóa ≤ 48 KB. Lỗi 411, 413, 503 như §9.4 |
+| `edgeDevices` | Tối đa 300 điểm, 64 thiết bị. Body ≤ 96.000 byte (Plan 09d), lưu đúng như gửi. Lỗi 411, 413, 503 như §9.4 |
 | Các cấu hình khác | Body và văn bản chuẩn hóa ≤ 10 KB (bản ESP32: body 96 KB) |
 | `GET /api/status` | Thêm trạng thái của port2. Thêm `wdiMaxGapMs`. Thêm `mem` gồm: <br>• heap AXI: còn trống hiện tại và thấp nhất; <br>• đỉnh arena; <br>• mức chiếm dụng cao nhất của các pool tĩnh (pbuf, netconn, ring, outbox, MessageBuffer) dưới dạng `{used, size}`; <br>• stack còn dư thấp nhất cùng tên task; <br>• các bộ đếm `overrun` và frame bị bỏ của từng UART |
 | Trạng thái MQTT | Bỏ `WAITING FOR CLOCK` |
@@ -897,7 +905,7 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
 ### 10.3 Web UI bản STM32 (`stm32/web`)
 
 Chép từ `src/` ở gốc, rồi sửa trực tiếp:
-- `MAX_NODES` = 100;
+- `MAX_NODES` = 300 (Plan 09d). Trước khi lưu, UI kiểm body `edgeDevices` (minified, byte UTF-8) không quá 96.000 byte (`edgeBodyError`). Lỗi hiện ở tab Data acquisition, và nút Save bị tắt;
 - bỏ các trường Telnet (`System.tsx`) và RFC 2217 (`Port.tsx`);
 - hiện TLS cho mọi cổng và cho phép upload chứng chỉ `port2`;
 - đổi chuỗi EC800 thành EC600U;
@@ -1116,7 +1124,7 @@ Logic quyết định và chép viết trong `boot/install.c` bằng C thuần, 
   - fixture DI/DO.
 - **Các bộ test port từ `test/qemu`:** bridge, MQTT, Edge, misc, OTA.
   - Bỏ các test của Telnet, RFC 2217 và PUSR.
-  - Mô hình Edge ≤ 100 điểm.
+  - Mô hình Edge ≤ 300 điểm (Plan 09d).
   - E2E chỉ chạy trên UART1 (D7).
 - **Bổ sung, kiểm trên phần cứng:**
   - timing DE (DE giữ tới hết stop bit cuối), t1.5/t3.5, XON/XOFF, nhận liên tục sau nhiều lần RTO, DMA quay vòng có overrun;
@@ -1139,13 +1147,13 @@ Hai cổng không thể đồng thời vừa là TCP server vừa là TCP/TLS cl
 
 | Kịch bản | Cấu hình |
 |---|---|
-| A: nhiều kết nối | UART1 và UART2 đều là TCP server, mỗi cổng 16 client. MQTT có TLS. 4 client WebSocket. Edge 100 điểm, 5 thiết bị Modbus TCP, **template report 100 slot** (buffer 26 KB) |
+| A: nhiều kết nối | UART1 và UART2 đều là TCP server, mỗi cổng 16 client. MQTT có TLS. 4 client WebSocket. Edge 300 điểm (Plan 09d), 5 thiết bị Modbus TCP, **template report 100 slot** (buffer 26 KB) |
 | B: nhiều TLS | UART1 là TCP client có TLS, UART2 là HTTPS client. MQTT có TLS, ba handshake chạy cùng lúc. Outbox đầy (broker tắt, `bufferOffline`). Một HTTP client tải chậm UI. FlashDB đang dọn rác |
 
 Bộ test đọc `/api/status.mem` sau mỗi kịch bản. Điều kiện đạt:
 - mọi stack còn dư ≥ 1 KB;
 - heap AXI còn trống thấp nhất ≥ 16 KB;
-- block trống lớn nhất của heap (`heapLargest`, Plan 09c) đủ cho một buffer tạm 48 KB lúc boot và 12 KB khi upload chứng chỉ (arena đã bỏ ở Plan 09c);
+- block trống lớn nhất của heap (`heapLargest`, Plan 09c) đủ cho một buffer tạm 96.001 B lúc boot (Plan 09d) và 12 KB khi upload chứng chỉ (arena đã bỏ ở Plan 09c);
 - không pool tĩnh nào đầy, trừ những pool được thiết kế để bỏ dữ liệu khi đầy (outbox, ring) và có bộ đếm.
 
 Ngoài ra, file map của linker phải cho thấy mỗi section nằm trong ngân sách ở §5.3.
@@ -1174,7 +1182,7 @@ Ngoài ra, file map của linker phải cho thấy mỗi section nằm trong ng�
 | Cổng nối tiếp | 1 × RS485. Schema đã có sẵn `port2`, nhưng bị tắt theo phần cứng (`cfgmodel.c:178`) | UART1 (RS485 và RS232 song song) và UART2 (RS485), bật `port2` |
 | AI | 1, khoảng 12 bit hiệu dụng, đọc bằng phần mềm | 2, ADC3 16 bit, VREF 3,0 V. Oversampling ×16 bằng phần cứng, TIM6 kích 1 kHz, BDMA vòng với hai nửa, trung bình 100 ms, hiệu chuẩn hai điểm lấy từ factory record. Tiêu chí định lượng ở §6.6 |
 | TLS bridge | Chỉ UART1 | Cả hai cổng |
-| Edge | 300 điểm, body 96 KB | **100 điểm, 64 thiết bị, body và văn bản chuẩn hóa ≤ 48 KB** |
+| Edge | 300 điểm, body 96 KB | **300 điểm, 64 thiết bị, body ≤ 96.000 byte** (Plan 09d; trước đó 100 điểm, 48 KB) |
 | Body của các cấu hình khác | 96 KB | **10 KB**, kể cả văn bản chuẩn hóa |
 | `bufferOffline` | 64 KB | **32 KB mỗi cổng** |
 | Ring `mqtt_io` | 2 × 16 KB | **2 × 12 KB** |

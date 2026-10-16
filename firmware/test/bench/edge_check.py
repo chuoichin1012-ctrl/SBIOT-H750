@@ -337,6 +337,9 @@ def case_basic():
     st.start()
     time.sleep(10)
     rs = reports(st)
+    # while the slaves still answer: once they close, the points fail one by one
+    full = wait(lambda: re.match(r'RUNNING (\d+)/\1$', status()), 5, 0.5)  # a late packet on the bench's WSL path can fail a read
+    status_now = status()
     st.close()
     bc.wait_peer(tcp, 1)
     slave.close()
@@ -348,8 +351,7 @@ def case_basic():
     check(r.get('k') == 'const' and r.get('sn') == s['system']['sn'] and r.get('mac') == s['system']['mac'],
           'template constants kept, sys_sn and sys_mac filled')
     check('ts' in r and r['ts'] is None and r['ut'] is None, 'no clock: sys_time and sys_unix_time are the placeholder')
-    full = wait(lambda: re.match(r'RUNNING (\d+)/\1$', status()), 5, 0.5)  # a late packet on the bench's WSL path can fail a read
-    check(full, 'status: every point read (%s)' % status())
+    check(full, 'status: every point read (%s)' % status_now)
     fc3 = [(a, n) for _, u, fc, a, n in slave.log if u == 5 and fc == 3]
     check(fc3 and all(x == (10, 4) for x in fc3), 'batch reads: t, c2, f in one request, FC3 10..13 (%s)' % fc3[:3])
     u5 = [(t, fc) for t, u, fc, a, n in slave.log if u == 5]
@@ -785,16 +787,17 @@ def case_mqtt():
 
 def case_memory():
     nodes = lambda n, base, **kw: [dict({'name': '%s%d' % (base, i), 'reg': 20 + i, 'timeout': 300}, **kw) for i in range(n)]
-    devs = [plc(nodes=nodes(40, 'p')), {'name': 'b2', 'addr': '9', 'uart': 2, 'poll': 2000, 'nodes': nodes(20, 'q')}]
+    devs = [plc(nodes=nodes(120, 'p')), {'name': 'b2', 'addr': '9', 'uart': 2, 'poll': 2000, 'nodes': nodes(100, 'q')}]
     for k in range(5):
-        devs.append(tcpdev(name='tcp%d' % k, nodes=nodes(6, 'e%d_' % k)))
-    devs += [io(), virt(nodes=[{'name': 'v%d' % i, 'formula': '=%s+1,p0', 'dtype': 'float32_abcd'} for i in range(8)])]
-    tmpl = {n['name']: n['name'] for d in devs for n in d['nodes'] if 'name' in n}
+        devs.append(tcpdev(name='tcp%d' % k, nodes=nodes(12, 'e%d_' % k)))
+    devs += [io(), virt(nodes=[{'name': 'v%d' % i, 'formula': '=%s+1,p0', 'dtype': 'float32_abcd'} for i in range(18)])]
+    # 300 points (Plan 09d); the report names 100 of them, within the 26 KB report limit
+    tmpl = dict(list({n['name']: n['name'] for d in devs for n in d['nodes'] if 'name' in n}.items())[:100])
     # MQTT on too (Plan 09), its broker away: every task the gateway can run, but LTE's.
     import mqtt_check as mc
     mc.post('mqtt', mc.mqtt_cfg(host='192.0.2.1'))
     check(setup(devs, report={'reporting': 1, 'interval': 5, 'template': json.dumps(tmpl)}),
-          'set up the largest model: 100 points, both buses, 5 TCP devices; MQTT on')
+          'set up the largest model: 300 points, both buses, 5 TCP devices; MQTT on')
     slave, tcp = start_all(secs=45)
     time.sleep(40)
     slave.close()
@@ -837,9 +840,29 @@ def case_di():
     check(all(dt is not None and dt < deb / 1000 + 0.5 for _, dt in seen), 'DI1 follows DO1 in an on-change report, within debounce + 0.5 s (%s)' % seen)
 
 
+def case_onedevice():
+    """Plan 09d (Codex code review): all 300 points on one device, Modbus RTU, then Modbus TCP: every point is
+    read, and the device's poll task keeps at least 1 KB of stack (its reads are planned at the start, not on it)."""
+    pts = [{'name': 'p%d' % i, 'reg': 2 * i, 'timeout': 300} for i in range(300)]  # gaps of 1: 5 reads of up to 125
+    # merge on both (plc's default; tcpdev's is off): 5 blocks, one a second, instead of 300 single reads
+    for dev, task in ((plc(nodes=pts), 'edge_bus1'), (tcpdev(nodes=pts, merge=True), 'edge_tcp0')):
+        check(setup([dev], report={'reporting': 0}), 'set up one %s device with 300 points' % ('RTU' if task == 'edge_bus1' else 'Modbus TCP'))
+        slave, tcp = start_all(secs=45)
+        full = wait(lambda: status() == 'RUNNING 300/300', 25, 0.5)
+        state = status()
+        time.sleep(max(0, 32 - 25))  # the headroom is logged once, 30 s in
+        m = wait(lambda: re.search(r'edge: stack headroom: (.*) bytes', log_text()), 10, 1)
+        slave.close()
+        bc.wait_peer(tcp, 1)
+        rooms = dict(re.findall(r'(edge_\w+) (\d+)', m.group(1))) if m else {}
+        check(full, '%s: every point read (%s)' % (task, state))
+        check(int(rooms.get(task, 0)) >= 1024, '%s keeps at least 1 KB of stack (%s bytes)' % (task, rooms.get(task)))
+
+
 CASES = {'basic': case_basic, 'change': case_change, 'schedule': case_schedule, 'remote': case_remote, 'split': case_split,
          'gwrtu': case_gwrtu, 'contention': case_contention, 'dead': case_dead, 'late': case_late, 'shortreport': case_shortreport,
-         'partial': case_partial, 'bigreport': case_bigreport, 'memory': case_memory, 'di': case_di, 'mqtt': case_mqtt}
+         'partial': case_partial, 'bigreport': case_bigreport, 'memory': case_memory, 'di': case_di, 'mqtt': case_mqtt,
+         'onedevice': case_onedevice}
 
 
 def main():

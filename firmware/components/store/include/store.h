@@ -17,6 +17,7 @@ typedef enum {
     STORE_ETOOLARGE,  // 413: the normalised text exceeds its limit, or the text cache is full
     STORE_ENOMEM,     // 500: an allocation failed
     STORE_EFLASH,     // 500: FlashDB could not write
+    STORE_EBUSY,      // 503: another edgeDevices save is in progress (Plan 09c)
 } store_err_t;
 
 #define STORE_EDGE_RECORD 8192u  // bytes of normalised text per edgeDevices record
@@ -50,6 +51,17 @@ store_err_t store_set_text(const char *name, const char *text, size_t len, char 
  * stays as it was.
  */
 store_err_t store_edge_save(const char *text, size_t len, char *err, size_t errlen);
+
+/**
+ * edgeDevices as it arrives (Plan 09c ruling 2): one session at a time. begin announces the length (at most
+ * CFG_EDGE_MAX); write takes the next bytes into the records of a new generation while a streaming scanner
+ * checks the syntax; commit writes the manifest only when the whole length came and is a JSON array, as
+ * store_edge_save; abort drops the session and its records. The lock is taken in each call, never between.
+ */
+store_err_t store_edge_begin(size_t len, char *err, size_t errlen);
+store_err_t store_edge_write(const void *data, size_t n);
+store_err_t store_edge_commit(char *err, size_t errlen);
+void store_edge_abort(void);
 
 /** A GET's hold on one generation (spec §9.4): its records stay until store_edge_unpin. */
 typedef struct {

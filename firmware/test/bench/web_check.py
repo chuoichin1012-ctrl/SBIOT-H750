@@ -254,6 +254,42 @@ def case_heap_loop(rounds=200):
     check(before > 0 and abs(after - before) <= 2048, 'heap after %d rounds of every endpoint: %d -> %d bytes free' % (rounds, before, after))
 
 
+def case_edge_stream():
+    """Plan 09c: an edgeDevices body streams into the records; a client that goes away commits nothing."""
+    small = json.dumps(edge_model(2, 2)).encode()
+    s, _, _ = req('POST', '/api/config/edgeDevices', body=small)
+    big = json.dumps(edge_model(10, 10)).encode()
+    big = big[:-1] + b' ' * (40 * 1024 - len(big)) + b']'
+    head = ('POST /api/config/edgeDevices HTTP/1.1\r\nHost: x\r\nAuthorization: %s\r\nContent-Type: application/json\r\n'
+            'Content-Length: %d\r\n\r\n' % (AUTH, len(big))).encode()
+    a = socket.create_connection((HOST, PORT), 5)
+    a.sendall(head + big[:20000])
+    time.sleep(0.5)
+    a.close()  # gone halfway
+    time.sleep(1)
+    s2, _, now = req('GET', '/api/config/edgeDevices')
+    check(s == 200 and s2 == 200 and now == small, 'a client that closes halfway: the committed model is unchanged')
+    a = socket.create_connection((HOST, PORT), 5)
+    a.sendall(head + big[:20000])
+    time.sleep(0.3)
+    sb, _, _ = req('POST', '/api/config/edgeDevices', body=small)  # B, while A is open
+    a.sendall(big[20000:])
+    a.settimeout(10)
+    reply = b''
+    try:
+        while b'\r\n\r\n' not in reply:
+            d = a.recv(4096)
+            if not d:
+                break
+            reply += d
+    except OSError:
+        pass
+    a.close()
+    s3, _, now = req('GET', '/api/config/edgeDevices')
+    check(sb == 503 and reply.startswith(b'HTTP/1.1 200') and now == big, 'B gets 503 while A uploads; A still commits (%d, %r)' % (sb, reply[:20]))
+    req('POST', '/api/config/edgeDevices', body=b'[]')
+
+
 def case_plain():
     """Plan 09b: a save stores the bytes as sent; the device runs with them, a wrong field taking its default."""
     _, p2 = get_json('/api/config/port2')

@@ -65,6 +65,7 @@ typedef struct {
     web_ep_t ep;
     size_t expected, got;
     char scope[8], kind[8];
+    bool edge_owner;  // this request's store_edge_begin succeeded: only it writes, commits or aborts (Plan 09c)
 } slot_t;
 
 static slot_t s_slots[WEB_MAX_CONNS];
@@ -216,6 +217,10 @@ static void serve_file(struct mg_connection *c, slot_t *s, struct mg_http_messag
 
 static void upload_end(struct mg_connection *c, slot_t *s)
 {
+    if (s->edge_owner) {  // closed, timed out or refused before its commit: the session and its records go
+        store_edge_abort();
+        s->edge_owner = false;
+    }
     if (s->ep == WEB_EP_OTA)
         s_ota_busy = false;
     else
@@ -287,7 +292,8 @@ static void upload_complete(struct mg_connection *c, slot_t *s)
     } else if (s->ep == WEB_EP_CERT) {
         cert_upload(c, s);
     } else {
-        store_err_t e = store_edge_save(s_edge_body, s->got, err, sizeof err);
+        store_err_t e = store_edge_commit(err, sizeof err);
+        s->edge_owner = false;  // committed or refused: the session is over either way
         if (e == STORE_OK)
             api_ok(c);
         else
@@ -321,8 +327,10 @@ static void upload_take(struct mg_connection *c, slot_t *s)
             }
             return;
         }
-    } else {
+    } else if (s->ep == WEB_EP_CERT) {
         memcpy(s_edge_body + s->got, c->recv.buf, n);
+    } else {
+        store_edge_write(c->recv.buf, n);  // straight into the store's records, checked as it streams (Plan 09c)
     }
     s->got += n;
     c->recv.len = 0;
@@ -383,6 +391,15 @@ static bool upload_start(struct mg_connection *c, slot_t *s, struct mg_http_mess
     if (*busy) {
         reject(c, s, hm, ep == WEB_EP_OTA ? 409 : 503, "Another upload is in progress. Try again in a moment.");
         return true;
+    }
+    if (ep == WEB_EP_EDGE) {
+        char err[96];
+        store_err_t e = store_edge_begin(hm->body.len, err, sizeof err);
+        if (e != STORE_OK) {
+            reject(c, s, hm, e == STORE_EBUSY ? 503 : e == STORE_ETOOLARGE ? 413 : 500, err);
+            return true;
+        }
+        s->edge_owner = true;
     }
     if (ep == WEB_EP_OTA) {
         int r = ota_stage_begin(&s_ota, flash_spi4(), (uint32_t)hm->body.len);

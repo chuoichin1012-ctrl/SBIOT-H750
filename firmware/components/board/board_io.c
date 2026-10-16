@@ -1,10 +1,20 @@
 #include "board.h"
 #include "main.h"  // pin labels from the .ioc; boot and app use the same names
 
-void board_kick(void)
+void board_iwdg_reload(void)
+{
+    IWDG1->KR = 0x0000AAAAu;  // reload; harmless while IWDG1 is not running
+}
+
+void board_wdi_toggle(void)
 {
     HAL_GPIO_TogglePin(WDI_LED_GPIO_Port, WDI_LED_Pin);
-    IWDG1->KR = 0x0000AAAAu;  // reload; harmless while IWDG1 is not running
+}
+
+void board_kick(void)
+{
+    board_wdi_toggle();
+    board_iwdg_reload();
 }
 
 void board_latch_zero(void)

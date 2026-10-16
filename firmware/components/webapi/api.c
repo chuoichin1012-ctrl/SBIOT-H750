@@ -149,7 +149,8 @@ static void status_get(struct mg_connection *c)
     cJSON_AddNumberToObject(sys, "heapMin", heap_free_min());
     cJSON_AddNumberToObject(sys, "heapLargest", heap_largest_free());  // the largest free block (Plan 09c)
     cJSON_AddNumberToObject(sys, "psramFree", 0);
-    cJSON_AddNumberToObject(sys, "wdiMaxGapMs", wdog_max_gap_us() / 1000u);
+    cJSON_AddNumberToObject(sys, "iwdgMaxGapMs", wdog_max_gap_us() / 1000u);  // the wdog loop (< 400 ms)
+    cJSON_AddNumberToObject(sys, "wdiMaxGapMs", wdog_wdi_max_gap_us() / 1000u);  // the toggles (< 600 ms, Plan 11a)
 
     cJSON *eth = cJSON_AddObjectToObject(o, "eth");
     add_ip(eth, "ip", ns.ip);

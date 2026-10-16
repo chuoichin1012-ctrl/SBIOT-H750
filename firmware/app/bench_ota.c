@@ -1,4 +1,5 @@
 #include "bench_ota.h"
+#include "wdog.h"
 #include <string.h>
 #include "FreeRTOS.h"
 #include "task.h"
@@ -71,11 +72,13 @@ void bench_ota_upload(bool reset)
     blog("ota: ready %lu %d\r\n", (unsigned long)total, r);
     if (r)
         return;
+    wdog_set_busy(true);  // LED WORK blinks fast while the image comes (Plan 11a task 0)
     for (uint32_t got = 0; got < total;) {
         uint32_t n = total - got < BLOCK ? total - got : BLOCK;
         if (!rx(buf, n, 5000)) {
             blog("ota: timeout at %lu\r\n", (unsigned long)got);
             ota_stage_release(&st);
+            wdog_set_busy(false);
             return;
         }
         r = ota_stage_write(&st, buf, n);
@@ -83,11 +86,13 @@ void bench_ota_upload(bool reset)
         if (r) {
             blog("ota: done %d\r\n", r);
             ota_stage_release(&st);
+            wdog_set_busy(false);
             return;
         }
         blog("ota: %lu\r\n", (unsigned long)got);
     }
     r = ota_stage_finish(&st);
+    wdog_set_busy(false);
     if (r)
         ota_stage_release(&st);  // a success keeps it: the image waits for the reset
     blog("ota: done %d\r\n", r);

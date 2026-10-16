@@ -190,6 +190,7 @@ static void init_task(void *arg)
     report_boot();
     if (!app_bind_ok()) {  // spec §11.5: no service starts on a board this image is not bound to
         blog("app: anti-clone record INVALID, nothing started\r\n");
+        wdog_set_halt();  // LED WORK at the halt rhythm (Plan 11a task 0)
         for (;;)
             vTaskDelay(pdMS_TO_TICKS(1000));
     }

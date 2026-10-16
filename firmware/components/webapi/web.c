@@ -21,6 +21,7 @@
 #include "task.h"
 #include "tls_core.h"
 #include "web_core.h"
+#include "wdog.h"
 #include "web_priv.h"
 #include "webapi.h"
 #include "www_files.h"
@@ -230,6 +231,7 @@ static void upload_end(struct mg_connection *c, slot_t *s)
         s->edge_owner = false;
     }
     if (s->ep == WEB_EP_OTA) {
+        wdog_set_busy(false);
         ota_stage_release(s);  // nothing after a success: the image waits for the restart
         s_ota_busy = false;
     }
@@ -421,6 +423,8 @@ static bool upload_start(struct mg_connection *c, slot_t *s, struct mg_http_mess
             return true;
         }
         int r = ota_stage_begin(&s_ota, flash_spi4(), (uint32_t)hm->body.len);
+        if (r == OTA_OK)
+            wdog_set_busy(true);  // LED WORK blinks fast while the image comes (Plan 11a task 0)
         if (r != OTA_OK) {
             ota_stage_release(s);
             reject(c, s, hm, r == OTA_ETOOBIG ? 413 : 500, r == OTA_ETOOBIG ? "The file is larger than the firmware slot." : "The update could not start.");

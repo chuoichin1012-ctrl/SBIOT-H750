@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'preact/hooks';
 import * as api from '../lib/api';
 import { range, useDevice } from '../lib/device';
-import { useForm, useInterval } from '../lib/hooks';
+import { useAsync, useForm, useInterval } from '../lib/hooks';
+import { systemPortClash } from '../lib/rules';
 import { useSaver } from '../lib/save';
 import type { DeviceInfo } from '../lib/types';
 import { ON_OFF, type FieldDef } from '../lib/validate';
@@ -65,10 +66,12 @@ export function SystemPage(_: { path?: string }) {
   const d = useDevice();
   const g = useMemo(() => defs(d), [d]);
   const f = useForm(() => api.getValues('system'), g.all);
+  const ports = useAsync(() => Promise.all([api.getValues('port1').catch(() => null), api.getValues('port2').catch(() => null)]), []);
   const save = useSaver();
 
   if (!f.ready) return <Pending error={f.error} retry={f.reload} />;
   const p = { values: f.values, errors: f.errors, onChange: f.set };
+  const clash = systemPortClash(f.values, ports.data?.[0] ?? null, ports.data?.[1] ?? null);
 
   return (
     <>
@@ -86,7 +89,8 @@ export function SystemPage(_: { path?: string }) {
       </Panel>
       <SaveBar
         busy={save.busy}
-        invalid={!f.valid}
+        invalid={!f.valid || !!clash}
+        note={clash ?? undefined}
         onSave={() => save.run(() => api.saveValues('system', f.values), { restart: true, after: f.reload })}
       />
     </>

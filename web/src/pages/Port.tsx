@@ -1,7 +1,8 @@
 import { useMemo } from 'preact/hooks';
 import * as api from '../lib/api';
 import { useDevice } from '../lib/device';
-import { useForm } from '../lib/hooks';
+import { useAsync, useForm } from '../lib/hooks';
+import { listenClash } from '../lib/rules';
 import { useSaver } from '../lib/save';
 import type { DeviceInfo, Val, Values } from '../lib/types';
 import {
@@ -170,6 +171,8 @@ export function PortPage(props: { path?: string; n?: string; tab?: string }) {
   const socket = useMemo(() => socketDefs(), []);
   const all = useMemo(() => [...serial, ...socket], [serial, socket]);
   const f = useForm(() => api.getValues(`port${n}`), all, [n]);
+  // The listen port across configs (Plan 09b): the gateway stores what it is sent, so the UI checks it.
+  const others = useAsync(() => Promise.all([api.getValues(`port${n === 1 ? 2 : 1}`).catch(() => null), api.getValues('system').catch(() => null)]), [n]);
   const save = useSaver();
 
   if (!f.ready) return <Pending error={f.error} retry={f.reload} />;
@@ -180,6 +183,7 @@ export function PortPage(props: { path?: string; n?: string; tab?: string }) {
     if (id === 'workMode' && !(SOCK_MODES[Number(v)] ?? []).some(([m]) => m === sm(f.values))) f.set('socketMode', NONE);
   };
   const p = { values: f.values, errors: f.errors, onChange };
+  const clash = d.portmax > 0 ? listenClash(n, f.values, others.data?.[0] ?? null, others.data?.[1] ?? null) : null;
   const serialErr = serial.some((x) => f.errors[x.id]);
   const socketErr = socket.some((x) => f.errors[x.id]);
   const tls = socket.some((x) => x.id === 'tls' && x.show?.(f.values)) && Number(f.values.tls) > 0;
@@ -198,7 +202,8 @@ export function PortPage(props: { path?: string; n?: string; tab?: string }) {
       )}
       <SaveBar
         busy={save.busy}
-        invalid={!f.valid}
+        invalid={!f.valid || !!clash}
+        note={clash ?? undefined}
         tabbed
         onSave={() => save.run(() => api.saveValues(`port${n}`, f.values), { restart: true, after: f.reload })}
       />

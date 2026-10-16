@@ -21,6 +21,7 @@ import { authHeaders, encodeCredentials, session, signIn, signOut } from './auth
 import type {
   DeviceInfo, EdgeSlave, IoState, LinkageEvent, StatusInfo, Values,
 } from './types';
+import { body } from './rules';
 
 export class ApiError extends Error {}
 
@@ -86,7 +87,7 @@ async function getJson<T>(url: string): Promise<T> {
 const postJson = (url: string, data?: unknown) =>
   call(url, {
     method: 'POST',
-    body: data === undefined ? undefined : JSON.stringify(data),
+    body: data === undefined ? undefined : body(data), // minified: the gateway stores the bytes as sent (Plan 09b)
     type: 'application/json',
   }).then(() => {});
 

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Plan 09c bench: RAM measured on the board (spec §12.3), the numbers the node-limit decision needs.
+"""Plan 09c/09d bench: RAM measured on the board (spec §12.3), with the largest Edge model.
 
     python3 stm32/firmware/test/bench/mem_check.py
 
-(b) the largest Edge model (100 points, both buses, 5 Modbus TCP devices; nobody answers: memory is the same);
-(c) the same plus MQTT over TLS, UART1 a TLS client and UART2 an HTTPS client, each with a session up;
-(d) the same plus a 48 KB edgeDevices save while a GET of it runs;
+(b) the largest Edge model (300 points, both buses, 5 Modbus TCP devices; nobody answers: memory is the same),
+    reporting over MQTT a template of 100 values (within the 26 624-byte report limit);
+(c) the same plus MQTT over TLS, UART1 a TLS client and UART2 an HTTPS client, each with a session up,
+    and the reports arriving at the broker;
+(d) the same plus a 96 000-byte edgeDevices save while a GET of it runs;
 (e) 50 rounds of upload and GET, the MQTT TLS session made again every 10 rounds: the heap comes back to its
     level, the watchdog and the ADC keep their pace.
 Prints one line per check, the measurements, and "bench: ok". Ends with MQTT and Edge off.
@@ -48,14 +50,37 @@ def kill_events(p):
     return ev
 
 
+REPORTED = 100  # values in the report template (Plan 09d: all 300 points polled, about 100 reported)
+REPORT_MAX = 26 * 1024
+PER_SLOT = 2 + 6 * 40  # as edge_tmpl_size and the UI's templateSize
+
+
 def largest_model():
+    """300 points: 120 on UART1, 100 on UART2, 5 Modbus TCP devices of 12, 2 IO, 18 virtual (Plan 09d)."""
     nodes = lambda n, base, **kw: [dict({'name': '%s%d' % (base, i), 'reg': 20 + i, 'timeout': 300}, **kw) for i in range(n)]
-    devs = [ec.plc(nodes=nodes(40, 'p')), {'name': 'b2', 'addr': '9', 'uart': 2, 'poll': 2000, 'nodes': nodes(20, 'q')}]
+    devs = [ec.plc(nodes=nodes(120, 'p')), {'name': 'b2', 'addr': '9', 'uart': 2, 'poll': 2000, 'nodes': nodes(100, 'q')}]
     for k in range(5):
-        devs.append(ec.tcpdev(name='tcp%d' % k, nodes=nodes(6, 'e%d_' % k)))
-    devs += [ec.io(), ec.virt(nodes=[{'name': 'v%d' % i, 'formula': '=%s+1,p0', 'dtype': 'float32_abcd'} for i in range(8)])]
-    tmpl = {n['name']: n['name'] for d in devs for n in d['nodes'] if 'name' in n}
-    return devs, {'reporting': 1, 'interval': 5, 'template': json.dumps(tmpl)}
+        devs.append(ec.tcpdev(name='tcp%d' % k, nodes=nodes(12, 'e%d_' % k)))
+    devs += [ec.io(), ec.virt(nodes=[{'name': 'v%d' % i, 'formula': '=%s+1,p0', 'dtype': 'float32_abcd'} for i in range(18)])]
+    names = [n['name'] for d in devs for n in d['nodes'] if 'name' in n]
+    assert sum(len(d['nodes']) for d in devs) == 300
+    tmpl = {n: n for n in names[:REPORTED]}
+    # As the UI's templateSize: the template printed without its slots, plus a slot's worst case each, plus 1.
+    size = len(json.dumps({n: '' for n in tmpl}, separators=(',', ':'))) - 2 * REPORTED + REPORTED * PER_SLOT + 1
+    assert size <= REPORT_MAX, size  # the gateway would turn reporting off
+    return devs, {'channel': 0, 'reporting': 1, 'interval': 5, 'reportTopic': 'edge/report', 'reportQos': 0,
+                  'template': json.dumps(tmpl, separators=(',', ':'))}
+
+
+def reports_of(sub):
+    """The reports the broker has passed on so far, each with its number of values."""
+    out = []
+    for p in sub.payloads('edge/report'):
+        try:
+            out.append(len(json.loads(p)))
+        except ValueError:
+            out.append(-1)
+    return out
 
 
 def main():
@@ -76,6 +101,7 @@ def main():
     for scope in ('mqtt', 'port1', 'port2'):
         tc.upload(scope, 'ca', tc.pem('ca.pem'))
     brk = mc.main_broker().start()
+    sub = mc.Sub('edge/report')
     peers = [mc.relay(400, to=mc.TLSP, port=mc.TLS_RELAY, raw='1'), tc.server(secs=400),
              bc.peer('https', port=9444, secs=400, cert=tc.WPKI + 'server.pem', key=tc.WPKI + 'server.key', reply='OK')]
     try:
@@ -91,22 +117,28 @@ def main():
         mq = st['mqtt']['state'] if st else ''
         ports = [p['state'] for p in st['ports']] if st else []
         check(mq == 'CONNECTED' and ports and ports[0].startswith('CONNECTED'), 'TLS sessions up: MQTT %s, UART1 %s' % (mq, ports[:1]))
+        ed = st['edge'] if st else {}
+        reps = reports_of(sub)
+        est = str(ed.get('state', ''))
+        check(est.startswith('RUNNING ') and est.split()[1].endswith('/300') and reps and all(n == REPORTED for n in reps),
+              'Edge runs with 300 points (%s) and its reports reach the broker, %d values each (%s)' % (est, REPORTED, reps[-3:]))
         out['c'] = heap()
 
-        # (d) plus a 48 KB save while a GET runs
+        # (d) plus a 96 000-byte save while a GET runs
         model = json.dumps(devs, separators=(',', ':')).encode()
-        big = model[:-1] + b' ' * (48 * 1024 - len(model)) + b']'
+        big = model[:-1] + b' ' * (96000 - len(model)) + b']'
         got = {}
         g = threading.Thread(target=lambda: got.update(get=w.req('GET', '/api/config/edgeDevices')[0]))
         g.start()
         s, _, _ = w.req('POST', '/api/config/edgeDevices', body=big, timeout=60)
         g.join()
-        check(s == 200 and got.get('get') == 200, 'a 48 KB save while a GET runs (%d, %s)' % (s, got.get('get')))
+        check(s == 200 and got.get('get') == 200, 'a 96 000-byte save while a GET runs (%d, %s)' % (s, got.get('get')))
         out['d'] = heap()
 
         # (e) 50 rounds; the MQTT TLS session made again every 10 rounds
         a0 = bc.adc_pace()
-        levels, bad, reconnects, https_sent = [], 0, 0, 0
+        r0, t0 = len(reports_of(sub)), time.time()
+        levels, bad, reconnects, https_sent, blips = [], 0, 0, 0, 0
         for r in range(50):
             if r and r % 10 == 0:
                 n0 = mc.connects()
@@ -116,13 +148,20 @@ def main():
                 reconnects += mc.wait_connects(n0 + 1, 30)
                 bc.send_serial(b'1', port=1)  # and UART2's HTTPS request, under the same load
                 https_sent += 1
-            s1, _, _ = w.req('POST', '/api/config/edgeDevices', body=big, timeout=60)
-            s2, _, back = w.req('GET', '/api/config/edgeDevices')
+            sock, again = w.connect_retry(60)
+            s1, _, _ = w.req('POST', '/api/config/edgeDevices', body=big, timeout=60, sock=sock)
+            blips += again
+            sock, again = w.connect_retry()
+            s2, _, back = w.req('GET', '/api/config/edgeDevices', sock=sock)
+            blips += again
             bad += not (s1 == 200 and s2 == 200 and back == big)
             if r % 10 == 9:
                 levels.append(heap()['free'])
-        check(bad == 0, '50 rounds: every save 200, every GET 200 with the bytes saved (%d failed)' % bad)
+        check(bad == 0, '50 rounds: every save 200, every GET 200 with the bytes saved (%d failed; %d connects tried again)' % (bad, blips))
         check(reconnects == 4, 'MQTT over TLS connected again after each of the 4 relay restarts (%d)' % reconnects)
+        secs, during = time.time() - t0, reports_of(sub)[r0:]
+        check(len(during) >= secs / 5 / 2 and all(n == REPORTED for n in during),
+              'the reports kept arriving under the load: %d in %.0f s, every 5 s, 4 reconnects' % (len(during), secs))
         reqs = [e for e in kill_events(peers[2]) if e.get('ev') == 'request']
         peers[2] = None
         check(len(reqs) >= 1 + https_sent, 'UART2 made its HTTPS requests under the load (%d of %d)' % (len(reqs), 1 + https_sent))
@@ -137,6 +176,7 @@ def main():
         for p in peers:
             if p:
                 kill_events(p)
+        sub.stop()
         brk.stop()
         mc.post('mqtt', mc.mqtt_cfg(enabled=0, host=''))
         w.req('POST', '/api/config/edge', body=b'{"enabled":false}')

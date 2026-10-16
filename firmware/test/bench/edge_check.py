@@ -337,6 +337,9 @@ def case_basic():
     st.start()
     time.sleep(10)
     rs = reports(st)
+    # while the slaves still answer: once they close, the points fail one by one
+    full = wait(lambda: re.match(r'RUNNING (\d+)/\1$', status()), 5, 0.5)  # a late packet on the bench's WSL path can fail a read
+    status_now = status()
     st.close()
     bc.wait_peer(tcp, 1)
     slave.close()
@@ -348,8 +351,7 @@ def case_basic():
     check(r.get('k') == 'const' and r.get('sn') == s['system']['sn'] and r.get('mac') == s['system']['mac'],
           'template constants kept, sys_sn and sys_mac filled')
     check('ts' in r and r['ts'] is None and r['ut'] is None, 'no clock: sys_time and sys_unix_time are the placeholder')
-    full = wait(lambda: re.match(r'RUNNING (\d+)/\1$', status()), 5, 0.5)  # a late packet on the bench's WSL path can fail a read
-    check(full, 'status: every point read (%s)' % status())
+    check(full, 'status: every point read (%s)' % status_now)
     fc3 = [(a, n) for _, u, fc, a, n in slave.log if u == 5 and fc == 3]
     check(fc3 and all(x == (10, 4) for x in fc3), 'batch reads: t, c2, f in one request, FC3 10..13 (%s)' % fc3[:3])
     u5 = [(t, fc) for t, u, fc, a, n in slave.log if u == 5]
@@ -785,16 +787,17 @@ def case_mqtt():
 
 def case_memory():
     nodes = lambda n, base, **kw: [dict({'name': '%s%d' % (base, i), 'reg': 20 + i, 'timeout': 300}, **kw) for i in range(n)]
-    devs = [plc(nodes=nodes(40, 'p')), {'name': 'b2', 'addr': '9', 'uart': 2, 'poll': 2000, 'nodes': nodes(20, 'q')}]
+    devs = [plc(nodes=nodes(120, 'p')), {'name': 'b2', 'addr': '9', 'uart': 2, 'poll': 2000, 'nodes': nodes(100, 'q')}]
     for k in range(5):
-        devs.append(tcpdev(name='tcp%d' % k, nodes=nodes(6, 'e%d_' % k)))
-    devs += [io(), virt(nodes=[{'name': 'v%d' % i, 'formula': '=%s+1,p0', 'dtype': 'float32_abcd'} for i in range(8)])]
-    tmpl = {n['name']: n['name'] for d in devs for n in d['nodes'] if 'name' in n}
+        devs.append(tcpdev(name='tcp%d' % k, nodes=nodes(12, 'e%d_' % k)))
+    devs += [io(), virt(nodes=[{'name': 'v%d' % i, 'formula': '=%s+1,p0', 'dtype': 'float32_abcd'} for i in range(18)])]
+    # 300 points (Plan 09d); the report names 100 of them, within the 26 KB report limit
+    tmpl = dict(list({n['name']: n['name'] for d in devs for n in d['nodes'] if 'name' in n}.items())[:100])
     # MQTT on too (Plan 09), its broker away: every task the gateway can run, but LTE's.
     import mqtt_check as mc
     mc.post('mqtt', mc.mqtt_cfg(host='192.0.2.1'))
     check(setup(devs, report={'reporting': 1, 'interval': 5, 'template': json.dumps(tmpl)}),
-          'set up the largest model: 100 points, both buses, 5 TCP devices; MQTT on')
+          'set up the largest model: 300 points, both buses, 5 TCP devices; MQTT on')
     slave, tcp = start_all(secs=45)
     time.sleep(40)
     slave.close()

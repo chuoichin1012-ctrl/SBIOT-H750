@@ -261,7 +261,7 @@ Thang ưu tiên của FreeRTOS là 0–31 (`configMAX_PRIORITIES` = 32). `n` là
 
 | Task | Số lượng | Stack | Prio | Vai trò |
 |---|---|---|---|---|
-| `wdog` | 1 | 2 KB | 31 (cao nhất) | Kick WDI và nháy LED WORK mỗi 200 ms (SGM706: timeout tối thiểu 1,0 s). Giám sát `init` (§11.4). Nằm trên `tcpip` và `eth_rx`, để một trận broadcast trên LAN nhà máy không gây vòng reset |
+| `wdog` | 1 | 2 KB | 31 (cao nhất) | Vòng 50 ms: nạp IWDG1 mỗi vòng, đảo WDI (cũng là LED WORK) theo nhịp của trạng thái (Plan 11a): chu kỳ 1 s khi chạy, 0,2 s khi nhận OTA, cài image hay restore, 0,5 s khi dừng; mọi khoảng đảo đều dưới timeout tối thiểu 1,0 s của SGM706 (tối thiểu 1,0 / danh định 1,6 / tối đa 2,25 s). Giám sát `init` (§11.4) và **heartbeat của các task** (Plan 11a, §11.4). Nằm trên `tcpip` và `eth_rx`, để một trận broadcast trên LAN nhà máy không gây vòng reset |
 | `tcpip` | 1 | 4 KB | 24 | lwIP, SNTP, nhận dữ liệu PPPoS |
 | `eth_rx` | 1 | 2 KB | 22 | Semaphore từ ISR của ETH, đưa pbuf vào lwIP |
 | `serial_rx[n]` | 2 | 3 KB | 26 | Chủ đọc duy nhất của cổng: cắt frame, giao cho transaction hoặc subscriber. Mỗi lần thức dậy chỉ làm một lượng việc có giới hạn rồi block chờ ISR |
@@ -471,7 +471,7 @@ Quy tắc riêng của bản STM32:
 - IP tĩnh hoặc DHCP, DNS, hostname: lấy từ cấu hình `network` (và `system.hostname`), **đọc một lần lúc khởi động** (§9.1). Quy tắc giữ như ESP32: `ipMode` 1 là tĩnh, địa chỉ tĩnh luôn dùng DNS thủ công, địa chỉ tĩnh thiếu (ip, mask hay gateway không hợp lệ, mask không liên tục, ip 0.0.0.0) thì dùng DHCP và DNS theo `dnsMode`. Địa chỉ đọc chặt: bốn số thập phân 0–255, không dấu, không khoảng trắng, không số 0 đứng đầu.
 - **DNS thủ công khi dùng DHCP:** DHCP chỉ đặt DNS khi `dnsMode` là tự động, và chỉ từ ACK đã được lwIP chấp nhận, kể cả ACK gia hạn (patch `dhcp_handle_ack`, test `test_dhcp_dns`). Bản ESP32 để ACK ghi đè DNS thủ công.
 - **MAC:** `02` (quản lý cục bộ, unicast) cộng 5 byte đầu của SHA-256 trên UID 12 byte. Cùng một board luôn có cùng MAC.
-- **Serial number** (người dùng, 2026-10-17: 24 chữ số hex của UID quá dài): `SB` cộng 5 byte đó, viết hex chữ hoa, 12 ký tự. Ví dụ MAC `02:3F:9A:0C:12:D4` thì SN là `SB3F9A0C12D4`, nên ngoài hiện trường đối chiếu được hai giá trị với nhau.
+- **MAC và serial number** (người dùng, 2026-10-17, Plan 11a): ghi lúc nạp vào bản ghi liên kết (§11.5), có chữ ký. MAC theo công thức trên, do tool tính; SN là `SB` + YYMM + 6 chữ số từ bộ đếm của máy nạp, ví dụ `SB2610000001`. Firmware không tự tính; thiếu thì dừng.
 - **PHY:** reset bằng PD13 (10 ms thấp, chờ 50 ms), rồi `HAL_ETH_Init` (cần REF_CLK từ PHY), rồi quét MDIO 1–31 rồi 0. Trên bench IP101 trả lời ở địa chỉ 1 hoặc 0 tùy lần boot (0 là địa chỉ broadcast của IP101). Tốc độ và duplex lấy từ `ANAR ∧ ANLPAR`. Không tìm thấy PHY hay ETH init lỗi: ghi log, mạng nằm im, không vòng `Error_Handler`.
 - **RNG** (HSI48, bật trong `HAL_RNG_MspInit`): `board_rng` báo lỗi khi RNG phần cứng lỗi và là nguồn entropy duy nhất cho mbedTLS (§7.3); `board_rand32` chỉ cho `LWIP_RAND`, khi RNG lỗi thì dùng xorshift lấy mầm từ UID và đồng hồ.
 - Bật IGMP để `bridge` dùng multicast.
@@ -1009,7 +1009,7 @@ Nó **không tự cứu hộ**. Không có bản ghi trạng thái, không boot 
 Nguồn không bao giờ bị ghi. Mọi lần chờ flash đều có deadline, bằng 2 lần giá trị tối đa trong datasheet GD25Q32E (`nor.h`), và vẫn kick watchdog. Lỗi flash, quá deadline hay kiểm sai đều làm `copy` thất bại.
 
 **Trình tự quyết định mỗi lần boot** (`install_run`):
-1. **Reload được giữ liên tục 5 s** kể từ lúc bootloader lấy mẫu nút (sau bước kiểm chống clone, §11.5): **khôi phục firmware gốc.** Trong lúc chờ, LED WORK nháy chậm (đảo mỗi 500 ms), còn khi dừng thì nháy nhanh (100 ms). LED dùng chung chân PC10 với WDI, nên không thể sáng liên tục mà vẫn kick SGM706, vốn có timeout tối thiểu 1,0 s.
+1. **Reload được giữ liên tục 5 s** kể từ lúc bootloader lấy mẫu nút (sau bước kiểm chống clone, §11.5): **khôi phục firmware gốc.** Trong lúc chờ, LED WORK nháy chu kỳ 1 s (đảo mỗi 500 ms); khi kiểm, cài image hay khôi phục: chu kỳ 0,2 s (đảo mỗi 100 ms); khi dừng: chu kỳ 0,5 s (đảo mỗi 250 ms) (Plan 11a). LED dùng chung chân PC10 với WDI, nên không thể sáng liên tục mà vẫn kick SGM706, vốn có timeout tối thiểu 1,0 s.
    1. `F` không hợp lệ: **dừng**, không ghi gì cả.
    2. Xóa sector đầu của staging, để image trong đó không bị cài lại ở lần boot sau. Không xóa được: **dừng**.
    3. `copy` F → QSPI. Thất bại: **dừng**.
@@ -1068,7 +1068,12 @@ Logic quyết định và chép viết trong `boot/install.c` bằng C thuần, 
 
 ### 11.4 Các cơ chế an toàn khác
 
-- **SGM706 và IWDG1:** SGM706 có timeout tối thiểu 1,0 s, danh định 1,6 s (datasheet SGM706, trang 4). **Trên board hiện tại R20 (WDO → MR) chưa lắp**, nên SGM706 hết thời gian cũng không reset được MCU (đã thử trên bench: ngừng kick 60 s không reset). Vì vậy bootloader bật IWDG1 (LSI/32, reload 1600: 1,5–1,74 s theo dải LSI), và "kick" luôn nghĩa là đảo WDI **và** nạp lại IWDG1 (`board_kick()`); "ngừng kick" là ngừng cả hai. IWDG1 không tắt được cho tới lần reset sau và được đóng băng khi debugger dừng lõi. Khi R20 được lắp, cả hai cùng hoạt động. `wdog` kick mỗi 200 ms. **Đề xuất cho phần cứng:** lắp R20.
+- **SGM706 và IWDG1:** SGM706 có timeout tối thiểu 1,0 s, danh định 1,6 s (datasheet SGM706, trang 4). **Trên board hiện tại R20 (WDO → MR) chưa lắp**, nên SGM706 hết thời gian cũng không reset được MCU (đã thử trên bench: ngừng kick 60 s không reset). Vì vậy bootloader bật IWDG1 (LSI/32, reload 1600: 1,5–1,74 s theo dải LSI), và "kick" luôn nghĩa là đảo WDI **và** nạp lại IWDG1 (`board_kick()`); "ngừng kick" là ngừng cả hai. IWDG1 không tắt được cho tới lần reset sau và được đóng băng khi debugger dừng lõi. Khi R20 được lắp, cả hai cùng hoạt động. `wdog` nạp IWDG1 mỗi 50 ms và đảo WDI theo nhịp LED (Plan 11a). `/api/status` báo `iwdgMaxGapMs` (vòng `wdog`, tiêu chí < 400 ms) và `wdiMaxGapMs` (các lần đảo WDI, tiêu chí < 600 ms). **Đề xuất cho phần cứng:** lắp R20.
+- **Giám sát task bằng heartbeat** (người dùng, Plan 11a):
+  - mỗi task quan trọng báo heartbeat ít nhất mỗi 1/3 timeout của nó. Timeout: `tcpip`, `eth_rx`, `cmux_rx`, serial RX, `io`: 10 s; `web`, `console`: 30 s; `syslog`: 60 s; `mqtt`, `mqtt_io`, `edge_ctl`, `edge_rpt`: 120 s; `lte`: 180 s; task poll của Edge: 400 s; bridge: 600 s;
+  - chờ dữ liệu và ngủ theo lịch được chia lát để báo heartbeat, deadline nghiệp vụ giữ nguyên; chờ lock không báo heartbeat, nên lock kẹt sẽ làm board reset;
+  - task quá hạn: `wdog` ghi lý do (tên task, số giây trễ, CRC) vào một cache line riêng trong `.noinit` ở SRAM4 (clean D-cache + DSB), rồi ngừng kick; IWDG1 reset board. Lần boot sau, sau khi store mount, nếu cờ reset là IWDG1 hoặc chân reset và không có cờ power-on/brown-out, log ghi `wdog: <task> stopped for <n> s: restarted`;
+  - không kick từ idle task, vì idle bị đói hợp lệ khi TLS handshake, FlashDB dọn rác hay LAN bị flood.
   - Vì `wdog` là task chứ không phải ISR, scheduler treo thì watchdog sẽ reset board.
   - `wdog` còn giám sát deadline của `init`: chưa xong sau 60 s thì ngừng kick (WDI và IWDG1).
   - Ngoài phạm vi này, tiến triển của từng task dịch vụ **không** được giám sát (giữ như ESP32).
@@ -1093,14 +1098,19 @@ Logic quyết định và chép viết trong `boot/install.c` bằng C thuần, 
    - bootloader và app **chỉ kiểm**;
    - **bootloader không bao giờ tự tạo bản ghi.**
 
-**Bản ghi liên kết** ở QSPI 0x3F0000, 84 byte. Phần còn lại của sector để 0xFF.
+**Bản ghi liên kết** ở QSPI 0x3F0000, 104 byte, phiên bản 2 (Plan 11a: mang MAC và SN của board). Phần còn lại của sector để 0xFF.
 
 | Offset | Nội dung |
 |---|---|
-| 0 | magic `SBBD` (4 B) |
-| 4 | UID đọc ở 0x1FF1E800 (12 B), chỉ để người đọc |
-| 16 | chữ ký Ed25519 (RFC 8032) trên `"SBIOT-H750 bind"` ‖ UID, 64 B |
-| 80 | CRC32 của byte 0–79 |
+| 0 | magic `SBB2` (4 B) |
+| 4 | UID đọc ở 0x1FF1E800 (12 B); phải bằng UID của chip |
+| 16 | MAC (6 B): `02` + SHA-256(UID)[0..4], do `provision.py` tính |
+| 22 | SN (12 ký tự ASCII): `SB` + YYMM + 6 chữ số |
+| 34 | dự trữ, 0 (2 B) |
+| 36 | chữ ký Ed25519 (RFC 8032) trên `"SBIOT-H750 bind2"` ‖ byte 4–33 (UID, MAC, SN), 64 B |
+| 100 | CRC32 của byte 0–99 |
+
+Bản ghi phiên bản 1 (`SBBD`, 84 byte, không có MAC và SN): bootloader **dừng**, không xóa gì, báo `an old record without MAC and SN`; app cũng từ chối. Không tính lại MAC hay SN từ UID (người dùng, 2026-10-17). App lấy MAC và SN **chỉ** từ bản ghi.
 
 **Khóa:**
 - **Khóa riêng** Ed25519, 32 byte, tạo bằng `tools/provision.py genkey`. Nó **chỉ nằm trên máy sản xuất**, không bao giờ vào repo hay vào thiết bị.
@@ -1110,7 +1120,8 @@ Logic quyết định và chép viết trong `boot/install.c` bằng C thuần, 
 
 **Ghi bản ghi** là một bước sản xuất (§12.4): `tools/flash.sh bind <khóa riêng>`.
 - Đọc UID qua SWD (`STM32_Programmer_CLI -r32 0x1FF1E800 12`).
-- Tính bản ghi bằng `provision.py`.
+- Lấy SN: `SBIOT_SN` nếu đặt, nếu không thì `provision.py next-sn` từ bộ đếm trên máy nạp (`SBIOT_SN_COUNTER`, mặc định `~/.sbiot/sn_counter`). Bộ đếm được khóa (`flock`), ghi và fsync trước khi in SN, nên một SN không bao giờ được cấp hai lần; một lần nạp hỏng chỉ bỏ phí một số.
+- Tính bản ghi (UID, MAC, SN) bằng `provision.py`.
 - Ghi vào QSPI 0x903F0000 bằng loader của nhóm, có verify.
 
 **Bootloader kiểm ở mỗi lần boot**, sau khi cấu hình clock và QSPI, trước khi lấy mẫu Reload và trước `install_run` (§11.2). Bootloader **không bao giờ ghi** bản ghi.
@@ -1197,6 +1208,17 @@ Bộ test đọc `/api/status.mem` sau mỗi kịch bản. Điều kiện đạt
 Ngoài ra, file map của linker phải cho thấy mỗi section nằm trong ngân sách ở §5.3.
 
 ### 12.4 Công cụ, build và nạp
+
+- **Plan 11a:**
+  - `provision.py record KEY UID SN OUT` và `next-sn COUNTER`; `flash.sh bind` ghi bản ghi v2 và in MAC, SN;
+  - `factory_cal.py G1 O1 G2 O2`: ghi hiệu chuẩn ADC qua console UART7 (`A`), đọc lại cả hai bản từ SPI4 (`C`), reset qua SWD rồi kiểm `cal 1`. Đường tới SPI4 là console, vì loader SWD của nhóm chỉ ghi QSPI;
+  - `audit_keys.py`: 192 key, 0 key không được đọc;
+  - **chuyển một board có trước Plan 11a, làm một lần:**
+    1. khi firmware cũ còn chạy: console `Z` `WIPE`;
+    2. nạp boot và app mới qua SWD; bootloader mới dừng ở bản ghi v1, không cài gì;
+    3. `flash.sh bind KEY`;
+    4. console `R` `RESEED`, để factory được seed lại từ app mới;
+    5. `factory_cal.py` nếu board đã được hiệu chuẩn.
 
 - `embed_web.py`, `check_schema.py`, `audit_keys.py`: bản riêng, trỏ vào `stm32/web` và `stm32/firmware`.
 - `mkimage.py`: thêm header.

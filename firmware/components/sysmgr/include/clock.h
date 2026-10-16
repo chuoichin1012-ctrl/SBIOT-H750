@@ -21,5 +21,9 @@ void clock_from_unix(int64_t t, civil_t *out);
 int64_t clock_local_to_utc(const civil_t *local, int tz_hours);
 /** UTC seconds as local "YYYY-MM-DD hh:mm:ss" in zone tz_hours (out holds 20 bytes). */
 void clock_format(int64_t utc, int tz_hours, char out[20]);
+#define CLOCK_BOOT_EPOCH 1577836800  // 2020-01-01 00:00:00 UTC
+/** The display while the clock is not set (Plan 08b): 2020-01-01 00:00:00 plus the uptime, no zone.
+ * Display only: nothing that depends on the clock ever reads it. */
+void clock_boot_format(uint32_t uptime_s, char out[20]);
 /** True for a time inside CLOCK_MIN_YEAR..CLOCK_MAX_YEAR (UTC): what SNTP may set. */
 bool clock_plausible(int64_t utc);

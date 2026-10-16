@@ -14,6 +14,9 @@ bool sysmgr_clock_set(void);
 int64_t sysmgr_utc_ms(void);
 /** Local "YYYY-MM-DD hh:mm:ss", or "" while the clock is not set (out holds 20 bytes). */
 void sysmgr_time_str(char out[20]);
+/** What the UI and the console show: the local time, or 2020-01-01 00:00:00 plus the uptime while the
+ * clock is not set (Plan 08b, display only; out holds 20 bytes). */
+void sysmgr_display_time(char out[20]);
 /** A Unix time in ms as local "YYYY-MM-DD hh:mm:ss" in the configured zone (out holds 20 bytes). */
 void sysmgr_format_wall(int64_t utc_ms, char out[20]);
 /** POST /api/time: a local time in the configured zone; 0, or -1 when it is not a valid time. */

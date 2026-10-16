@@ -121,7 +121,7 @@ static void status_get(struct mg_connection *c)
     static net_status_t ns;  // the web task only
     netmgr_status(&ns);
     char t[20], mac[18];
-    sysmgr_time_str(t);
+    sysmgr_display_time(t);
     snprintf(mac, sizeof mac, "%02X:%02X:%02X:%02X:%02X:%02X", ns.mac[0], ns.mac[1], ns.mac[2], ns.mac[3], ns.mac[4], ns.mac[5]);
     cJSON *o = cJSON_CreateObject();
     cJSON *sys = cJSON_AddObjectToObject(o, "system");
@@ -131,7 +131,8 @@ static void status_get(struct mg_connection *c)
     cJSON_AddStringToObject(sys, "imei", "");
     cJSON_AddStringToObject(sys, "sn", sysmgr_serial());
     cJSON_AddStringToObject(sys, "activeNet", ns.bound && ns.eth.up ? "ETH" : "NONE");
-    cJSON_AddStringToObject(sys, "time", t);  // "" while the clock is not set (spec §10.4)
+    cJSON_AddStringToObject(sys, "time", t);  // 2020-01-01 plus the uptime while the clock is not set (spec §10.4)
+    cJSON_AddBoolToObject(sys, "clockSet", sysmgr_clock_set());
     cJSON_AddNumberToObject(sys, "heapFree", heap_free_now());
     cJSON_AddNumberToObject(sys, "heapMin", heap_free_min());
     cJSON_AddNumberToObject(sys, "psramFree", 0);

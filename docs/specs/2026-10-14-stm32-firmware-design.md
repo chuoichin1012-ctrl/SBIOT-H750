@@ -864,7 +864,8 @@ Chép từ `src/` ở gốc, rồi sửa trực tiếp:
   - report theo `interval`, `onChange` và ngưỡng AI vẫn chạy;
   - report theo `schedule` và 6 timer chưa kích hoạt;
   - các trường `sys_time` để trống;
-  - log ghi dạng `[boot N +hh:mm:ss]`.
+  - log ghi dạng `[boot N +hh:mm:ss]`;
+  - **phần hiển thị** (giờ trên `/api/status` và dòng trạng thái của console) đọc 2020-01-01 00:00:00 cộng uptime, kèm `clockSet: false` (Plan 08b). Đây chỉ là hiển thị: TLS, timer IO, log và `sys_time` vẫn thấy "chưa có giờ". `POST /api/time` không nhận năm trước 2024, nên giờ hiển thị này không thể bị đặt lại vào đồng hồ.
 - Nguồn giờ giữ như ESP32: NTP hoặc `POST /api/time`. **Không thêm** RTC giữ giờ hay giờ mạng LTE.
 
 ## 11. Bootloader, OTA và an toàn

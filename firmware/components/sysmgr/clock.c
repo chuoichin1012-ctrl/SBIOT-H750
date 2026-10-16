@@ -93,6 +93,8 @@ void clock_format(int64_t utc, int tz_hours, char out[20])
     snprintf(out, 20, "%04d-%02d-%02d %02d:%02d:%02d", c.year, c.mon, c.day, c.hour, c.min, c.sec);
 }
 
+void clock_boot_format(uint32_t uptime_s, char out[20]) { clock_format(CLOCK_BOOT_EPOCH + (int64_t)uptime_s, 0, out); }
+
 bool clock_plausible(int64_t utc)
 {
     civil_t lo = {CLOCK_MIN_YEAR, 1, 1, 0, 0, 0}, hi = {CLOCK_MAX_YEAR + 1, 1, 1, 0, 0, 0};

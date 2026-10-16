@@ -57,6 +57,13 @@ void sysmgr_time_str(char out[20])
     clock_format(ms / 1000, s_tz, out);
 }
 
+void sysmgr_display_time(char out[20])
+{
+    sysmgr_time_str(out);
+    if (!out[0])
+        clock_boot_format(sysmgr_uptime_s(), out);
+}
+
 void sysmgr_format_wall(int64_t utc_ms, char out[20])
 {
     clock_format(utc_ms / 1000, s_tz, out);

@@ -79,8 +79,23 @@ static void test_plausible(void)
     CHECK(!clock_plausible(4102444800), "2100 is not");
 }
 
+// Plan 08b T1: while the clock is not set, the display reads 2020-01-01 00:00:00 plus the uptime.
+static void test_boot_display(void)
+{
+    char out[20];
+    clock_boot_format(0, out);
+    CHECK(strcmp(out, "2020-01-01 00:00:00") == 0, "at boot (%s)", out);
+    clock_boot_format(86399 + 60, out);
+    CHECK(strcmp(out, "2020-01-02 00:00:59") == 0, "a day later (%s)", out);
+    clock_boot_format(49u * 86400 + 17 * 3600, out);
+    CHECK(strcmp(out, "2020-02-19 17:00:00") == 0, "past the 32-bit ms wrap (%s)", out);
+    civil_t c;
+    CHECK(!clock_parse("2020-01-01 00:00:00", &c), "the display time cannot be set back in (CLOCK_MIN_YEAR)");
+}
+
 int main(void)
 {
+    test_boot_display();
     test_parse();
     test_unix();
     test_zone();

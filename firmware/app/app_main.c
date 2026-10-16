@@ -302,6 +302,10 @@ static void init_task(void *arg)
             hex[o] = '\0';
             blog("app: uart3 rx %lu bytes, errors %lu, PD9 %d, ISR %08lx, last: %s\r\n", (unsigned long)wr,
                  (unsigned long)lte_uart_errors(), (int)((GPIOD->IDR >> 9) & 1u), (unsigned long)USART3->ISR, hex);
+            lte_info_t li;
+            lte_info(&li);
+            blog("app: cmux bad FCS %lu, last: addr %02x ctrl %02x len %02x %02x fcs got %02x want %02x\r\n", (unsigned long)li.bad_fcs,
+                 li.last_bad[0], li.last_bad[1], li.last_bad[2], li.last_bad[3], li.last_bad[4], li.last_bad[5]);
             blog("app: uart3 GPIOD MODER %08lx AFRH %08lx, USART3 CR1 %08lx CR3 %08lx BRR %08lx, PA ODR %08lx MODER %08lx\r\n",
                  (unsigned long)GPIOD->MODER, (unsigned long)GPIOD->AFR[1], (unsigned long)USART3->CR1, (unsigned long)USART3->CR3,
                  (unsigned long)USART3->BRR, (unsigned long)GPIOA->ODR, (unsigned long)GPIOA->MODER);
@@ -363,6 +367,11 @@ static void init_task(void *arg)
         case 'L':  // bench: the PHY powered down for 3 s, then up (spec §7.1, link polled each second)
             blog("app: phy down %d\r\n", eth_drv_phy_power(true));
             vTaskDelay(pdMS_TO_TICKS(3000));
+            blog("app: phy up %d\r\n", eth_drv_phy_power(false));
+            break;
+        case 'H':  // bench: the PHY powered down for 30 s, then up: long enough for the services to move to LTE (Plan 10)
+            blog("app: phy down %d\r\n", eth_drv_phy_power(true));
+            vTaskDelay(pdMS_TO_TICKS(30000));
             blog("app: phy up %d\r\n", eth_drv_phy_power(false));
             break;
         case 'T':

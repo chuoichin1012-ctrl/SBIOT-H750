@@ -33,8 +33,8 @@ static size_t header(uint8_t *out, int dlc, uint8_t control, bool cr, size_t n)
         out[3] = (uint8_t)(n << 1 | 1);
         return 4;
     }
-    out[3] = (uint8_t)((n & 0x7F) << 1);
-    out[4] = (uint8_t)(n >> 7 << 1 | 1);
+    out[3] = (uint8_t)((n & 0x7F) << 1);  // EA clear: a second octet follows
+    out[4] = (uint8_t)(n >> 7);           // L8..L15, no EA bit (27.010 §5.2.1.5)
     return 5;
 }
 
@@ -260,7 +260,8 @@ void cmux_input(cmux_t *m, const uint8_t *p, size_t n, uint32_t now_ms)
                 break;
             }
             m->rx_hdr = m->rx_state == P_LEN1 ? 3 : 4;
-            m->rx_need = m->rx_state == P_LEN1 ? (size_t)(b >> 1) : (size_t)(m->rx_len_oct[0] >> 1) | (size_t)(b >> 1) << 7;
+            // the second octet is L8..L15, no EA bit (27.010 §5.2.1.5)
+            m->rx_need = m->rx_state == P_LEN1 ? (size_t)(b >> 1) : (size_t)(m->rx_len_oct[0] >> 1) | (size_t)b << 7;
             m->rx_len = 0;
             if (m->rx_need > CMUX_N1) {
                 m->c.too_long++;
@@ -278,6 +279,8 @@ void cmux_input(cmux_t *m, const uint8_t *p, size_t n, uint32_t now_ms)
             uint8_t h[4] = {m->rx_addr, m->rx_ctrl, m->rx_len_oct[0], m->rx_len_oct[1]};
             if (cmux_fcs(h, m->rx_hdr) != b) {
                 m->c.bad_fcs++;
+                memcpy(m->c.last_bad, h, 4);
+                m->c.last_bad[4] = b, m->c.last_bad[5] = cmux_fcs(h, m->rx_hdr);
                 m->rx_state = P_SYNC;
             } else {
                 m->rx_state = P_END;

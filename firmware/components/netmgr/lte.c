@@ -667,6 +667,7 @@ void lte_info(lte_info_t *out)
     const cmux_counters_t *c = cmux_counters(&s_mux);
     out->overrun = s_overrun;
     out->bad_fcs = c->bad_fcs;
+    memcpy(out->last_bad, c->last_bad, sizeof out->last_bad);
     out->ppp_in_drop = s_in_drop;
     out->ppp_out_drop = s_out_drop;
     out->uart_errors = lte_uart_errors();

@@ -62,7 +62,7 @@ static bool decode(const uint8_t *p, size_t len, frame_t *f)
     if (p[3] & 1) {
         hdr = 4;
     } else {
-        n |= (size_t)(p[4] >> 1) << 7;
+        n |= (size_t)p[4] << 7;  // 27.010 §5.2.1.5: the second octet is L8..L15, no EA bit
         hdr = 5;
     }
     if (hdr + n + 2 != len || cmux_fcs(p + 1, hdr - 1) != p[hdr + n])
@@ -142,6 +142,11 @@ static void test_fcs_and_frames(void)
     static const uint8_t ua[] = {0xF9, 0x03, 0x73, 0x01, 0xD7, 0xF9};
     CHECK(n == 6 && !memcmp(f, ua, 6), "UA DLC0: F9 03 73 01 D7 F9");
     CHECK(cmux_frame(f, 1, CMUX_UIH, true, NULL, CMUX_N1 + 1) == 0, "over N1: no frame");
+    // A frame the EC600G-EU sent (the bench, Plan 10 T4): DLC1, UIH, 291 bytes: length 46 02, FCS CD
+    static uint8_t info291[291];
+    n = cmux_frame(f, 1, CMUX_UIH, false, info291, 291);
+    CHECK(n == 291 + 7 && f[1] == 0x05 && f[2] == 0xEF && f[3] == 0x46 && f[4] == 0x02 && f[n - 2] == 0xCD,
+          "291 bytes: 05 EF 46 02 .. CD (%02x %02x %02x %02x .. %02x)", f[1], f[2], f[3], f[4], f[n - 2]);
     // lengths across the 1- and 2-octet field
     const size_t sizes[] = {0, 1, 127, 128, 2048};
     for (size_t i = 0; i < 5; i++) {
@@ -184,7 +189,7 @@ static void test_resync(void)
     CHECK(s_got_n[1] == 10 && !memcmp(s_got[1], "hellohello", 10), "after garbage and a bad FCS, both good frames (%zu)", s_got_n[1]);
     CHECK(cmux_counters(&m)->bad_fcs == 1, "the bad FCS counted (%u)", cmux_counters(&m)->bad_fcs);
     // a length over N1: dropped, then the next frame
-    uint8_t big[8] = {0xF9, 0x05, 0xEF, (uint8_t)((2049 & 0x7F) << 1), (uint8_t)(2049 >> 7 << 1 | 1)};
+    uint8_t big[8] = {0xF9, 0x05, 0xEF, (uint8_t)((2049 & 0x7F) << 1), (uint8_t)(2049 >> 7)};
     reset_got();
     cmux_input(&m, big, 5, 100);
     cmux_input(&m, good, g, 100);

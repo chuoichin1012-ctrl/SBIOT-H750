@@ -45,6 +45,7 @@ typedef struct {
     uint32_t out_drop;                    // cmux_send refused on DLC1: no room (ppp_out_drop)
     uint32_t ctrl_drop;                   // a control frame that did not fit in DLC0's queue
     uint32_t nsc;                         // commands answered with NSC
+    uint8_t last_bad[6];                  // the last frame with a bad FCS: address, control, 2 length octets, FCS got, FCS computed
 } cmux_counters_t;
 
 typedef struct {

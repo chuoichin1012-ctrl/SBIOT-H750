@@ -84,9 +84,9 @@
 
 **Files:** `tools/factory_cal.py` (new), `app/bench_io.c` (only if the console's `A` needs a read-back line it does not print yet), spec §12.4.
 
-- A console read-back (Codex plan r1): a new command `F` reads both factory record copies from SPI4 and prints, for each, whether it parses (magic, version, CRC) and its four coefficients.
-- `factory_cal.py PORT G1 O1 G2 O2`: sends `A` with the four coefficients over UART7 (`board.py`'s serial helpers), then `F`: both copies must parse and hold the requested values; then a reset, and after the boot `/api/status` must report `aiCalibrated: true` (the runtime reads the record at boot only). The production path to SPI4 is the console because the team's SWD loader programs QSPI only.
-- [ ] Test (Python, no board): the command line it builds and the parse of the `F` answer, on a recorded console transcript (two good copies, one bad copy, values that differ from the request).
+- A console read-back (Codex plan r1): a new command `C` (free: `F` is the serial peer, `X` the XOFF injection; Codex plan r2) reads both factory record copies from SPI4 and prints, for each, whether it parses (magic, version, CRC) and its four coefficients.
+- `factory_cal.py PORT G1 O1 G2 O2`: sends `A` with the four coefficients over UART7 (`board.py`'s serial helpers), then `C`: both copies must parse and hold the requested values; then a reset, and after the boot `/api/status` must report `aiCalibrated: true` (the runtime reads the record at boot only). The production path to SPI4 is the console because the team's SWD loader programs QSPI only.
+- [ ] Test (Python, no board): the command line it builds and the parse of the `C` answer, on a recorded console transcript (two good copies, one bad copy, values that differ from the request).
 - [ ] Board: write the nominal coefficients (gain 1, offset 0) and read them back; `/api/status` reports `aiCalibrated: true`.
 - [ ] Commit.
 
@@ -99,13 +99,17 @@
 
 ### Task 6: board, spec, review
 
-**The one-time migration** of a board programmed before this plan (Codex plan r1: its staging may hold an older valid image that would install over the new app, and its factory slot holds an older app that refuses a v2 record): no migration code in the bootloader. A console command `X` then `OLD` erases the first sector of staging and of the factory slot (their magic; FlashDB and the factory record untouched) and resets; the next boot finds the factory slot unseeded and seeds it from the new app in QSPI (the existing one-time seeding).
+**The one-time migration** of a board programmed before this plan (Codex plan r1 and r2): its staging may hold an older valid image, which any boot with a valid record installs over the new app, and its factory slot holds an older app that refuses a v2 record. No migration code in the bootloader; the order below never lets a boot install the old image:
+1. While the old firmware runs: its console `Z` then `WIPE` erases all of SPI4 (staging, factory slot, FlashDB, the factory record) and resets. The old bootloader then seeds the factory slot from the old app: step 4 replaces it.
+2. Flash boot and app of this plan over SWD. The new bootloader halts at the v1 record (before `install_run`): nothing is installed.
+3. `flash.sh bind KEY`: the v2 record; the boot that follows finds staging empty and runs the new app (FlashDB formatted fresh: default configs).
+4. The new console command `R` then `RESEED` erases the factory slot's first sector (its magic) and resets; that boot seeds the factory slot from the new app.
+5. If the board was calibrated: `factory_cal.py` again (step 1 erased the factory record).
 
-The order, written into §12.4: flash boot and app (SWD) → `flash.sh bind KEY` (v2 record) → console `X` `OLD` → boot (the factory slot seeded from the v2 app).
+The boards programmed before this plan are development boards: losing their configs and calibration is accepted. The order goes into §12.4.
 
 - [ ] Board:
-  - flash boot and app built from this branch: the bench board (its v1 record) halts with the old-record message, nothing erased;
-  - `flash.sh bind dev`, then `X` `OLD`: it boots; `/api/status` shows the SN `SB<YYMM><n>` and the same MAC as before; the log shows the factory slot seeded;
+  - the migration on the bench board, whose staging and factory slot both hold a valid older image: steps 1–4; at step 2 it halts with the old-record message, nothing erased or installed; after step 3 it runs the new app; after step 4 the log shows the factory slot seeded from it; `/api/status` shows the SN `SB<YYMM><n>` and the same MAC as before;
   - a Reload restore (held 5 s at power-up) boots the v2 factory image, which accepts the record;
   - the clone case of `ota_check` (`SBIOT_BIND_UID`) still erases and halts;
   - `defaults_check`, `web_check plain configs`, `review_check`.

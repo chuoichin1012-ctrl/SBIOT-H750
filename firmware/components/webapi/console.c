@@ -8,6 +8,7 @@
 // subscriber; each UART frame becomes one binary WebSocket message. Messages from a client go to the port.
 #include <stdio.h>
 #include <string.h>
+#include "wdog.h"
 #include "FreeRTOS.h"
 #include "blog.h"
 #include "message_buffer.h"
@@ -208,7 +209,9 @@ static void console_task(void *arg)
         SLOG_E("console", "cannot listen on port %d", s_port);
     else
         blog("console: WebSocket on port %d (%s)\r\n", s_port, s_target == 3 ? "log" : "UART");
+    int hb = wdog_hb_add("console", 30000);  // Plan 11a task 0b
     for (;;) {
+        wdog_hb_beat(hb);
         mg_mgr_poll(&s_mgr, POLL_MS);
         drain();
     }

@@ -35,6 +35,7 @@ typedef struct edge_pt {
 
 struct edge_dev {
     char name[EDGE_NAME_MAX], addr[13], ip[16];
+    int hb;  // the supervisor slot of the task that polls it (Plan 11a task 0b), set by that task
     int source, uart, poll_ms;
     bool dlt645, map_en, merge;
     uint8_t unit, map_addr;

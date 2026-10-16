@@ -613,6 +613,10 @@ static void handler(struct mg_connection *c, int ev, void *ev_data)
     }
 }
 
+static volatile uint32_t s_bench_hang_ms;
+
+void web_bench_hang(uint32_t ms) { s_bench_hang_ms = ms; }
+
 static void web_task(void *arg)
 {
     (void)arg;
@@ -623,8 +627,16 @@ static void web_task(void *arg)
         SLOG_E("web", "cannot listen on port %d", g_web.web_port);
     else
         blog("web: UI and API on port %d\r\n", g_web.web_port);
-    for (;;)
+    int hb = wdog_hb_add("web", 30000);  // Plan 11a task 0b
+    for (;;) {
+        wdog_hb_beat(hb);
         mg_mgr_poll(&s_mgr, POLL_MS);
+        if (s_bench_hang_ms) {  // console 'I' (bench): the web task stops, the supervisor must restart
+            uint32_t ms = s_bench_hang_ms;
+            s_bench_hang_ms = 0;
+            vTaskDelay(pdMS_TO_TICKS(ms));
+        }
+    }
 }
 
 static void str_into(char *out, size_t cap, const cJSON *o, const char *k)

@@ -7,6 +7,7 @@ Prints one line per check and "elf: ok" when all pass; exits 1 otherwise. Needs 
 -readelf and -objdump on PATH (source ~/opt/xpack/env.sh).
 """
 import glob
+import os
 import re
 import subprocess
 import sys
@@ -196,6 +197,15 @@ def main():
     dtcm = sum(s for a, s in sec.values() if DTCM[0] <= a < DTCM[1]) + 4096
     check(dtcm <= DTCM_BUDGET, 'app: DTCM %d bytes (data + bss + 4 KB MSP) <= %d' % (dtcm, DTCM_BUDGET))
     check(all(n in sym for n in ('malloc', '_malloc_r', 'sb_malloc')), 'app: malloc and _malloc_r are the heap_5 wrapper')
+    # Plan 11a task 0b: the supervisor's reason survives the reset in .noinit (Codex plan r5).
+    ni = sec.get('.noinit')
+    hdr = [l for l in run('arm-none-eabi-readelf', '-SW', app).splitlines() if ' .noinit ' in l]
+    ld = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'app', 'app.ld')).read()
+    check(ni is not None and hdr and 'NOBITS' in hdr[0] and ni[0] % 32 == 0 and ni[1] % 32 == 0
+          and 0x38000000 <= ni[0] and ni[0] + ni[1] <= 0x3800FC00 and 'ADDR(.noinit)' not in ld
+          and not any(a < ni[0] + ni[1] and ni[0] < a + sz for a, sz in bs.values()),
+          'app: .noinit NOLOAD, 32-aligned, in SRAM4 outside the ADC buffer, in no zero table, outside the bootloader (%s)'
+          % ('0x%08x +%d' % ni if ni else 'missing'))
     image_end = sym.get('__image_end__', 0)
     check(QSPI_SLOT[0] < image_end <= QSPI_SLOT[1], 'app: image ends at 0x%08x, inside the slot' % image_end)
 

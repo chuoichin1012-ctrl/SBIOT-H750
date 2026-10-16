@@ -1,3 +1,4 @@
+#include "wdog.h"
 #include "iomgr.h"
 #include <string.h>
 #include "FreeRTOS.h"
@@ -66,7 +67,9 @@ static uint32_t seq_read(void *ctx) { return adc_drv_seq(); }
 static void io_task(void *arg)
 {
     uint32_t last_tick = now_ms(), last_timers = last_tick;
+    int hb = wdog_hb_add("io", 10000);  // Plan 11a task 0b
     for (;;) {
+        wdog_hb_beat(hb);
         uint32_t bits = 0;
         xTaskNotifyWait(0, UINT32_MAX, &bits, pdMS_TO_TICKS(IO_TICK_MS));
         if (bits & ADC_N_FAULT) {

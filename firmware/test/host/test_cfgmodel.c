@@ -203,6 +203,67 @@ static void test_edge_strict(void)
     cJSON_Delete(in);
 }
 
+// ---- cfg_edge_load (Plan 08c): normalised headers and nodes, one at a time ------------------------
+typedef struct {
+    cJSON *devs;  // what the visitors saw: headers with their nodes added
+    int stop_at;  // the visitor call that answers false (-1: none)
+    int calls;
+} visit_t;
+
+static bool on_dev(void *ctx, const cJSON *dev, int index)
+{
+    visit_t *v = ctx;
+    if (v->calls++ == v->stop_at)
+        return false;
+    CHECK(index == cJSON_GetArraySize(v->devs), "device index %d in order", index);
+    cJSON *d = cJSON_Duplicate(dev, true);
+    cJSON_AddItemToObject(d, "nodes", cJSON_CreateArray());
+    cJSON_AddItemToArray(v->devs, d);
+    return true;
+}
+
+static bool on_node(void *ctx, const cJSON *node, int dev)
+{
+    visit_t *v = ctx;
+    if (v->calls++ == v->stop_at)
+        return false;
+    CHECK(dev == cJSON_GetArraySize(v->devs) - 1, "node of the device just visited (%d)", dev);
+    cJSON_AddItemToArray(cJSON_GetObjectItem(cJSON_GetArrayItem(v->devs, dev), "nodes"), cJSON_Duplicate(node, true));
+    return true;
+}
+
+static void test_edge_load(void)
+{
+    const char *text = "[{\"name\":\"plc\",\"addr\":\"5\",\"uart\":2,\"nodes\":[{\"name\":\"t\",\"reg\":10,\"dtype\":\"int16\"},"
+                       "{\"name\":\"c\",\"fc\":1,\"reg\":3,\"dtype\":\"bool\"}]},"
+                       "{\"name\":\"x\",\"source\":\"io\",\"nodes\":[{\"name\":\"q\",\"ioPoint\":\"DO1\"}]},"
+                       "{\"name\":\"y\",\"source\":\"virtual\",\"addr\":\"200\",\"nodes\":[{\"name\":\"s\",\"formula\":\"t+1\",\"dtype\":\"float32_abcd\"}]},"
+                       "{\"name\":\"old\",\"addr\":\"300\",\"nodes\":[{\"name\":\"k\",\"fc\":1,\"dtype\":\"uint16\"}]}]";
+    char err[160] = "";
+    visit_t v = {cJSON_CreateArray(), -1, 0};
+    cfg_result_t r = cfg_edge_load(&ENV, text, strlen(text), on_dev, on_node, &v, err, sizeof err);
+    CHECK(r == CFG_OK, "a stored model loads, the lenient rules (%d %s)", r, err);
+    cJSON *in = cJSON_Parse(text);
+    cJSON *tree = cfg_load(&ENV, "edgeDevices", in, err, sizeof err);
+    CHECK(tree && cJSON_Compare(tree, v.devs, true), "the visits make exactly cfg_load's tree");
+    const cJSON *io = cJSON_GetArrayItem(v.devs, 1), *q = cJSON_GetArrayItem(cJSON_GetObjectItem(io, "nodes"), 0);
+    CHECK(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(io, "name")), "SBIOT_IO") &&
+              !strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(q, "name")), "DO1"),
+          "the IO device and its channel names fixed up as saved");
+    CHECK(v.calls == 4 + 5, "4 devices and 5 nodes visited (%d)", v.calls);
+    cJSON_Delete(tree);
+    cJSON_Delete(in);
+    cJSON_Delete(v.devs);
+    for (int stop = 0; stop < 9; stop++) {
+        visit_t w = {cJSON_CreateArray(), stop, 0};
+        r = cfg_edge_load(&ENV, text, strlen(text), on_dev, on_node, &w, err, sizeof err);
+        CHECK(r == CFG_NO_MEMORY && w.calls == stop + 1, "a visitor's false at call %d stops the walk: no memory (%d)", stop, r);
+        cJSON_Delete(w.devs);
+    }
+    r = cfg_edge_load(&ENV, "[{\"name\":5}]", 13, on_dev, on_node, &v, err, sizeof err);
+    CHECK(r == CFG_INVALID && err[0], "a schema error as cfg_load words it (%s)", err);
+}
+
 /** Values that exist only because this board has two ports. */
 static void test_two_port_values(void)
 {
@@ -305,6 +366,7 @@ static void test_listen_ports(void)
 
 int main(void)
 {
+    test_edge_load();
     test_stm32_scope();
     test_listen_ports();
     test_two_port_values();

@@ -3,6 +3,7 @@
 #include "ipacl.h"
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -705,6 +706,7 @@ typedef struct {
 
 static bool out_put(eout_t *o, const char *s, size_t n)
 {
+    if (!o->emit) return true;  // cfg_edge_load: nothing is kept
     if (o->r != CFG_OK) return false;
     if (o->used + n > o->max) return o->r = CFG_TOO_LARGE, false;
     if (!o->emit(o->ctx, s, n)) return o->r = CFG_ABORTED, false;
@@ -830,8 +832,11 @@ static void put_any(cJSON *dst, const char *key, cJSON *item)
 /** Prints `doc` into buf without reallocation; false when it does not fit (no memory). */
 static bool print_into(const cJSON *doc, char *buf, int size) { return cJSON_PrintPreallocated((cJSON *)doc, buf, size, false); }
 
-cfg_result_t cfg_edge_text(const cfg_env_t *env, const char *text, size_t len, bool strict, size_t max_out,
-                           cfg_emit_fn emit, void *ctx, char *err, size_t errlen)
+// cfg_edge_text and cfg_edge_load: one walk. The visitors see each normalised header and node before it
+// is printed; with emit NULL nothing is kept (Plan 08c).
+static cfg_result_t edge_walk(const cfg_env_t *env, const char *text, size_t len, bool strict, size_t max_out,
+                              cfg_emit_fn emit, void *ctx, cfg_edge_dev_fn on_dev, cfg_edge_node_fn on_node, void *vctx,
+                              char *err, size_t errlen)
 {
     js_span_t root;
     if (!js_parse_root(text, len, &root)) return fail(err, errlen, NOT_JSON, NULL, NULL), CFG_INVALID;
@@ -915,6 +920,7 @@ cfg_result_t cfg_edge_text(const cfg_env_t *env, const char *text, size_t len, b
         d->io = is_io;
         d->map_en = bget(s, "mapEn");
         d->map_addr = iget(s, "mapAddr");
+        if (on_dev && !on_dev(vctx, s, m->ndev)) goto stopped;
         if (!print_into(s, buf, PRINT_MAX)) goto done;
         cJSON_Delete(s);
         s = NULL;
@@ -981,6 +987,7 @@ cfg_result_t cfg_edge_text(const cfg_env_t *env, const char *text, size_t len, b
             e->is_bool = strcmp(dtype, "bool") == 0;
             e->map_en = bget(o, "mapEn");
             e->map_addr = iget(o, "mapAddr");
+            if (on_node && !on_node(vctx, o, m->ndev)) goto stopped;
             if (!print_into(o, buf, PRINT_MAX)) goto done;
             cJSON_Delete(o);
             o = NULL;
@@ -998,6 +1005,9 @@ cfg_result_t cfg_edge_text(const cfg_env_t *env, const char *text, size_t len, b
     if (strict && !edge_strict(m, err, errlen)) goto bad;
     r = out.r;
     if (r == CFG_TOO_LARGE) fail(err, errlen, "The Edge model is too large.", NULL, NULL);
+    goto done;
+stopped:  // a visitor could not keep it: no memory
+    r = CFG_NO_MEMORY;
     goto done;
 aborted:
     r = CFG_ABORTED;
@@ -1017,6 +1027,18 @@ done:
     cJSON_free(buf);
     cJSON_free(m);
     return r;
+}
+
+cfg_result_t cfg_edge_text(const cfg_env_t *env, const char *text, size_t len, bool strict, size_t max_out,
+                           cfg_emit_fn emit, void *ctx, char *err, size_t errlen)
+{
+    return edge_walk(env, text, len, strict, max_out, emit, ctx, NULL, NULL, NULL, err, errlen);
+}
+
+cfg_result_t cfg_edge_load(const cfg_env_t *env, const char *text, size_t len, cfg_edge_dev_fn on_dev, cfg_edge_node_fn on_node,
+                           void *ctx, char *err, size_t errlen)
+{
+    return edge_walk(env, text, len, false, SIZE_MAX, NULL, NULL, on_dev, on_node, ctx, err, errlen);
 }
 
 // A port's TCP server listen port, or 0 when its bridge is not a TCP server.

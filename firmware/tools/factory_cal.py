@@ -52,7 +52,7 @@ def main(argv):
         return 2
     want = tuple(float(x) for x in argv)
     import board
-    lines = [l for _, l in board.listen(4, sends=[(0.3, command(*want)), (2.0, 'C')])]
+    lines = [l for _, l in board.listen(8, sends=[(0.5, command(*want)), (4.0, 'C')])]
     copies = parse_c(lines)
     if not copies_hold(copies, want):
         print('factory_cal: the record read back does not hold the values (%s)' % copies, file=sys.stderr)

@@ -293,6 +293,11 @@ static MQTTStatus_t discardPacket( const MQTTContext_t * pContext,
 static MQTTStatus_t discardStoredPacket( MQTTContext_t * pContext,
                                          const MQTTPacketInfo_t * pPacketInfo );
 
+static bool sbiotOversizedHead( MQTTContext_t * pContext,
+                                const MQTTPacketInfo_t * pPacketInfo,
+                                uint16_t * pId,
+                                MQTTQoS_t * pQos );
+
 /**
  * @brief Receive a packet from the transport interface.
  *
@@ -1106,6 +1111,67 @@ static MQTTStatus_t discardPacket( const MQTTContext_t * pContext,
 
 /*-----------------------------------------------------------*/
 
+/* SBIOT patch: for an oversized PUBLISH, its QoS and, at QoS 1/2, its packet id, reading what of its head is still
+ * missing into the network buffer (the discard then drains the rest). False when the head does not fit. */
+static bool sbiotOversizedHead( MQTTContext_t * pContext,
+                                const MQTTPacketInfo_t * pPacketInfo,
+                                uint16_t * pId,
+                                MQTTQoS_t * pQos )
+{
+    uint8_t * pBuffer = pContext->networkBuffer.pBuffer;
+    size_t need;
+    uint32_t start = pContext->getTime();
+
+    if( ( pPacketInfo->type & 0xF0U ) != MQTT_PACKET_TYPE_PUBLISH )
+    {
+        return true;
+    }
+
+    *pQos = ( MQTTQoS_t ) ( ( pPacketInfo->type >> 1 ) & 0x03U );
+
+    if( *pQos == MQTTQoS0 )
+    {
+        return true;
+    }
+
+    for( ; ; )
+    {
+        int32_t got;
+
+        /* The topic's length comes first, then the topic, then the packet id. */
+        need = pPacketInfo->headerLength + 2U;
+
+        if( pContext->index >= need )
+        {
+            need += ( ( ( size_t ) pBuffer[ pPacketInfo->headerLength ] << 8 ) | pBuffer[ pPacketInfo->headerLength + 1U ] ) + 2U;
+        }
+
+        if( pContext->index >= need )
+        {
+            break;
+        }
+
+        if( need > pContext->networkBuffer.size )
+        {
+            return false;
+        }
+
+        got = pContext->transportInterface.recv( pContext->transportInterface.pNetworkContext,
+                                                 &pBuffer[ pContext->index ],
+                                                 need - pContext->index );
+
+        if( ( got < 0 ) || ( calculateElapsedTime( pContext->getTime(), start ) > MQTT_RECV_POLLING_TIMEOUT_MS ) )
+        {
+            return false;
+        }
+
+        pContext->index += ( size_t ) got;
+    }
+
+    *pId = ( uint16_t ) ( ( ( uint16_t ) pBuffer[ need - 2U ] << 8 ) | pBuffer[ need - 1U ] );
+    return *pId != 0U;
+}
+
 static MQTTStatus_t discardStoredPacket( MQTTContext_t * pContext,
                                          const MQTTPacketInfo_t * pPacketInfo )
 {
@@ -1751,10 +1817,45 @@ static MQTTStatus_t receiveSingleIteration( MQTTContext_t * pContext,
     /* If the MQTT Packet size is bigger than the buffer itself. */
     else if( totalMQTTPacketLength > pContext->networkBuffer.size )
     {
+        /* SBIOT patch: an oversized QoS 1/2 PUBLISH is dropped, but its QoS exchange is completed, or the
+         * broker's in-flight window would stall. Its head (topic and packet id) is read in first. */
+        uint16_t sbiotId = 0U;
+        MQTTQoS_t sbiotQos = MQTTQoS0;
+        bool sbiotHead = sbiotOversizedHead( pContext, &incomingPacket, &sbiotId, &sbiotQos );
+
         /* Discard the packet from the receive buffer and drain the pending
          * data from the socket buffer. */
         status = discardStoredPacket( pContext,
                                       &incomingPacket );
+
+        if( ( status == MQTTNoDataAvailable ) && ( sbiotQos > MQTTQoS0 ) )
+        {
+            if( sbiotHead == false )
+            {
+                LogError( ( "An oversized PUBLISH whose topic does not fit: the connection is closed." ) );
+                status = MQTTRecvFailed;
+            }
+            else
+            {
+                MQTTPublishState_t sbiotState = MQTTStateNull;
+                MQTTStatus_t sbiotStatus = MQTT_UpdateStatePublish( pContext, sbiotId, MQTT_RECEIVE, sbiotQos, &sbiotState );
+
+                if( ( sbiotStatus == MQTTSuccess ) || ( sbiotStatus == MQTTStateCollision ) )
+                {
+                    sbiotStatus = sendPublishAcks( pContext, sbiotId, MQTT_CalculateStatePublish( MQTT_RECEIVE, sbiotQos ) );
+                }
+
+                if( sbiotStatus != MQTTSuccess )
+                {
+                    status = sbiotStatus;
+                }
+                else
+                {
+                    LogWarn( ( "An incoming PUBLISH larger than the buffer was dropped (packet id %u); its QoS exchange goes on.",
+                               ( unsigned int ) sbiotId ) );
+                }
+            }
+        }
     }
     /* If the total packet is of more length than the bytes we have available. */
     else if( totalMQTTPacketLength > pContext->index )

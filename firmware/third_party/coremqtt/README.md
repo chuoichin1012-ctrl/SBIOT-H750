@@ -11,5 +11,7 @@ The MQTT client of the gateway (spec §8, Plan 09), driven by the `mqtt` task on
   - **MQTT 3.1** (`MQTTConnectInfo_t.mqtt31`, false = 3.1.1): CONNECT with "MQIsdp" at level 3 (Remaining Length 2 bytes
     longer); the 3.1 CONNACK's reserved first byte is not checked, and the session is kept exactly when `cleanSession` is
     false. 3.1.1 is unchanged. Tested byte for byte by `test/host/test_mqtt_wire.c`.
-  - **Incoming messages larger than the network buffer** (Plan 09 ruling 11, in T3): their QoS 1/2 exchange is completed
-    although the payload is dropped.
+  - **Incoming messages larger than the network buffer** (Plan 09 ruling 11): the payload is dropped, as before, but
+    a QoS 1/2 message's exchange is completed (its head is read first: `sbiotOversizedHead`, then the same
+    `MQTT_UpdateStatePublish` and `sendPublishAcks` as `handleIncomingPublish`), so the broker's in-flight window moves
+    on. Tested by `test/host/test_mqtt_session.c`.

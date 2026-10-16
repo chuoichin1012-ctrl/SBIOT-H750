@@ -47,6 +47,7 @@ typedef enum { ST_FREE, ST_IDLE, ST_FILE, ST_EDGE_GET, ST_LOG, ST_UPLOAD, ST_DIS
 typedef struct {
     state_t st;
     uint64_t last_ms;  // the last byte received
+    web_send_t send;   // the answer's progress: a client that stops reading loses its slot (Plan 10c)
     bool waiting;      // headers seen, a body still to come (plain requests)
     bool until_quiet;  // ST_DISCARD of a body without a length: close once nothing comes for QUIET_MS
     bool hdrs_done;    // this request's headers were handled: Mongoose emits MG_EV_HTTP_HDRS again on every
@@ -583,9 +584,16 @@ static void handler(struct mg_connection *c, int ev, void *ev_data)
             s->waiting = false;
             c->is_draining = 1;
         }
+        if (web_send_poll(&s->send, c->send.len, false, ms_now())) {
+            SLOG_W("web", "a client stopped reading its answer (%lu ms): closed", (unsigned long)WEB_STALL_MS);
+            c->is_closing = 1;  // its close path unpins an Edge GET (finish_stream)
+            break;
+        }
         // a stream may go on
         __attribute__((fallthrough));
     case MG_EV_WRITE:
+        if (ev == MG_EV_WRITE)
+            web_send_poll(&s->send, c->send.len, *(long *)ev_data > 0, ms_now());
         if (s->st == ST_FILE || s->st == ST_EDGE_GET || s->st == ST_LOG)
             pump(c, s);
         break;

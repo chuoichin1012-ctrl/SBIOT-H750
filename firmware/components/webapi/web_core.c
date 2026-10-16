@@ -196,3 +196,16 @@ int web_pem_check(const char *kind, const char *pem, size_t len)
                    : -1;
     return -1;
 }
+
+bool web_send_poll(web_send_t *t, size_t queued, bool wrote, uint64_t now_ms)
+{
+    if (!queued) {
+        t->on = false;
+        return false;
+    }
+    if (!t->on || wrote) {
+        t->on = true;
+        t->since = now_ms;
+    }
+    return now_ms - t->since >= WEB_STALL_MS;
+}

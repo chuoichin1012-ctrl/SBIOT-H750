@@ -273,6 +273,14 @@ static void test_close_events(void)
     open_all(&m);
     cmux_close(&m);
     CHECK(drain(&m) == 1 && is_msg(&s_out[0], CMUX_MSG_CLD | 2), "close: CLD on DLC0");
+    // the gateway closes a DLC itself (the bench's recovery case, Plan 10 T5): DISC out, closed, no more data on it
+    open_all(&m);
+    reset_got();
+    cmux_disc(&m, 2);
+    cmux_send(&m, 2, (const uint8_t *)"AT\r", 3);
+    int n = drain(&m);
+    CHECK(n == 1 && s_out[0].dlc == 2 && s_out[0].ctrl == (CMUX_DISC | 0x10) && s_events[CMUX_EV_DLC_CLOSED] == 1 && s_ev_dlc == 2,
+          "DISC on DLC2: sent, closed, no data after it (%d frames)", n);
 }
 
 static void test_flow_control(void)

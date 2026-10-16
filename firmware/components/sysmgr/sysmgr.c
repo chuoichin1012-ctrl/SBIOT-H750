@@ -114,6 +114,8 @@ void sysmgr_start(const cJSON *system)
 static void restart_task(void *arg)
 {
     vTaskDelay(pdMS_TO_TICKS((uint32_t)(uintptr_t)arg));
+    if (!lte_shutdown(60000))  // the modem powered down first (spec §7.2, Plan 10 T5)
+        blog("sys: the modem did not confirm POWERED DOWN\r\n");
     blog("sys: restarting\r\n");
     vTaskDelay(pdMS_TO_TICKS(20));  // the line out of UART7
     NVIC_SystemReset();

@@ -387,6 +387,17 @@ void cmux_close(cmux_t *m)
     m->state = CMUX_CLOSED;
 }
 
+void cmux_disc(cmux_t *m, int dlc)
+{
+    if (dlc < 1 || dlc >= CMUX_DLCS)
+        return;
+    ctrl_frame(m, dlc, CMUX_DISC, true, NULL, 0, NULL, 0);
+    if (m->open[dlc]) {
+        m->open[dlc] = false;
+        event(m, CMUX_EV_DLC_CLOSED, dlc);
+    }
+}
+
 cmux_state_t cmux_state(const cmux_t *m) { return m->state; }
 uint32_t cmux_last_rx_ms(const cmux_t *m) { return m->last_rx_ms; }
 const cmux_counters_t *cmux_counters(const cmux_t *m) { return &m->c; }

@@ -95,6 +95,8 @@ size_t cmux_room(const cmux_t *m, int dlc);
 /** The next whole frame to send, 0 for none: DLC0 first, then DLC1 and DLC2 in turn, when not stopped. */
 size_t cmux_tx_next(cmux_t *m, uint8_t *out, size_t max);
 void cmux_close(cmux_t *m);  // CLD on DLC0
+/** DISC on a data DLC: it is closed (CMUX_EV_DLC_CLOSED), and its queue sends nothing more. */
+void cmux_disc(cmux_t *m, int dlc);
 cmux_state_t cmux_state(const cmux_t *m);
 uint32_t cmux_last_rx_ms(const cmux_t *m);
 const cmux_counters_t *cmux_counters(const cmux_t *m);

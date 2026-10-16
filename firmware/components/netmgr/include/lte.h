@@ -22,5 +22,12 @@ typedef struct {
 /** Starts UART3 and both tasks (priority 1 or 2); priority 0 leaves the modem alone (Plan 10 T5 powers it down). */
 void lte_start(const net_cfg_t *cfg);
 void lte_info(lte_info_t *out);
+/** Before a gateway restart: AT+QPOWD=1 and POWERED DOWN (up to timeout_ms, spec §7.2); true at once when the
+ *  module is not ON. PWRKEY is never pressed. */
+bool lte_shutdown(uint32_t timeout_ms);
+/** Bench: DISC on DLC2, which the lte task recovers from (Plan 10 T5). */
+void lte_bench_disc(void);
+/** Bench: PPP's input dropped (toggle), so PPP never gets an address: the CFUN case. The new state. */
+bool lte_bench_drop(void);
 /** Bench: text and CR out of UART3 as they are (AT mode). */
 void lte_send_raw(const char *text);

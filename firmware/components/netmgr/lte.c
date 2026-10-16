@@ -17,6 +17,7 @@
 #include "netmgr.h"
 #include "main.h"  // LTE_PWR, LTE_RESET (through Q1/Q2: high is pressed)
 #include "now_us.h"
+#include "semphr.h"
 #include "stream_buffer.h"
 #include "syslog.h"
 #include "task.h"
@@ -33,7 +34,7 @@
 #define CMUX_CMD "AT+CMUX=0,0,5,2048,20,3,30,10,2"
 
 enum { M_AT, M_MUX, M_PLAIN_PPP };
-enum { REQ_MUX_START = 1, REQ_MUX_CLOSE = 2, REQ_PLAIN_PPP = 4 };
+enum { REQ_MUX_START = 1, REQ_MUX_CLOSE = 2, REQ_PLAIN_PPP = 4, REQ_DISC2 = 8 };
 enum { EV_RUNNING = 1 << CMUX_EV_RUNNING, EV_CLOSED = 1 << CMUX_EV_DLC_CLOSED, EV_FAILED = 1 << CMUX_EV_FAILED, EV_PPP_DOWN = 1 << 8 };
 
 static net_cfg_t s_cfg;
@@ -56,6 +57,13 @@ static at_lines_t s_dial_lines;      // DLC1's lines before PPP, in cmux_rx
 static volatile int s_dial_result;   // at_final_t of the dial
 static lte_info_t s_info = {.csq = 99, .state = "disconnected", .modem = "UNKNOWN", .mux = "AT", .sim = ""};
 static uint32_t s_release_ms;  // the last PWRKEY or RESET_N release, for ready_ms
+// the shutdown before a gateway restart, and priority 0 (Plan 10 T5)
+static volatile lte_power_t s_power = LTE_UNKNOWN;
+static volatile bool s_shutdown_req, s_powered_down;
+static volatile bool s_bench_drop;  // bench: PPP's input dropped, so PPP never gets an address (the CFUN case)
+static SemaphoreHandle_t s_shutdown_done;
+static StaticSemaphore_t s_shutdown_mem;
+static at_lines_t s_lines;  // the AT channel's lines (the lte task)
 
 static uint32_t ms(void) { return (uint32_t)(now_us() / 1000u); }
 
@@ -64,6 +72,8 @@ static uint32_t ms(void) { return (uint32_t)(now_us() / 1000u); }
 // The data channel's bytes: PPP once it runs, the dial's reply before (CONNECT, NO CARRIER, ERROR).
 static void ppp_input(const uint8_t *p, size_t n)
 {
+    if (s_bench_drop)
+        return;
     if (s_ppp_running && s_ppp) {
         for (int i = 0; i < 3; i++) {  // ERR_MEM: 3 tries, 1 ms apart, then dropped (spec §7.2)
             if (pppos_input_tcpip(s_ppp, p, (int)n) != ERR_MEM)
@@ -139,6 +149,8 @@ static void cmux_task(void *arg)
         }
         if (req & REQ_PLAIN_PPP)
             s_mode = M_PLAIN_PPP;
+        if (req & REQ_DISC2 && s_mode == M_MUX)
+            cmux_disc(&s_mux, 2);  // the bench's recovery case
         if (req & REQ_MUX_START) {
             cmux_init(&s_mux, &k_mux_io);
             cmux_start(&s_mux, now);
@@ -197,11 +209,11 @@ typedef void (*line_fn)(const char *line, void *ctx);
  *  Each other line goes to fn. */
 static at_final_t at_cmd(const char *cmd, uint32_t timeout_ms, line_fn fn, void *ctx)
 {
-    static at_lines_t lines;
+    at_lines_t *lines = &s_lines;
     uint8_t b[64];
     while (xStreamBufferReceive(s_at_in, b, sizeof b, 0)) {
     }  // whatever is left is late
-    lines.n = 0;
+    lines->n = 0;
     xStreamBufferSend(s_at_out, cmd, strlen(cmd), pdMS_TO_TICKS(100));
     xStreamBufferSend(s_at_out, "\r", 1, pdMS_TO_TICKS(100));
     xTaskNotifyGive(s_cmux_task);
@@ -212,7 +224,7 @@ static at_final_t at_cmd(const char *cmd, uint32_t timeout_ms, line_fn fn, void 
             return AT_NONE;
         size_t n = xStreamBufferReceive(s_at_in, b, sizeof b, pdMS_TO_TICKS(timeout_ms - spent));
         for (size_t i = 0; i < n; i++) {
-            const char *line = at_feed(&lines, b[i]);
+            const char *line = at_feed(lines, b[i]);
             if (!line || !strcmp(line, cmd))
                 continue;  // the echo, before ATE0
             at_final_t f = at_final(line);
@@ -220,6 +232,24 @@ static at_final_t at_cmd(const char *cmd, uint32_t timeout_ms, line_fn fn, void 
                 return f;
             if (fn)
                 fn(line, ctx);
+        }
+    }
+}
+
+/** Waits up to timeout_ms for a line whose final result is want (an URC such as POWERED DOWN). */
+static bool at_wait(at_final_t want, uint32_t timeout_ms)
+{
+    uint8_t b[64];
+    uint32_t t0 = ms();
+    for (;;) {
+        uint32_t spent = ms() - t0;
+        if (spent >= timeout_ms)
+            return false;
+        size_t n = xStreamBufferReceive(s_at_in, b, sizeof b, pdMS_TO_TICKS(timeout_ms - spent));
+        for (size_t i = 0; i < n; i++) {
+            const char *line = at_feed(&s_lines, b[i]);
+            if (line && at_final(line) == want)
+                return true;
         }
     }
 }
@@ -347,11 +377,47 @@ static void identity(void)
            (unsigned long)s_info.ready_ms);
 }
 
+static void ppp_stop(void);
+
+/** AT+QPOWD=1 on the plain UART (CLD first), then POWERED DOWN within 60 s: only that is OFF (spec §7.2). */
+static bool power_down(void)
+{
+    ppp_stop();
+    if (s_mode == M_MUX) {
+        request(REQ_MUX_CLOSE);  // CLD: the modem goes back to AT on its UART
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    SLOG_I("lte", "AT+QPOWD=1");
+    at_final_t f = at_cmd("AT+QPOWD=1", 3000, NULL, NULL);
+    bool down = f == AT_POWERED_DOWN || (f == AT_OK && at_wait(AT_POWERED_DOWN, 60000));
+    s_power = down ? LTE_OFF : LTE_UNKNOWN;
+    info_set(&s_info.modem, down ? "OFF" : "UNKNOWN");
+    info_set(&s_info.mux, "AT");
+    info_set(&s_info.state, "disconnected");
+    if (down)
+        SLOG_I("lte", "POWERED DOWN");
+    else
+        SLOG_W("lte", "no POWERED DOWN within 60 s: the module stays UNKNOWN (PWRKEY not pressed)");
+    return down;
+}
+
+/** A shutdown asked by lte_shutdown: done here, in the lte task, which then stops for the restart. */
+static void check_shutdown(void)
+{
+    if (!s_shutdown_req)
+        return;
+    s_powered_down = s_power == LTE_ON ? power_down() : true;
+    xSemaphoreGive(s_shutdown_done);
+    for (;;)
+        vTaskDelay(portMAX_DELAY);
+}
+
 /** Waits up to ms for one of the CMUX events in mask; the events seen. */
 static uint32_t wait_events(uint32_t mask, uint32_t wait_ms)
 {
     uint32_t t0 = ms();
     for (;;) {
+        check_shutdown();
         taskENTER_CRITICAL();
         uint32_t e = s_events & mask;
         s_events &= ~mask;
@@ -429,7 +495,7 @@ static void ppp_begin(void)
     pppapi_connect(s_ppp, 0);
 }
 
-/** PPP stopped at once (a recovery, a CFUN): its link callback reports it down. */
+/** PPP stopped at once (a recovery, a CFUN, a shutdown): its link callback reports it down. */
 static void ppp_stop(void)
 {
     if (s_ppp && (s_ppp_running || s_ppp_up))
@@ -474,8 +540,10 @@ static bool dial_mux(void)
     xStreamBufferSend(s_ppp_out, "ATD*99#\r", 8, pdMS_TO_TICKS(100));
     xTaskNotifyGive(s_cmux_task);
     uint32_t t0 = ms();
-    while (s_dial_result == AT_NONE && ms() - t0 < 30000)
+    while (s_dial_result == AT_NONE && ms() - t0 < 30000) {
+        check_shutdown();
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(200));
+    }
     if (s_dial_result == AT_CONNECT) {
         SLOG_I("lte", "CONNECT on DLC1: PPP starts");
         ppp_begin();
@@ -559,12 +627,20 @@ static void recover(void)
 static void lte_task(void *arg)
 {
     (void)arg;
-    lte_power_t power = LTE_UNKNOWN;
+    if (s_cfg.priority == 0) {  // Ethernet only: a module that answers is powered down; one that does not is left alone
+        if (hw_at_ok(NULL, LTE_PROBE_MS)) {
+            s_power = LTE_ON;
+            power_down();
+        }
+        for (;;)
+            wait_events(0, LTE_RETRY_MS);  // nothing more; lte_shutdown has nothing to do
+    }
     for (;;) {
-        power = lte_power_up(&k_hw, power);
-        info_set(&s_info.modem, power == LTE_ON ? "ON" : "UNKNOWN");
-        if (power != LTE_ON) {
-            vTaskDelay(pdMS_TO_TICKS(LTE_RETRY_MS));
+        check_shutdown();
+        s_power = lte_power_up(&k_hw, s_power);
+        info_set(&s_info.modem, s_power == LTE_ON ? "ON" : "UNKNOWN");
+        if (s_power != LTE_ON) {
+            wait_events(0, LTE_RETRY_MS);  // MODEM NOT RESPONDING: 60 s, then again from UNKNOWN
             continue;
         }
         identity();
@@ -576,7 +652,7 @@ static void lte_task(void *arg)
             if (mux == 0)
                 plain_ppp();
             recover();
-            power = LTE_UNKNOWN;
+            s_power = LTE_UNKNOWN;
             continue;
         }
         // DLC2 from here: the signal every 20 s, the SIM, and the supervision
@@ -611,18 +687,24 @@ static void lte_task(void *arg)
             lte_action_t act = lte_supervise(ms(), last_addr, s_last_rx_ms, alive, no_sim);
             if (wait_events(EV_CLOSED | EV_FAILED, 0) || act == LTE_ACT_RECOVER) {
                 recover();
-                power = LTE_UNKNOWN;
+                s_power = LTE_UNKNOWN;
                 break;
             }
             if (act == LTE_ACT_CFUN) {
                 SLOG_W("lte", "no PPP address for 2 minutes: AT+CFUN=1,1");
                 ppp_stop();
-                at_cmd("AT+CFUN=1,1", 5000, NULL, NULL);  // the module restarts: CMUX goes, the recovery follows
+                at_cmd("AT+CFUN=1,1", 5000, NULL, NULL);
+                vTaskDelay(pdMS_TO_TICKS(5000));
+                if (at_cmd("AT", 2000, NULL, NULL) != AT_OK) {  // the module restarted, CMUX with it: RECOVER now (spec §7.2)
+                    recover();
+                    s_power = LTE_UNKNOWN;
+                    break;
+                }
                 last_addr = ms();
             }
             if (wait_events(EV_CLOSED | EV_FAILED, POLL_MS)) {
                 recover();
-                power = LTE_UNKNOWN;
+                s_power = LTE_UNKNOWN;
                 break;
             }
         }
@@ -643,11 +725,27 @@ void lte_start(const net_cfg_t *cfg)
     }
     s_cmux_task = xTaskCreateStatic(cmux_task, "cmux_rx", CMUX_STACK_WORDS, NULL, CMUX_PRIO, s_cmux_stack, &s_cmux_tcb);
     lte_uart_reader(s_cmux_task);
-    if (cfg->priority == 0) {  // Ethernet only: UART3 listens, the modem is left alone (Plan 10 T5 powers it down)
-        SLOG_I("lte", "network priority 0: Ethernet only");
-        return;
-    }
+    s_shutdown_done = xSemaphoreCreateBinaryStatic(&s_shutdown_mem);
+    if (cfg->priority == 0)
+        SLOG_I("lte", "network priority 0: Ethernet only; a module that answers is powered down");
     s_lte_task = xTaskCreateStatic(lte_task, "lte", LTE_STACK_WORDS, NULL, LTE_PRIO, s_lte_stack, &s_lte_tcb);
+}
+
+bool lte_shutdown(uint32_t timeout_ms)
+{
+    if (!s_lte_task || s_power != LTE_ON)
+        return true;  // OFF, or never seen ON: nothing to do (PWRKEY is never pressed here)
+    s_shutdown_req = true;
+    xTaskNotifyGive(s_lte_task);
+    return xSemaphoreTake(s_shutdown_done, pdMS_TO_TICKS(timeout_ms)) == pdTRUE && s_powered_down;
+}
+
+void lte_bench_disc(void) { request(REQ_DISC2); }
+
+bool lte_bench_drop(void)
+{
+    s_bench_drop = !s_bench_drop;
+    return s_bench_drop;
 }
 
 void lte_send_raw(const char *text)

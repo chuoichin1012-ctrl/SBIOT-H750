@@ -369,6 +369,13 @@ static void init_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(3000));
             blog("app: phy up %d\r\n", eth_drv_phy_power(false));
             break;
+        case 'q':  // bench: toggle dropping PPP's input (the CFUN case, Plan 10 T5)
+            blog("app: PPP input %s\r\n", lte_bench_drop() ? "dropped" : "passed");
+            break;
+        case 'Q':  // bench: DISC on CMUX DLC2: the lte task recovers (Plan 10 T5)
+            lte_bench_disc();
+            blog("app: DISC on DLC2\r\n");
+            break;
         case 'H':  // bench: the PHY powered down for 30 s, then up: long enough for the services to move to LTE (Plan 10)
             blog("app: phy down %d\r\n", eth_drv_phy_power(true));
             vTaskDelay(pdMS_TO_TICKS(30000));

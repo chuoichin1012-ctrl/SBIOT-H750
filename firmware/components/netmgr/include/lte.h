@@ -17,6 +17,7 @@ typedef struct {
     uint32_t ready_ms;  // measured: from a release (PWRKEY or RESET_N) to AT answering (Plan 10 ruling 13)
     uint32_t overrun, bad_fcs, ppp_in_drop, ppp_out_drop, uart_errors;
     uint8_t last_bad[6];  // bench: the last frame with a bad FCS (cmux_counters_t)
+    uint32_t stack_cmux, stack_lte;  // the least stack left, bytes (0: not running)
 } lte_info_t;
 
 /** Starts UART3 and both tasks (priority 1 or 2); priority 0 leaves the modem alone (Plan 10 T5 powers it down). */

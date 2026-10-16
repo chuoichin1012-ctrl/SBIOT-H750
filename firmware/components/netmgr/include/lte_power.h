@@ -9,7 +9,7 @@
 #define LTE_RESET_MS 200       // RESET_N (>= 100 ms)
 #define LTE_PWRKEY_ON_MS 2500  // PWRKEY: >= 2 s turns on; >= 3 s would turn a running module off
 #define LTE_PWRKEY_LIMIT_MS 3000  // never reached, on any path
-#define LTE_READY_MS 15000     // AT tried every 500 ms after a release
+#define LTE_READY_MS 10000     // AT tried every 500 ms after a release: 2 x the bench (1.0 s after RESET_N, at once after PWRKEY), not under 10 s (spec §7.2)
 #define LTE_RETRY_MS 60000     // MODEM NOT RESPONDING: the wait before the next round
 #define LTE_NO_ADDR_MS 120000  // PPP without an address this long: AT+CFUN=1,1
 #define LTE_SILENT_MS 60000    // no frame from the modem this long, and AT silent: RECOVER

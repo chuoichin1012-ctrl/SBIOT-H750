@@ -20,7 +20,7 @@ typedef enum { M_ON_OK, M_ON_HUNG_UNTIL_RESET, M_OFF, M_DEAD } kind_t;
 typedef struct {
     kind_t kind;
     bool powered, answering;
-    char trace[256];  // "A3000+ R200 A15000+ K2500 A15000-": what was done, + answered, - silent
+    char trace[256];  // "A3000+ R200 A10000+ K2500 A10000-": what was done, + answered, - silent
     uint32_t longest_pwrkey;
     bool not_responding;
 } fake_t;
@@ -85,21 +85,21 @@ static void test_paths(void)
     CHECK(run(&f, LTE_UNKNOWN) == LTE_ON && !strcmp(f.trace, "A3000+"), "on and answering: AT in 3 s, nothing else (%s)", f.trace);
 
     f = make(M_ON_HUNG_UNTIL_RESET);
-    CHECK(run(&f, LTE_UNKNOWN) == LTE_ON && !strcmp(f.trace, "A3000- R200 A15000+"), "on but silent: RESET_N 200 ms (%s)", f.trace);
+    CHECK(run(&f, LTE_UNKNOWN) == LTE_ON && !strcmp(f.trace, "A3000- R200 A10000+"), "on but silent: RESET_N 200 ms (%s)", f.trace);
     CHECK(f.powered && f.longest_pwrkey == 0, "and no PWRKEY on a running module");
 
     f = make(M_OFF);
-    CHECK(run(&f, LTE_UNKNOWN) == LTE_ON && !strcmp(f.trace, "A3000- R200 A15000- K2500 A15000+"),
+    CHECK(run(&f, LTE_UNKNOWN) == LTE_ON && !strcmp(f.trace, "A3000- R200 A10000- K2500 A10000+"),
           "off: RESET_N first (harmless), then PWRKEY 2.5 s (%s)", f.trace);
 
     f = make(M_OFF);
-    CHECK(run(&f, LTE_OFF) == LTE_ON && !strcmp(f.trace, "K2500 A15000+"), "from a confirmed OFF: PWRKEY alone (%s)", f.trace);
+    CHECK(run(&f, LTE_OFF) == LTE_ON && !strcmp(f.trace, "K2500 A10000+"), "from a confirmed OFF: PWRKEY alone (%s)", f.trace);
 
     f = make(M_DEAD);
-    CHECK(run(&f, LTE_UNKNOWN) == LTE_UNKNOWN && f.not_responding && !strcmp(f.trace, "A3000- R200 A15000- K2500 A15000-"),
+    CHECK(run(&f, LTE_UNKNOWN) == LTE_UNKNOWN && f.not_responding && !strcmp(f.trace, "A3000- R200 A10000- K2500 A10000-"),
           "never answering: one round, MODEM NOT RESPONDING, UNKNOWN (%s)", f.trace);
     f = make(M_DEAD);
-    CHECK(run(&f, LTE_OFF) == LTE_UNKNOWN && f.not_responding && !strcmp(f.trace, "K2500 A15000- R200 A15000-"),
+    CHECK(run(&f, LTE_OFF) == LTE_UNKNOWN && f.not_responding && !strcmp(f.trace, "K2500 A10000- R200 A10000-"),
           "from OFF, never answering: PWRKEY, then RESET_N, then UNKNOWN (%s)", f.trace);
 }
 

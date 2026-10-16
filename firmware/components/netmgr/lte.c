@@ -769,4 +769,6 @@ void lte_info(lte_info_t *out)
     out->ppp_in_drop = s_in_drop;
     out->ppp_out_drop = s_out_drop;
     out->uart_errors = lte_uart_errors();
+    out->stack_cmux = s_cmux_task ? (uint32_t)(uxTaskGetStackHighWaterMark(s_cmux_task) * sizeof(StackType_t)) : 0;
+    out->stack_lte = s_lte_task ? (uint32_t)(uxTaskGetStackHighWaterMark(s_lte_task) * sizeof(StackType_t)) : 0;
 }

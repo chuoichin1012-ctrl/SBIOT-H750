@@ -347,6 +347,10 @@ static void test_edge(void)
     tmpl("{\"d\":\"dead\"}", false, "2.5", "{\"d\":2.5}", 1);
     tmpl("{\"d\":\"dead\"}", false, "true", "{\"d\":true}", 1);
     tmpl("{\"d\":\"dead\"}", false, "null", "{\"d\":null}", 1);
+    // Codex 10c code review: numbers cJSON takes but JSON does not (RFC 8259) are text too.
+    tmpl("{\"d\":\"dead\"}", false, "01", "{\"d\":\"01\"}", 1);
+    tmpl("{\"d\":\"dead\"}", false, "1.", "{\"d\":\"1.\"}", 1);
+    tmpl("{\"d\":\"dead\"}", false, "-0.5e3", "{\"d\":-0.5e3}", 1);
 
     edge_index_t ix;
     CHECK(edge_index_init(&ix, 300) && ix.cap >= 600, "index init");

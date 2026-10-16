@@ -250,22 +250,28 @@ int serial_transact(int port, const uint8_t *req, size_t len, uint8_t *resp, siz
     // The tail of a broken answer runs until t3.5 of silence: a request sent into it would collide, or
     // be answered by the tail. serial_rx[n] clears `tail` at its end; nothing else sets it while we
     // hold the bus.
-    for (uint64_t until = now_us() + (uint64_t)timeout_ms * 1000u; p->tail;) {
+    // One deadline for both waits below (Plan 10c task 4, Codex review Important 4).
+    const uint64_t until = now_us() + (uint64_t)timeout_ms * 1000u;
+    while (p->tail) {
         if (now_us() >= until) {
             xSemaphoreGive(p->bus);
             return 0;
         }
         vTaskDelay(ticks(2));
     }
-    // A frame still arriving belongs to the subscribers: let it finish first, within the same deadline (a bus
-    // that never goes quiet must not keep it: Plan 10c task 4, Codex review Important 4).
-    for (uint64_t until = now_us() + (uint64_t)timeout_ms * 1000u, since;
-         since = rx_quiet_since(p), (now_us() - since) / 1000u < p->gap_ms + 1u;) {
-        if (now_us() >= until) {
+    // A frame still arriving belongs to the subscribers: let it finish first, within the deadline (a bus that
+    // never goes quiet must not keep it). The deadline is checked before a quiet bus is taken, and no sleep
+    // goes past it: no request leaves after the timeout.
+    for (;;) {
+        uint64_t now = now_us(), since = rx_quiet_since(p);
+        if (now >= until) {
             xSemaphoreGive(p->bus);
             return 0;
         }
-        vTaskDelay(ticks(p->gap_ms + 1u));
+        if ((now - since) / 1000u >= p->gap_ms + 1u)
+            break;
+        uint32_t left_ms = (uint32_t)((until - now + 999u) / 1000u);
+        vTaskDelay(ticks(left_ms < p->gap_ms + 1u ? left_ms : p->gap_ms + 1u));
     }
     xSemaphoreTake(p->txn_lock, portMAX_DELAY);
     p->tail = false;  // serial_rx[n] no longer switches to transparent: this transaction owns the mode

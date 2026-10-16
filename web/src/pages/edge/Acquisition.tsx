@@ -11,6 +11,7 @@ import type { DeviceInfo, EdgeNode, EdgeSlave, Values } from '../../lib/types';
 import { formErrors, type FieldDef, type Options } from '../../lib/validate';
 import { confirmAction, toast } from '../../components/feedback';
 import { Button, DataTable, Empty, ItemList, Panel } from '../../components/ui';
+import { edgeBodyError } from '../../lib/rules';
 import { EditDialog } from './EditDialog';
 
 const polled = (s: EdgeSlave) => s.source === 'uart' || s.source === 'eth';
@@ -201,6 +202,7 @@ export function Acquisition(props: { cfg: EdgeConfig; onChange: (cfg: EdgeConfig
   const fileRef = useRef<HTMLInputElement>(null);
   const slave = cfg.slaves[sel] as EdgeSlave | undefined;
   const used = nodeCount(cfg.slaves);
+  const sizeError = edgeBodyError(cfg.slaves);
   const setSlaves = (slaves: EdgeSlave[]) => props.onChange({ ...cfg, slaves });
   const ioCfg = useAsync(() => api.getValues('io'));
   const ioAddr = Number(ioCfg.data?.modbusAddress) || 100;
@@ -270,6 +272,7 @@ export function Acquisition(props: { cfg: EdgeConfig; onChange: (cfg: EdgeConfig
         <Button onClick={() => fileRef.current?.click()}>Import CSV</Button>
         <Button onClick={exportCsv} disabled={!cfg.slaves.length}>Export CSV</Button>
       </div>
+      {sizeError && <p class="mb-3 text-[13px] text-led-err" role="alert">{sizeError}</p>}
 
       <div class="grid gap-x-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <Panel title="Devices" flush

@@ -3,7 +3,7 @@
 import type { DataType, DeviceInfo, EdgeNode, EdgeSlave, LinkageEvent } from './types';
 import type { Options } from './validate';
 
-export const MAX_NODES = 100; // across all slaves
+export const MAX_NODES = 300; // across all slaves (Plan 09d)
 export const MAX_ETH = 5; // Modbus TCP sources
 export const MAX_EVENTS = 10; // linkage events
 

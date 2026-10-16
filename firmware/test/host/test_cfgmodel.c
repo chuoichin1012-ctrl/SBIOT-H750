@@ -279,7 +279,7 @@ static void test_two_port_values(void)
     cJSON_Delete(o);
 }
 
-/** STM32 board: the keys this firmware dropped, and the 100-point Edge limit. */
+/** STM32 board: the keys this firmware dropped, and the 300-point Edge limit. */
 static void test_stm32_scope(void)
 {
     cJSON *p = ok("port2", "{\"rfc2217\":1,\"tls\":1,\"workMode\":1}");
@@ -330,18 +330,18 @@ static void test_stm32_scope(void)
     cJSON_Delete(io);
     bad("edgeDevices", "[{\"name\":\"io\",\"source\":\"io\",\"nodes\":[{\"ioPoint\":\"AI3\"}]}]", "IO channel \"AI3\" does not exist");
 
-    // 100 points pass, 101 fail with the user-facing message.
-    for (int total = 100; total <= 101; total++) {
-        char json[16384];
+    // 300 points pass, 301 fail with the user-facing message (Plan 09d).
+    for (int total = 300; total <= 301; total++) {
+        char json[32768];
         size_t o = (size_t)snprintf(json, sizeof json, "[{\"name\":\"m\",\"nodes\":[");
         for (int i = 0; i < total; i++)
             o += (size_t)snprintf(json + o, sizeof json - o, "%s{\"name\":\"p%d\",\"reg\":%d}", i ? "," : "", i, i);
         snprintf(json + o, sizeof json - o, "]}]");
-        if (total == 100) {
+        if (total == 300) {
             cJSON *e = ok("edgeDevices", json);
             cJSON_Delete(e);
         } else {
-            bad("edgeDevices", json, "At most 100 points across all devices.");
+            bad("edgeDevices", json, "At most 300 points across all devices.");
         }
     }
 }

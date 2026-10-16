@@ -117,7 +117,7 @@ static const field_t linkage_fields[] = {
 };
 
 #define MAX_TOPICS 16
-#define MAX_NODES 100
+#define MAX_NODES 300  // across all devices (Plan 09d)
 #define MAX_ETH_SLAVES 5
 #define MAX_EVENTS 10
 
@@ -588,7 +588,7 @@ static cJSON *slaves(const cfg_env_t *env, const cJSON *in, bool strict, char *e
         cJSON_ArrayForEach(n, nodes_in)
         {
             if (++total > MAX_NODES) {
-                fail(err, errlen, "At most 100 points across all devices.", NULL, NULL);
+                fail(err, errlen, "At most 300 points across all devices.", NULL, NULL);
                 goto bad;
             }
             cJSON *o = object(env, "edgeDevices", node_fields, N(node_fields), n, node_base, false, err, errlen);
@@ -1011,7 +1011,7 @@ static cfg_result_t edge_walk(const cfg_env_t *env, const char *text, size_t len
         js_iter_init(&nit, nodes_of(dev));
         while (js_iter_next(&nit, NULL, &node)) {
             if (m->nnode + 1 > MAX_NODES) {
-                fail(err, errlen, "At most 100 points across all devices.", NULL, NULL);
+                fail(err, errlen, "At most 300 points across all devices.", NULL, NULL);
                 goto bad;
             }
             if (js_type(node) != JS_OBJECT) {

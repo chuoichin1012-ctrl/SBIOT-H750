@@ -100,13 +100,20 @@ static void add_ip(cJSON *o, const char *k, uint32_t a)
     cJSON_AddStringToObject(o, k, b);
 }
 
+/** Appends item to arr, or frees it when it cannot be attached (arr or a key missing for lack of memory, Plan 09c). */
+static void push(cJSON *arr, cJSON *item)
+{
+    if (!cJSON_AddItemToArray(arr, item))
+        cJSON_Delete(item);
+}
+
 static void add_pool(cJSON *arr, const char *name, unsigned used, unsigned size)
 {
     cJSON *p = cJSON_CreateObject();
     cJSON_AddStringToObject(p, "name", name);
     cJSON_AddNumberToObject(p, "used", used);
     cJSON_AddNumberToObject(p, "size", size);
-    cJSON_AddItemToArray(arr, p);
+    push(arr, p);
 }
 
 // Whether a saved config enables its service: `enabled` is 1 (mqtt) or true (edge).
@@ -167,7 +174,7 @@ static void status_get(struct mg_connection *c)
         cJSON_AddStringToObject(x, "state", st);
         cJSON_AddNumberToObject(x, "tx", sc.tx);
         cJSON_AddNumberToObject(x, "rx", sc.rx);
-        cJSON_AddItemToArray(ports, x);
+        push(ports, x);
     }
     cJSON *mq = cJSON_AddObjectToObject(o, "mqtt");  // Plan 09
     cJSON_AddBoolToObject(mq, "enabled", enabled("mqtt"));
@@ -227,7 +234,7 @@ static void status_get(struct mg_connection *c)
         cJSON_AddNumberToObject(x, "lineErrors", sc.line_errors);
         cJSON_AddNumberToObject(x, "t15Violations", sc.violations);
         cJSON_AddNumberToObject(x, "bridgeDropped", bridge_dropped(p));
-        cJSON_AddItemToArray(uart, x);
+        push(uart, x);
     }
     api_json(c, 200, o);
 }

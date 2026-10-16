@@ -238,19 +238,34 @@ def case_heap_loop(rounds=200):
     get_json('/api/status')
     time.sleep(1)
     before = heap_free()
-    for _ in range(rounds):
-        get_json('/api/status')
-        get_json('/api/io')
-        get_json('/api/device')
-        req('POST', '/api/io', body=b'{"do":9,"value":true}')        # refused: no DO10
-        req('POST', '/api/time', body=b'{"time":"not a date"}')      # refused
-        req('POST', '/api/config/system', body=sysb)
-        req('POST', '/api/config/system', body=b'{"x":')            # bad JSON
-        get_json('/api/config/port1')
-        req('GET', '/api/config/edgeDevices')
-        req('POST', '/api/cert?scope=mqtt&kind=ca', body=b'not a pem', headers={'Content-Type': 'application/octet-stream'})
+    wrong, blips = 0, 0
+
+    def st(method, path, body=None, headers=None):
+        # A connect that times out is tried once more, 2 s later: on this bench (WSL NAT) one in a few
+        # thousand connects times out while the board answers the next one; a board that hangs fails both.
+        nonlocal blips
+        try:
+            return req(method, path, body=body, headers=headers, timeout=5)[0]
+        except (socket.timeout, TimeoutError):
+            blips += 1
+            time.sleep(2)
+            return req(method, path, body=body, headers=headers)[0]
+
+    for r in range(rounds):
+        got = [st('GET', '/api/status'), st('GET', '/api/io'), st('GET', '/api/device'),
+               st('POST', '/api/io', body=b'{"do":9,"value":true}'),        # refused: no DO10
+               st('POST', '/api/time', body=b'{"time":"not a date"}'),      # refused
+               st('POST', '/api/config/system', body=sysb),
+               st('POST', '/api/config/system', body=b'{"x":'),            # bad JSON
+               st('GET', '/api/config/port1'), st('GET', '/api/config/edgeDevices')]
+        want = [200, 200, 200, 400, 400, 200, 400, 200, 200]
+        if r % 10 == 0:  # the board closes an upload's connection itself: a TIME_WAIT each, so not every round
+            got.append(st('POST', '/api/cert?scope=mqtt&kind=ca', body=b'not a pem', headers={'Content-Type': 'application/octet-stream'}))
+            want.append(400)
+        wrong += got != want
     time.sleep(2)
     after = heap_free()
+    check(wrong == 0, 'every endpoint answered as it should, %d rounds (%d rounds otherwise; %d connects tried again)' % (rounds, wrong, blips))
     check(before > 0 and abs(after - before) <= 2048, 'heap after %d rounds of every endpoint: %d -> %d bytes free' % (rounds, before, after))
 
 

@@ -35,6 +35,19 @@ def heap():
             'wdog_ms': s.get('wdiMaxGapMs', -1), 'stack': '%s %s words' % (sm.get('task'), sm.get('words'))}
 
 
+def kill_events(p):
+    """Ends a Windows peer now and returns its events."""
+    p.kill()
+    out, _ = p.communicate()
+    ev = []
+    for line in (out or '').splitlines():
+        try:
+            ev.append(json.loads(line))
+        except ValueError:
+            pass
+    return ev
+
+
 def largest_model():
     nodes = lambda n, base, **kw: [dict({'name': '%s%d' % (base, i), 'reg': 20 + i, 'timeout': 300}, **kw) for i in range(n)]
     devs = [ec.plc(nodes=nodes(40, 'p')), {'name': 'b2', 'addr': '9', 'uart': 2, 'poll': 2000, 'nodes': nodes(20, 'q')}]
@@ -93,17 +106,26 @@ def main():
 
         # (e) 50 rounds; the MQTT TLS session made again every 10 rounds
         a0 = bc.adc_pace()
-        levels = []
+        levels, bad, reconnects, https_sent = [], 0, 0, 0
         for r in range(50):
             if r and r % 10 == 0:
+                n0 = mc.connects()
                 peers[0].kill()  # the relay goes: MQTT connects again through a new one (a new TLS handshake)
                 peers[0].wait()
                 peers[0] = mc.relay(400, to=mc.TLSP, port=mc.TLS_RELAY, raw='1')
-                time.sleep(8)
-            w.req('POST', '/api/config/edgeDevices', body=big, timeout=60)
-            w.req('GET', '/api/config/edgeDevices')
+                reconnects += mc.wait_connects(n0 + 1, 30)
+                bc.send_serial(b'1', port=1)  # and UART2's HTTPS request, under the same load
+                https_sent += 1
+            s1, _, _ = w.req('POST', '/api/config/edgeDevices', body=big, timeout=60)
+            s2, _, back = w.req('GET', '/api/config/edgeDevices')
+            bad += not (s1 == 200 and s2 == 200 and back == big)
             if r % 10 == 9:
                 levels.append(heap()['free'])
+        check(bad == 0, '50 rounds: every save 200, every GET 200 with the bytes saved (%d failed)' % bad)
+        check(reconnects == 4, 'MQTT over TLS connected again after each of the 4 relay restarts (%d)' % reconnects)
+        reqs = [e for e in kill_events(peers[2]) if e.get('ev') == 'request']
+        peers[2] = None
+        check(len(reqs) >= 1 + https_sent, 'UART2 made its HTTPS requests under the load (%d of %d)' % (len(reqs), 1 + https_sent))
         a1 = bc.adc_pace()
         out['e'] = heap()
         wins = (a1[1] - a0[1]) / (a1[0] - a0[0]) if a0 and a1 else -1
@@ -113,7 +135,8 @@ def main():
               'IO and watchdog kept their pace: ADC %.2f windows/s, late +%d, wdog max gap %d ms' % (wins, late, out['e']['wdog_ms']))
     finally:
         for p in peers:
-            bc.wait_peer(p, 1)
+            if p:
+                kill_events(p)
         brk.stop()
         mc.post('mqtt', mc.mqtt_cfg(enabled=0, host=''))
         w.req('POST', '/api/config/edge', body=b'{"enabled":false}')

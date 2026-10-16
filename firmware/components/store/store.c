@@ -349,6 +349,14 @@ typedef struct {
     bool failed;
 } edge_writer_t;
 
+// The one edgeDevices session (Plan 09c ruling 2), see store_edge_begin.
+static struct {
+    bool open, wfail;   // a session; a record write failed in it
+    size_t len, got;    // announced, received
+    edge_writer_t w;
+    js_stream_t js;
+} s_es;
+
 static bool flush(edge_writer_t *w)
 {
     char key[FDB_KV_NAME_MAX];
@@ -455,6 +463,7 @@ void store_deinit(void)
     s_used = s_ncache = s_nlisteners = 0;
     s_gen = s_count = 0;
     memset(s_pins, 0, sizeof s_pins);
+    memset(&s_es, 0, sizeof s_es);  // a session does not outlive the mount (a reboot clears RAM; host tests reboot this way)
     UNLOCK();
 }
 
@@ -587,13 +596,6 @@ store_err_t store_set_text(const char *name, const char *text, size_t len, char 
 
 // The one edgeDevices session (Plan 09c ruling 2): its records are written as the body arrives, under a
 // streaming syntax check, and only a whole, valid array is committed.
-static struct {
-    bool open, wfail;   // a session; a record write failed in it
-    size_t len, got;    // announced, received
-    edge_writer_t w;
-    js_stream_t js;
-} s_es;
-
 store_err_t store_edge_begin(size_t len, char *err, size_t errlen)
 {
     err[0] = '\0';

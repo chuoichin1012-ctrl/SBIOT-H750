@@ -1658,6 +1658,38 @@ static void test_small_power_cuts(void)
     free(s_snap);
 }
 
+/** A power cut in the middle of a streamed body over 8 KB, then a reboot: the next save works (Codex 09c review). */
+static void test_stream_cut_reboot(void)
+{
+    flash_new(42);
+    reboot();
+    char err[200], *m = edge_model(100, 3, 4);
+    size_t len = strlen(m);
+    long cuts = 0, bad = 0;
+    s_quiet = true;
+    for (long cut = 1; cut < 40; cut += 3) {
+        s_w.ops = 0;
+        s_w.cut_at = cut;
+        volatile bool was_cut = false;
+        if (!setjmp(s_jb)) {
+            store_edge_begin(len, err, sizeof err);
+            for (size_t o = 0; o < len; o += 2000) store_edge_write(m + o, len - o < 2000 ? len - o : 2000);
+            store_edge_abort();
+        } else {
+            was_cut = true;
+        }
+        s_w.cut_at = -1;
+        cuts += was_cut;
+        reboot();
+        store_err_t e = store_edge_save(m, len, err, sizeof err);
+        if (e != STORE_OK && bad++ < 3)
+            printf("  cut at op %ld mid-body, then a reboot: the next save gives %d (%s)\n", cut, e, err);
+    }
+    s_quiet = false;
+    CHECK(cuts > 0 && bad == 0, "a cut mid-body over 8 KB, a reboot, a save: %ld of %ld cuts end refused", bad, cuts);
+    free(m);
+}
+
 static void test_reset_power_cuts(void)
 {
     s_snap = malloc(0x100000);
@@ -1780,6 +1812,7 @@ int main(void)
     if (getenv("STORE_CUTS")) {
         test_small_power_cuts();
         test_reset_power_cuts();
+        test_stream_cut_reboot();
         test_power_cuts();
         test_write_failures();
         test_gc_write_failures();

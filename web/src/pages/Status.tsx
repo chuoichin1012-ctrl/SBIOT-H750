@@ -49,11 +49,11 @@ export function StatusPage(_: { path?: string }) {
       <PageHeader title="Status" intro={`Live state of the gateway. Refreshes every ${REFRESH_MS / 1000} seconds.`} />
       <Stale error={st.error} />
 
-      <section class="mb-4 grid grid-cols-2 gap-px overflow-hidden rounded-panel border border-nav bg-white/15 text-white md:grid-cols-4" aria-label="Indicators">
+      <section class="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4" aria-label="Indicators">
         {panel.map(([name, led, text]) => (
-          <div key={name} class="bg-nav px-4 py-3.5">
-            <Led state={led} label={name} />
-            <p class="num mt-1 truncate pl-[18px] text-white/70">{text}</p>
+          <div key={name} class="rounded-panel border border-line bg-surface px-4 py-3.5 shadow-[inset_0_3px_0_var(--color-brand)]">
+            <span class="font-medium"><Led state={led} label={name} /></span>
+            <p class="num mt-1 truncate pl-[18px] text-muted">{text}</p>
           </div>
         ))}
       </section>

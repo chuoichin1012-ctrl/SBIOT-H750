@@ -50,11 +50,11 @@ export function Layout(props: { url: string; children: ComponentChildren }) {
   }, [open]);
 
   const sidebar = (
-    <nav aria-label="Main" class="flex flex-col gap-5 px-3 py-4">
+    <nav aria-label="Main" class="flex flex-col gap-5 px-3 py-5">
       {nav.map(([group, items]) => (
         <div key={group}>
-          <p class="px-3 pb-1 text-[12px] text-white/50">{group}</p>
-          <ul>
+          <p class="px-3 pb-1.5 text-[11px] font-semibold tracking-wide text-muted uppercase">{group}</p>
+          <ul class="space-y-0.5">
             {items.map((it) => {
               const on = isActive(props.url, it.href);
               return (
@@ -65,8 +65,8 @@ export function Layout(props: { url: string; children: ComponentChildren }) {
                     aria-current={on ? 'page' : undefined}
                     class={`block rounded-control px-3 py-1.5 ${
                       on
-                        ? 'bg-nav-active font-medium text-white shadow-[inset_3px_0_0_var(--color-nav-accent)]'
-                        : 'text-white/75 hover:bg-nav-active/60 hover:text-white'
+                        ? 'bg-select font-medium text-brand shadow-[inset_3px_0_0_var(--color-brand-mark)]'
+                        : 'text-ink/85 hover:bg-canvas hover:text-ink'
                     }`}
                   >
                     {it.label}
@@ -77,57 +77,70 @@ export function Layout(props: { url: string; children: ComponentChildren }) {
           </ul>
         </div>
       ))}
-      <button
-        type="button"
-        onClick={() => signOut()}
-        class="mt-2 flex items-center gap-2.5 rounded-control border-t border-white/10 px-3 pt-4 pb-1.5 text-left text-white/75 hover:text-white"
-      >
-        <svg viewBox="0 0 20 20" class="size-4" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
-          <path d="M8 4H4.5A1.5 1.5 0 0 0 3 5.5v9A1.5 1.5 0 0 0 4.5 16H8M13 6.5 16.5 10 13 13.5M16.5 10H8" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-        Sign out
-      </button>
     </nav>
   );
 
+  // Header across the top; under it the sidebar (a drawer on small screens) and the main content.
   return (
-    <div class="min-h-screen lg:grid lg:grid-cols-[15rem_1fr]">
+    <div class="min-h-screen">
       <a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:bg-surface focus:p-2">
         Skip to content
       </a>
-      <aside class="hidden bg-nav lg:block">
-        <div class="sticky top-0 max-h-screen overflow-y-auto">
-          <Brand />
-          {sidebar}
-        </div>
-      </aside>
-
-      {open && (
-        <div class="fixed inset-0 z-40 lg:hidden">
-          <button class="absolute inset-0 bg-ink/50" aria-label="Close menu" tabIndex={-1} onClick={() => setOpen(false)} />
-          <aside class="absolute inset-y-0 left-0 w-64 overflow-y-auto bg-nav">
-            <Brand />
-            {sidebar}
-          </aside>
-        </div>
-      )}
-
-      <div class="min-w-0">
-        {/* Only small screens need a bar: it opens the hidden sidebar. */}
-        <header class="sticky top-0 z-30 flex items-center border-b border-line bg-surface px-2 py-1.5 lg:hidden">
+      <header class="sticky top-0 z-30 flex h-14 items-center gap-3 bg-brand px-3 text-white shadow-sm sm:px-5">
+        <button
+          type="button"
+          class="inline-flex size-10 items-center justify-center rounded-control hover:bg-white/10 lg:hidden"
+          onClick={() => setOpen(true)}
+          aria-label="Open menu"
+          aria-expanded={open}
+        >
+          <svg viewBox="0 0 20 20" class="size-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+            <path d="M3 5.5h14M3 10h14M3 14.5h14" />
+          </svg>
+        </button>
+        <Brand />
+        <div class="ml-auto">
           <button
             type="button"
-            class="inline-flex size-10 items-center justify-center rounded-control text-ink hover:bg-canvas"
-            onClick={() => setOpen(true)}
-            aria-label="Open menu"
-            aria-expanded={open}
+            onClick={() => signOut()}
+            class="inline-flex items-center gap-2 rounded-control border border-white/30 px-3 py-1.5 text-[13px] hover:bg-white/10"
           >
-            <svg viewBox="0 0 20 20" class="size-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
-              <path d="M3 5.5h14M3 10h14M3 14.5h14" />
+            <svg viewBox="0 0 20 20" class="size-4" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+              <path d="M8 4H4.5A1.5 1.5 0 0 0 3 5.5v9A1.5 1.5 0 0 0 4.5 16H8M13 6.5 16.5 10 13 13.5M16.5 10H8" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
+            Sign out
           </button>
-        </header>
-        <main id="main" class="mx-auto max-w-5xl px-4 pt-6 sm:px-6">
+        </div>
+      </header>
+
+      <div class="lg:grid lg:min-h-[calc(100vh-3.5rem)] lg:grid-cols-[15rem_1fr]">
+        <aside class="hidden border-r border-line bg-surface lg:block">
+          <div class="sticky top-14 max-h-[calc(100vh-3.5rem)] overflow-y-auto">{sidebar}</div>
+        </aside>
+
+        {open && (
+          <div class="fixed inset-0 z-40 lg:hidden">
+            <button class="absolute inset-0 bg-ink/40" aria-label="Close menu" tabIndex={-1} onClick={() => setOpen(false)} />
+            <aside class="absolute inset-y-0 left-0 w-64 overflow-y-auto bg-surface shadow-xl">
+              <div class="flex h-14 items-center justify-between bg-brand pr-2 pl-4 text-white">
+                <Brand />
+                <button
+                  type="button"
+                  class="inline-flex size-10 items-center justify-center rounded-control hover:bg-white/10"
+                  onClick={() => setOpen(false)}
+                  aria-label="Close menu"
+                >
+                  <svg viewBox="0 0 20 20" class="size-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                    <path d="M5 5l10 10M15 5 5 15" />
+                  </svg>
+                </button>
+              </div>
+              {sidebar}
+            </aside>
+          </div>
+        )}
+
+        <main id="main" class="w-full min-w-0 max-w-5xl px-4 pt-6 pb-10 sm:px-6 lg:px-8">
           {props.children}
         </main>
       </div>
@@ -135,14 +148,12 @@ export function Layout(props: { url: string; children: ComponentChildren }) {
   );
 }
 
+/** The header's logo and brand name. */
 function Brand() {
   return (
-    <div class="flex items-center gap-3 border-b border-white/10 px-6 py-4 text-white">
-      <img src={mark} alt="" width={30} height={30} class="rounded-xs" />
-      <span class="leading-tight">
-        <span class="block font-semibold tracking-tight">SBIOT Gateway</span>
-        <span class="block text-[12px] text-white/55">Make your work easier</span>
-      </span>
+    <div class="flex min-w-0 items-center gap-3">
+      <img src={mark} alt="" width={32} height={32} class="rounded-control bg-white p-0.5" />
+      <span class="truncate text-[17px] font-semibold tracking-tight">SBIOT Gateway</span>
     </div>
   );
 }

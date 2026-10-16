@@ -45,7 +45,7 @@ export function Panel(props: { title?: string; aside?: ComponentChildren; childr
   return (
     <section class="mb-4 rounded-panel border border-line bg-surface">
       {props.title && (
-        <div class="flex items-center justify-between gap-3 border-b border-line px-4 py-2.5">
+        <div class="flex items-center justify-between gap-3 rounded-t-panel border-b border-line bg-tint px-4 py-2.5">
           <h2 class="font-semibold">{props.title}</h2>
           {props.aside}
         </div>

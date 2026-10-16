@@ -326,6 +326,8 @@ static void edge_pass(void *ctx, const uint8_t *data, size_t len)
 
 // Data from a network peer. `cl` carries the per-connection state (NULL for UDP). Edge remote access, when
 // this port carries it, comes first; what is not Edge's goes on unchanged (Plan 08c ruling 3).
+static void eacc_attach(bridge_t *b, client_t *cl);
+
 static void from_network(bridge_t *b, client_t *cl, const uint8_t *data, size_t len, reply_fn reply, void *ctx)
 {
     svc_net_activity();
@@ -334,6 +336,8 @@ static void from_network(bridge_t *b, client_t *cl, const uint8_t *data, size_t 
     int framing = b->edge_framing;
     if (edge && !(b->C.modbus_gw && framing == BRIDGE_EDGE_MBAP)) {  // a gateway's ADUs: on_adu
         edge_ctx_t e = {b, cl, reply, ctx};
+        if (cl && !cl->eacc)  // on its first data: also for a client that connected before Edge set the hook (Codex r2)
+            eacc_attach(b, cl);
         if (cl && cl->eacc && framing != BRIDGE_EDGE_JSON) {  // a TCP stream: requests cut out, on any port
             frame_push(cl->eacc, data, len, framing == BRIDGE_EDGE_MBAP, edge_req, edge_pass, &e);
             acc_stamp(cl->eacc, now_us());
@@ -346,6 +350,7 @@ static void from_network(bridge_t *b, client_t *cl, const uint8_t *data, size_t 
 }
 
 static void drop_client(bridge_t *b, int i);
+static void eacc_attach(bridge_t *b, client_t *cl);
 
 // Held bytes of a partial request with nothing new for 200 ms were not one: they go on (the ESP32's
 // edge_flush_stale). Clients whose reply failed are dropped.
@@ -609,7 +614,6 @@ static void tcp_server(bridge_t *b)
                 memset(cl, 0, sizeof *cl);
                 cl->c.fd = fd;
                 cl->since = now_us();
-                eacc_attach(b, cl);
                 SLOG_I("bridge", "UART%d: client %s connected (%d)", b->n, inet_ntoa(from.sin_addr), b->ncli);
             }
         }
@@ -661,7 +665,6 @@ static void tcp_client(bridge_t *b)
             memset(cl, 0, sizeof *cl);
             cl->c.fd = fd;
             cl->c.tls = tls;
-            eacc_attach(b, cl);
             b->ncli = 1;
             frame_done(b, false);
             SLOG_I("bridge", "UART%d: connected to %s:%u", b->n, b->C.host, b->C.remote_port);

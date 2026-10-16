@@ -87,12 +87,12 @@ function status(): StatusInfo {
   const t = Math.floor((Date.now() - started) / 1000);
   return {
     system: {
-      uptime: 86400 * 3 + 7200 + t, os: 'FreeRTOS (STM32H750)', mac: 'D4:AD:20:00:12:34', imei: '', sn: 'SB2410000123',
+      uptime: 86400 * 3 + 7200 + t, os: 'FreeRTOS', mac: 'D4:AD:20:00:12:34', imei: '', sn: 'SB2410000123',
       activeNet: 'ETH', time: new Date().toISOString().replace('T', ' ').slice(0, 19), clockSet: true,
       heapFree: 182000, heapMin: 151000, psramFree: 3900000,
     },
     eth: { ip: '192.168.0.7', mask: '255.255.255.0', gateway: '192.168.0.1', dns1: '119.29.29.29', dns2: '8.8.8.8' },
-    cell: { iccid: '', ip: '', dns1: '', dns2: '', signal: 99, netType: '', state: 'disconnected' },
+    cell: { iccid: '89840200011761973724', ip: '10.110.205.176', dns1: '203.113.131.1', dns2: '203.113.131.2', signal: 18, netType: 'LTE', state: 'connected' },
     ports: [
       { state: 'LISTEN', tx: 1820 + t * 16, rx: 960 + t * 8 },
       { state: 'CONNECTED(1)', tx: 400 + t * 4, rx: 220 + t * 2 },

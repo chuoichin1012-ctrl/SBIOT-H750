@@ -11,12 +11,19 @@ function uptime(s: number) {
   return `${d ? `${d} d ` : ''}${h} h ${m} min`;
 }
 
-/** CSQ to a plain description; 99 means the modem cannot measure it. */
-function signal(csq: number) {
-  if (csq === 99 || csq < 0) return 'No measurement';
-  const dbm = -113 + 2 * csq;
-  const word = csq >= 20 ? 'good' : csq >= 10 ? 'fair' : 'weak';
-  return `${csq} (${dbm} dBm, ${word})`;
+/** CSQ (0-31; 99: the modem cannot measure it) as 0-4 bars: <2 none, 2-9 one, 10-14 two, 15-19 three, 20+ four. */
+function SignalBars(props: { csq: number }) {
+  const { csq } = props;
+  const known = csq >= 0 && csq <= 31;
+  const bars = !known ? 0 : csq >= 20 ? 4 : csq >= 15 ? 3 : csq >= 10 ? 2 : csq >= 2 ? 1 : 0;
+  const text = known ? `${bars} of 4 bars (CSQ ${csq}, ${-113 + 2 * csq} dBm)` : 'No measurement';
+  return (
+    <span class="inline-flex items-end gap-[3px] align-middle" role="img" aria-label={text} title={text}>
+      {[1, 2, 3, 4].map((n) => (
+        <span key={n} class={`w-[6px] rounded-[1px] ${n <= bars ? 'bg-brand' : 'bg-line'}`} style={{ height: `${3 + n * 4}px` }} />
+      ))}
+    </span>
+  );
 }
 
 const connState = (s: string): LedState =>
@@ -35,7 +42,6 @@ export function StatusPage(_: { path?: string }) {
 
   if (!st.data) return <Pending error={st.error} retry={st.reload} />;
   const s: StatusInfo = st.data;
-  const timeSuspect = s.system.clockSet === false;
 
   const panel: [string, LedState, string][] = [
     ['Ethernet', s.system.activeNet === 'ETH' ? 'ok' : s.eth.ip ? 'warn' : 'off', s.eth.ip || 'No address'],
@@ -66,13 +72,8 @@ export function StatusPage(_: { path?: string }) {
             <Info label="Hardware">{d.hardware}</Info>
             <Info label="Operating system">{s.system.os}</Info>
             <Info label="Uptime">{uptime(s.system.uptime)}</Info>
-            <Info label="Free memory">
-              {kb(s.system.heapFree)} RAM (lowest {kb(s.system.heapMin)}){s.system.psramFree ? `, ${kb(s.system.psramFree)} PSRAM` : ''}
-            </Info>
-            <Info label="System time">
-              {s.system.time}
-              {timeSuspect && <span class="block text-[13px] text-led-warn">Clock not set. Check NTP in Settings.</span>}
-            </Info>
+            <Info label="Free memory">{kb(s.system.heapFree)}</Info>
+            <Info label="System time">{s.system.time}</Info>
             <Info label="Active network">{s.system.activeNet === 'ETH' ? 'Ethernet' : s.system.activeNet === 'LTE' ? 'Cellular' : 'None'}</Info>
             <Info label="MAC">{s.system.mac}</Info>
             <Info label="Serial number">{s.system.sn}</Info>
@@ -93,7 +94,7 @@ export function StatusPage(_: { path?: string }) {
             <dl>
               <Info label="Connection"><Led state={s.cell.state === 'connected' ? 'ok' : 'off'} label={{ connected: 'Connected', connecting: 'Connecting', disconnected: 'Not connected' }[s.cell.state]} /></Info>
               <Info label="Network type">{s.cell.netType || '—'}</Info>
-              <Info label="Signal">{signal(s.cell.signal)}</Info>
+              <Info label="Signal"><SignalBars csq={s.cell.signal} /></Info>
               <Info label="IP address">{s.cell.ip || '—'}</Info>
               <Info label="DNS">{[s.cell.dns1, s.cell.dns2].filter(Boolean).join(', ') || '—'}</Info>
               <Info label="ICCID">{s.cell.iccid || '—'}</Info>

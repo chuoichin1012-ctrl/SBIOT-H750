@@ -148,7 +148,7 @@ static void status_get(struct mg_connection *c)
     cJSON *o = cJSON_CreateObject();
     cJSON *sys = cJSON_AddObjectToObject(o, "system");
     cJSON_AddNumberToObject(sys, "uptime", sysmgr_uptime_s());
-    cJSON_AddStringToObject(sys, "os", "FreeRTOS " tskKERNEL_VERSION_NUMBER " + lwIP");
+    cJSON_AddStringToObject(sys, "os", "FreeRTOS");
     cJSON_AddStringToObject(sys, "mac", mac);
     cJSON_AddStringToObject(sys, "imei", li.imei);
     cJSON_AddStringToObject(sys, "sn", sysmgr_serial());

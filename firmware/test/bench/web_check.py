@@ -42,18 +42,39 @@ def check(ok, what):
         failures.append(what)
 
 
-def req(method, path, body=None, auth=AUTH, headers=None, timeout=20):
+def req(method, path, body=None, auth=AUTH, headers=None, timeout=20, sock=None):
     c = http.client.HTTPConnection(HOST, PORT, timeout=timeout)
-    h = dict(headers or {})
-    if auth:
-        h['Authorization'] = auth
-    if body is not None and 'Content-Type' not in h:
-        h['Content-Type'] = 'application/json'
-    c.request(method, path, body=body, headers=h)
-    r = c.getresponse()
-    data = r.read()
-    c.close()
+    c.sock = sock  # connected already (req_retry), or None: the request connects
+    try:
+        h = dict(headers or {})
+        if auth:
+            h['Authorization'] = auth
+        if body is not None and 'Content-Type' not in h:
+            h['Content-Type'] = 'application/json'
+        c.request(method, path, body=body, headers=h)
+        r = c.getresponse()
+        data = r.read()
+    finally:
+        c.close()
     return r.status, dict((k.lower(), v) for k, v in r.getheaders()), data
+
+
+RETRY_PAUSE = 2
+
+
+def req_retry(method, path, body=None, headers=None, timeout=20):
+    """req's status, and whether its connect was tried again: a connect that times out is tried once more,
+    RETRY_PAUSE s later (on this bench, WSL NAT, one in a few thousand does while the board answers the next).
+    A timeout once connected, sending or waiting for the reply, fails as in req."""
+    again = False
+    try:
+        sock = socket.create_connection((HOST, PORT), 5)
+    except (socket.timeout, TimeoutError):
+        again = True
+        time.sleep(RETRY_PAUSE)
+        sock = socket.create_connection((HOST, PORT), 5)
+    sock.settimeout(timeout)
+    return req(method, path, body=body, headers=headers, timeout=timeout, sock=sock)[0], again
 
 
 def get_json(path):
@@ -241,15 +262,10 @@ def case_heap_loop(rounds=200):
     wrong, blips = 0, 0
 
     def st(method, path, body=None, headers=None):
-        # A connect that times out is tried once more, 2 s later: on this bench (WSL NAT) one in a few
-        # thousand connects times out while the board answers the next one; a board that hangs fails both.
         nonlocal blips
-        try:
-            return req(method, path, body=body, headers=headers, timeout=5)[0]
-        except (socket.timeout, TimeoutError):
-            blips += 1
-            time.sleep(2)
-            return req(method, path, body=body, headers=headers)[0]
+        s, again = req_retry(method, path, body=body, headers=headers)
+        blips += again
+        return s
 
     for r in range(rounds):
         got = [st('GET', '/api/status'), st('GET', '/api/io'), st('GET', '/api/device'),

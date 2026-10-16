@@ -12,6 +12,9 @@
 #include "cmux.h"
 #include "lte_power.h"
 #include "lte_uart.h"
+#include "lwip/tcpip.h"
+#include "netif/ppp/pppapi.h"
+#include "netmgr.h"
 #include "main.h"  // LTE_PWR, LTE_RESET (through Q1/Q2: high is pressed)
 #include "now_us.h"
 #include "stream_buffer.h"
@@ -30,8 +33,8 @@
 #define CMUX_CMD "AT+CMUX=0,0,5,2048,20,3,30,10,2"
 
 enum { M_AT, M_MUX, M_PLAIN_PPP };
-enum { REQ_MUX_START = 1, REQ_MUX_CLOSE = 2 };
-enum { EV_RUNNING = 1 << CMUX_EV_RUNNING, EV_CLOSED = 1 << CMUX_EV_DLC_CLOSED, EV_FAILED = 1 << CMUX_EV_FAILED };
+enum { REQ_MUX_START = 1, REQ_MUX_CLOSE = 2, REQ_PLAIN_PPP = 4 };
+enum { EV_RUNNING = 1 << CMUX_EV_RUNNING, EV_CLOSED = 1 << CMUX_EV_DLC_CLOSED, EV_FAILED = 1 << CMUX_EV_FAILED, EV_PPP_DOWN = 1 << 8 };
 
 static net_cfg_t s_cfg;
 static cmux_t s_mux AXI;
@@ -43,7 +46,14 @@ static StaticTask_t s_cmux_tcb, s_lte_tcb;
 static TaskHandle_t s_cmux_task, s_lte_task;
 static volatile int s_mode = M_AT;
 static volatile uint32_t s_req, s_events, s_last_rx_ms;
-static volatile uint32_t s_overrun, s_in_drop, s_out_drop;
+static volatile uint32_t s_overrun, s_in_drop, s_out_drop, s_at_drop;
+// PPP (Plan 10 T4)
+static ppp_pcb *s_ppp;
+static struct netif s_ppp_netif;
+static volatile bool s_ppp_running;  // the data channel (DLC1, or the plain UART) carries PPP
+static volatile bool s_ppp_up;       // IPCP is up: the cell link has an address
+static at_lines_t s_dial_lines;      // DLC1's lines before PPP, in cmux_rx
+static volatile int s_dial_result;   // at_final_t of the dial
 static lte_info_t s_info = {.csq = 99, .state = "disconnected", .modem = "UNKNOWN", .mux = "AT", .sim = ""};
 static uint32_t s_release_ms;  // the last PWRKEY or RESET_N release, for ready_ms
 
@@ -51,16 +61,32 @@ static uint32_t ms(void) { return (uint32_t)(now_us() / 1000u); }
 
 // ---- cmux_rx ----------------------------------------------------------------------------------------
 
+// The data channel's bytes: PPP once it runs, the dial's reply before (CONNECT, NO CARRIER, ERROR).
 static void ppp_input(const uint8_t *p, size_t n)
 {
-    (void)p;
-    (void)n;  // PPP comes with Plan 10 T4
+    if (s_ppp_running && s_ppp) {
+        for (int i = 0; i < 3; i++) {  // ERR_MEM: 3 tries, 1 ms apart, then dropped (spec §7.2)
+            if (pppos_input_tcpip(s_ppp, p, (int)n) != ERR_MEM)
+                return;
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        s_in_drop++;
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        const char *line = at_feed(&s_dial_lines, p[i]);
+        at_final_t f = line ? at_final(line) : AT_NONE;
+        if (f != AT_NONE) {
+            s_dial_result = f;
+            xTaskNotifyGive(s_lte_task);
+        }
+    }
 }
 
 static void at_input(const uint8_t *p, size_t n)
 {
     if (xStreamBufferSend(s_at_in, p, n, 0) != n)
-        s_in_drop++;  // the lte task does not read: lines are lost, its command times out
+        s_at_drop++;  // the lte task does not read: lines are lost, its command times out
 }
 
 static void mux_data(void *ctx, int dlc, const uint8_t *p, size_t n)
@@ -102,13 +128,17 @@ static void cmux_task(void *arg)
         uint32_t req = s_req;
         s_req = 0;
         taskEXIT_CRITICAL();
-        if (req & REQ_MUX_CLOSE && s_mode == M_MUX) {
-            cmux_close(&s_mux);
-            size_t n;
-            while ((n = cmux_tx_next(&s_mux, lte_uart_txbuf(), LTE_UART_TXBUF)))
-                lte_uart_write(lte_uart_txbuf(), n, 100);
+        if (req & REQ_MUX_CLOSE) {
+            if (s_mode == M_MUX) {
+                cmux_close(&s_mux);
+                size_t n;
+                while ((n = cmux_tx_next(&s_mux, lte_uart_txbuf(), LTE_UART_TXBUF)))
+                    lte_uart_write(lte_uart_txbuf(), n, 100);
+            }
             s_mode = M_AT;
         }
+        if (req & REQ_PLAIN_PPP)
+            s_mode = M_PLAIN_PPP;
         if (req & REQ_MUX_START) {
             cmux_init(&s_mux, &k_mux_io);
             cmux_start(&s_mux, now);
@@ -295,7 +325,11 @@ static void on_nwinfo(const char *line, void *ctx)
 static bool sim_ready(void)
 {
     bool ready = false;
-    at_cmd("AT+CPIN?", 5000, on_cpin, &ready);
+    for (int i = 0; i < 10 && !ready; i++) {  // just after a reset the SIM takes a few seconds
+        if (i)
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        at_cmd("AT+CPIN?", 5000, on_cpin, &ready);
+    }
     info_set(&s_info.sim, ready ? "READY" : "NO SIM");
     return ready;
 }
@@ -328,12 +362,170 @@ static uint32_t wait_events(uint32_t mask, uint32_t wait_ms)
     }
 }
 
-/** CMUX up: the command, then DLC0, DLC1, DLC2 and their MSCs. False: the caller recovers. */
-static bool open_mux(void)
+// ---- PPP -------------------------------------------------------------------------------------------
+
+// PPPoS output, in the tcpip thread: all of it into the data channel's stream, or 0 when there is no room
+// (spec §7.2: a frame cut across calls is dropped by the modem's FCS; TCP sends again).
+static u32_t ppp_out(ppp_pcb *pcb, const void *data, u32_t len, void *ctx)
 {
-    if (at_cmd(CMUX_CMD, 3000, NULL, NULL) != AT_OK) {
+    (void)pcb;
+    (void)ctx;
+    if (xStreamBufferSpacesAvailable(s_ppp_out) < len) {
+        s_out_drop++;
+        return 0;
+    }
+    xStreamBufferSend(s_ppp_out, data, len, 0);
+    xTaskNotifyGive(s_cmux_task);
+    return len;
+}
+
+// PPP's status, in the tcpip thread. The cell DNS comes from IPCP's result, never from lwIP's servers (ruling 5).
+static void ppp_status(ppp_pcb *pcb, int err, void *ctx)
+{
+    (void)ctx;
+    uint32_t dns[2] = {0, 0};
+    if (err == PPPERR_NONE) {
+        dns[0] = lwip_ntohl(pcb->ipcp_gotoptions.dnsaddr[0]);
+        dns[1] = lwip_ntohl(pcb->ipcp_gotoptions.dnsaddr[1]);
+        s_ppp_up = true;
+        s_info.ip = lwip_ntohl(ip4_addr_get_u32(netif_ip4_addr(&s_ppp_netif)));
+        s_info.dns1 = s_cfg.cell_dns_manual ? s_cfg.cell_dns1 : dns[0];
+        s_info.dns2 = s_cfg.cell_dns_manual ? s_cfg.cell_dns2 : dns[1];
+        s_info.state = "connected";
+        SLOG_I("lte", "PPP up: %lu.%lu.%lu.%lu", (unsigned long)(s_info.ip >> 24), (unsigned long)(s_info.ip >> 16 & 255),
+               (unsigned long)(s_info.ip >> 8 & 255), (unsigned long)(s_info.ip & 255));
+        netmgr_cell(&s_ppp_netif, true, dns);
+        return;
+    }
+    bool was_up = s_ppp_up;
+    s_ppp_up = false;
+    s_ppp_running = false;
+    s_info.ip = s_info.dns1 = s_info.dns2 = 0;
+    s_info.state = "disconnected";
+    if (was_up || err != PPPERR_USER)
+        SLOG_W("lte", "PPP down (%d)", err);
+    netmgr_cell(&s_ppp_netif, false, dns);
+    s_events |= EV_PPP_DOWN;
+    if (s_lte_task)
+        xTaskNotifyGive(s_lte_task);
+}
+
+static void ppp_begin(void)
+{
+    if (!s_ppp) {
+        s_ppp = pppapi_pppos_create(&s_ppp_netif, ppp_out, ppp_status, NULL);
+        if (!s_ppp) {
+            SLOG_E("lte", "no PPP control block");
+            return;
+        }
+        static const u8_t auth[] = {PPPAUTHTYPE_NONE, PPPAUTHTYPE_PAP, PPPAUTHTYPE_CHAP, PPPAUTHTYPE_PAP | PPPAUTHTYPE_CHAP};
+        LOCK_TCPIP_CORE();
+        if (s_cfg.apn_auth >= 1 && s_cfg.apn_auth <= 3)
+            ppp_set_auth(s_ppp, auth[s_cfg.apn_auth], s_cfg.apn_user, s_cfg.apn_pass);
+        ppp_set_usepeerdns(s_ppp, 1);  // IPCP asks for the servers; netmgr chooses which pair lwIP uses
+        UNLOCK_TCPIP_CORE();
+    }
+    s_ppp_running = true;
+    pppapi_connect(s_ppp, 0);
+}
+
+/** PPP stopped at once (a recovery, a CFUN): its link callback reports it down. */
+static void ppp_stop(void)
+{
+    if (s_ppp && (s_ppp_running || s_ppp_up))
+        pppapi_close(s_ppp, 1);
+    s_ppp_running = false;
+}
+
+static void on_creg(const char *line, void *ctx)
+{
+    (void)ctx;
+    if (!strncmp(line, "+CEREG:", 7) || !strncmp(line, "+CGREG:", 7) || !strncmp(line, "+COPS:", 6))
+        SLOG_W("lte", "registration %s", line);  // n,1 home, n,5 roaming, n,2 searching, n,3 denied; COPS: the operator
+}
+
+static void on_reg(const char *line, void *ctx)
+{
+    int st;
+    if (at_creg(line, &st) && (st == 1 || st == 5))
+        *(bool *)ctx = true;
+}
+
+/** On the network (LTE or 2G/3G packet domain): home or roaming. Otherwise logged, and nothing is dialled. */
+static bool registered(void)
+{
+    bool reg = false;
+    at_cmd("AT+CEREG?", 2000, on_reg, &reg);
+    if (!reg)
+        at_cmd("AT+CGREG?", 2000, on_reg, &reg);
+    if (!reg) {
+        at_cmd("AT+CEREG?", 2000, on_creg, NULL);
+        at_cmd("AT+COPS?", 2000, on_creg, NULL);
+    }
+    return reg;
+}
+
+/** ATD*99# on DLC1, then PPP. False: no CONNECT (logged with the registration). */
+static bool dial_mux(void)
+{
+    info_set(&s_info.state, "connecting");
+    s_dial_lines.n = 0;
+    s_dial_result = AT_NONE;
+    xStreamBufferSend(s_ppp_out, "ATD*99#\r", 8, pdMS_TO_TICKS(100));
+    xTaskNotifyGive(s_cmux_task);
+    uint32_t t0 = ms();
+    while (s_dial_result == AT_NONE && ms() - t0 < 30000)
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(200));
+    if (s_dial_result == AT_CONNECT) {
+        SLOG_I("lte", "CONNECT on DLC1: PPP starts");
+        ppp_begin();
+        return true;
+    }
+    info_set(&s_info.state, "disconnected");
+    SLOG_W("lte", "dial: %s", s_dial_result == AT_NO_CARRIER ? "NO CARRIER" : s_dial_result == AT_ERROR ? "ERROR" : "no reply");
+    at_cmd("AT+CEREG?", 2000, on_creg, NULL);
+    at_cmd("AT+CGREG?", 2000, on_creg, NULL);
+    at_cmd("AT+COPS?", 2000, on_creg, NULL);
+    return false;
+}
+
+/** AT+CMUX refused: PPP on the plain UART (spec §7.2's fallback); the signal is read before only. */
+static void plain_ppp(void)
+{
+    info_set(&s_info.mux, "PLAIN");
+    if (!sim_ready()) {
+        SLOG_W("lte", "NO SIM");
+        return;
+    }
+    at_cmd("AT+QCCID", 2000, on_iccid, NULL);
+    bool alive = false;
+    at_cmd("AT+CSQ", 2000, on_csq, &alive);
+    at_cmd("AT+QNWINFO", 2000, on_nwinfo, NULL);
+    info_set(&s_info.state, "connecting");
+    if (at_cmd("ATD*99#", 30000, NULL, NULL) != AT_CONNECT) {
+        info_set(&s_info.state, "disconnected");
+        SLOG_W("lte", "dial on the plain UART: no CONNECT");
+        return;
+    }
+    request(REQ_PLAIN_PPP);
+    ppp_begin();
+    uint32_t last_addr = ms();
+    for (;;) {  // until PPP goes down, or 2 minutes without an address
+        uint32_t e = wait_events(EV_PPP_DOWN, POLL_MS);
+        if (s_ppp_up)
+            last_addr = ms();
+        if (e || ms() - last_addr >= LTE_NO_ADDR_MS)
+            return;  // the caller recovers with RESET_N (leaving data mode needs +++ and ATH; a reset is simpler)
+    }
+}
+
+/** CMUX up: the command, then DLC0, DLC1, DLC2 and their MSCs. 1 running, 0 refused (the plain fallback), -1 failed. */
+static int open_mux(void)
+{
+    at_final_t f = at_cmd(CMUX_CMD, 3000, NULL, NULL);
+    if (f != AT_OK) {
         SLOG_W("lte", "AT+CMUX refused");
-        return false;  // Plan 10 T4: the plain PPP fallback
+        return f == AT_ERROR ? 0 : -1;
     }
     taskENTER_CRITICAL();
     s_events = 0;
@@ -344,17 +536,18 @@ static bool open_mux(void)
     if (wait_events(EV_RUNNING | EV_FAILED, 3000) & EV_RUNNING) {
         info_set(&s_info.mux, "RUNNING");
         SLOG_I("lte", "CMUX running");
-        return true;
+        return 1;
     }
     info_set(&s_info.mux, "FAILED");
     SLOG_E("lte", "CMUX did not open");
-    return false;
+    return -1;
 }
 
 /** RECOVER: CLD, 1 s, RESET_N, back to AT. */
 static void recover(void)
 {
     SLOG_W("lte", "recovering: CLD, RESET_N");
+    ppp_stop();
     request(REQ_MUX_CLOSE);
     vTaskDelay(pdMS_TO_TICKS(1000));
     hw_pulse(NULL, LTE_PIN_RESET, LTE_RESET_MS);
@@ -378,7 +571,10 @@ static void lte_task(void *arg)
         char cmd[64];
         snprintf(cmd, sizeof cmd, "AT+CGDCONT=1,\"IP\",\"%s\"", s_cfg.apn);
         at_cmd(cmd, 2000, NULL, NULL);
-        if (!open_mux()) {
+        int mux = open_mux();
+        if (mux <= 0) {
+            if (mux == 0)
+                plain_ppp();
             recover();
             power = LTE_UNKNOWN;
             continue;
@@ -401,8 +597,17 @@ static void lte_task(void *arg)
                     SLOG_I("lte", "SIM ready");
                 }
             }
-            if (no_sim)
-                last_addr = ms();  // nothing dialled, nothing missed (PPP: Plan 10 T4)
+            if (no_sim || s_ppp_up)
+                last_addr = ms();  // NO SIM: nothing dialled, nothing missed
+            else if (!s_ppp_running && registered())
+                dial_mux();  // again at each poll until PPP is up, once the module is on the network
+            else {  // PPP negotiating without an address yet: the registration, for the log
+                at_cmd("AT+CEREG?", 2000, on_creg, NULL);
+                at_cmd("AT+COPS?", 2000, on_creg, NULL);
+            }
+            taskENTER_CRITICAL();
+            s_events &= ~EV_PPP_DOWN;  // PPP down: the next poll dials again
+            taskEXIT_CRITICAL();
             lte_action_t act = lte_supervise(ms(), last_addr, s_last_rx_ms, alive, no_sim);
             if (wait_events(EV_CLOSED | EV_FAILED, 0) || act == LTE_ACT_RECOVER) {
                 recover();
@@ -411,7 +616,8 @@ static void lte_task(void *arg)
             }
             if (act == LTE_ACT_CFUN) {
                 SLOG_W("lte", "no PPP address for 2 minutes: AT+CFUN=1,1");
-                at_cmd("AT+CFUN=1,1", 5000, NULL, NULL);
+                ppp_stop();
+                at_cmd("AT+CFUN=1,1", 5000, NULL, NULL);  // the module restarts: CMUX goes, the recovery follows
                 last_addr = ms();
             }
             if (wait_events(EV_CLOSED | EV_FAILED, POLL_MS)) {

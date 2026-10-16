@@ -8,6 +8,7 @@
 #include "lwip/ip4_addr.h"
 #include "lwip/memp.h"
 #include "lwip/netif.h"
+#include "lwip/priv/tcp_priv.h"  // tcp_active_pcbs: the aborts on a route change (Plan 10 ruling 6)
 #include "lwip/stats.h"
 #include "lwip/tcpip.h"
 #include "semphr.h"
@@ -53,19 +54,83 @@ static void set_dns(int i, uint32_t a)
     dns_setserver((u8_t)i, &x);
 }
 
-static uint32_t s_eth_lease[2];  // the last accepted ACK's DNS servers, 0 for none
+// ---- the links (Plan 10): the default route and the DNS follow network.priority --------------------------
+// Everything below runs in the tcpip thread: DHCP, the ETH netif's callbacks, PPP's status callback.
 
-// The patched dhcp.c, in the tcpip thread: each accepted ACK's whole DNS list. A manual DNS stays, renewals
-// included (spec §7.1).
+static net_dns_t s_dns;           // each link's servers, from their own sources (ruling 5)
+static struct netif *s_cell;      // the PPP netif, once PPP is up
+static bool s_cell_up;
+static net_route_t s_route = NET_ROUTE_NONE;
+
+static bool eth_ok(void) { return s_added && netif_is_link_up(&s_netif) && ip4_addr_get_u32(netif_ip4_addr(&s_netif)) != 0; }
+
+static void dns_apply(void)
+{
+    uint32_t d[2];
+    netcfg_dns(&s_dns, s_route, d);
+    set_dns(0, d[0]);
+    set_dns(1, d[1]);
+}
+
+/** Ruling 6: every active TCP connection whose local address is not on the new default netif is aborted; its
+ *  socket fails, and its service dials again over the new link. */
+static void abort_others(struct netif *keep)
+{
+    const ip4_addr_t *a = netif_ip4_addr(keep);
+    int n = 0;
+    for (struct tcp_pcb *pcb = tcp_active_pcbs, *next; pcb; pcb = next) {
+        next = pcb->next;
+        if (!ip4_addr_eq(ip_2_ip4(&pcb->local_ip), a)) {
+            tcp_abort(pcb);
+            n++;
+        }
+    }
+    if (n)
+        blog("net: %d connections on the old link closed\r\n", n);
+}
+
+static void route_check(void)
+{
+    net_route_t r = netcfg_pick(s_cfg.priority, eth_ok(), s_cell_up);
+    struct netif *want = r == NET_ROUTE_ETH ? &s_netif : r == NET_ROUTE_CELL ? s_cell : NULL;
+    if (r != s_route) {
+        s_route = r;
+        blog("net: default route via %s\r\n", r == NET_ROUTE_ETH ? "Ethernet" : r == NET_ROUTE_CELL ? "LTE" : "none");
+        if (want) {
+            netif_set_default(want);
+            abort_others(want);
+        }
+    }
+    dns_apply();  // after every event, the route unchanged included (Codex plan r1, r2)
+}
+
+static void eth_changed(struct netif *netif)
+{
+    (void)netif;
+    route_check();
+}
+
+// The patched dhcp.c: each accepted ACK's whole DNS list.
 void netmgr_dhcp_dns(struct netif *netif, int n, const struct ip4_addr *servers)
 {
     (void)netif;
     for (int i = 0; i < 2; i++)
-        s_eth_lease[i] = i < n ? lwip_ntohl(ip4_addr_get_u32(&servers[i])) : 0;
-    if (!s_cfg.dns_manual) {
-        set_dns(0, s_eth_lease[0]);
-        set_dns(1, s_eth_lease[1]);
-    }
+        s_dns.eth_lease[i] = i < n ? lwip_ntohl(ip4_addr_get_u32(&servers[i])) : 0;
+    dns_apply();
+}
+
+void netmgr_cell(struct netif *nif, bool up, const uint32_t dns[2])
+{
+    s_cell = nif;
+    s_cell_up = up;
+    s_dns.cell_peer[0] = up ? dns[0] : 0;
+    s_dns.cell_peer[1] = up ? dns[1] : 0;
+    route_check();
+}
+
+const char *netmgr_route_name(void)
+{
+    return s_route == NET_ROUTE_ETH ? "ETH" : s_route == NET_ROUTE_CELL ? "LTE" : "NONE";
 }
 
 // In the tcpip thread (lwIP's core lock is held). Order (Codex r2): netif_add, the static address and
@@ -88,6 +153,12 @@ static void tcpip_ready(void *arg)
         set_dns(0, s_cfg.dns1);
         set_dns(1, s_cfg.dns2);
     }
+    s_dns.eth_manual = s_cfg.dns_manual;
+    s_dns.eth_cfg[0] = s_cfg.dns1, s_dns.eth_cfg[1] = s_cfg.dns2;
+    s_dns.cell_manual = s_cfg.cell_dns_manual;
+    s_dns.cell_cfg[0] = s_cfg.cell_dns1, s_dns.cell_cfg[1] = s_cfg.cell_dns2;
+    netif_set_status_callback(&s_netif, eth_changed);  // an address (DHCP, static)
+    netif_set_link_callback(&s_netif, eth_changed);    // the link (eth_drv's poll)
     netif_set_default(&s_netif);
     netif_set_up(&s_netif);
     if (s_cfg.dhcp && dhcp_start(&s_netif) != ERR_OK)
@@ -140,9 +211,9 @@ bool netmgr_online(void)
     eth_status_t e;
     eth_drv_status(&e);
     LOCK_TCPIP_CORE();
-    bool bound = s_added && ip4_addr_get_u32(netif_ip4_addr(&s_netif)) != 0;
+    bool bound = s_added && ip4_addr_get_u32(netif_ip4_addr(&s_netif)) != 0, cell = s_cell_up;
     UNLOCK_TCPIP_CORE();
-    return e.up && bound;
+    return (e.up && bound) || cell;  // ruling 7: either link with an address
 }
 
 int netmgr_netconn_free(void)

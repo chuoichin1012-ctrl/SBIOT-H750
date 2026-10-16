@@ -48,6 +48,10 @@ static void test_signal(void)
     CHECK(at_nwinfo("+QNWINFO: \"GSM\",\"45204\",\"GSM 900\",62", t, sizeof t) && !strcmp(t, "GSM"), "GSM");
     CHECK(at_nwinfo("+QNWINFO: No Service", t, sizeof t) && !strcmp(t, "No Service"), "No Service (%s)", t);
     CHECK(!at_nwinfo("OK", t, sizeof t), "not a QNWINFO line");
+    int st = -1;
+    CHECK(at_creg("+CEREG: 0,1", &st) && st == 1 && at_creg("+CGREG: 2,5,\"1A2B\",\"01C3\",7", &st) && st == 5,
+          "CEREG/CGREG: the status, with or without the location");
+    CHECK(at_creg("+CEREG: 0,2", &st) && st == 2 && !at_creg("+CSQ: 18,99", &st), "searching; not a registration line");
 }
 
 static void test_lines(void)

@@ -14,6 +14,8 @@ bool at_iccid(const char *line, char out[21]);          // "+QCCID: 8984…F": u
 bool at_csq(const char *line, int *rssi);               // "+CSQ: 18,99": 18 (99 unknown)
 bool at_nwinfo(const char *line, char *out, size_t n);  // "+QNWINFO: \"FDD LTE\",…": "LTE"; others as given
 bool at_cpin_ready(const char *line);                   // "+CPIN: READY"
+/** "+CEREG: n,stat[,…]" or "+CGREG: …": stat (1 home, 5 roaming: registered; 2 searching, 3 denied). */
+bool at_creg(const char *line, int *stat);
 
 /** Lines from a byte stream: a whole line (CR and LF stripped, at least one character) or NULL. A line over
  *  the buffer is cut at its size. */

@@ -92,6 +92,17 @@ bool at_nwinfo(const char *line, char *out, size_t n)
 
 bool at_cpin_ready(const char *line) { return !strcmp(line, "+CPIN: READY"); }
 
+bool at_creg(const char *line, int *stat)
+{
+    if (!starts(line, "+CEREG:") && !starts(line, "+CGREG:"))
+        return false;
+    const char *c = strchr(line, ',');
+    if (!c || !isdigit((unsigned char)c[1]))
+        return false;
+    *stat = atoi(c + 1);
+    return true;
+}
+
 const char *at_feed(at_lines_t *l, uint8_t c)
 {
     if (c == '\r' || c == '\n') {

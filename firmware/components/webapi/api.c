@@ -152,7 +152,7 @@ static void status_get(struct mg_connection *c)
     cJSON_AddStringToObject(sys, "mac", mac);
     cJSON_AddStringToObject(sys, "imei", li.imei);
     cJSON_AddStringToObject(sys, "sn", sysmgr_serial());
-    cJSON_AddStringToObject(sys, "activeNet", ns.bound && ns.eth.up ? "ETH" : "NONE");
+    cJSON_AddStringToObject(sys, "activeNet", netmgr_route_name());  // the default route (Plan 10)
     cJSON_AddStringToObject(sys, "time", t);  // 2020-01-01 plus the uptime while the clock is not set (spec §10.4)
     cJSON_AddBoolToObject(sys, "clockSet", sysmgr_clock_set());
     cJSON_AddNumberToObject(sys, "heapFree", heap_free_now());

@@ -46,7 +46,8 @@ The wdog task, at priority 31, kicks even while another task hangs (`tcpip` stuc
 
 **Files:** new `firmware/components/board/hb.c/.h` (pure; FreeRTOS-free), `components/board/wdog.c` (checks every 1 s), the supervised tasks (one `hb_beat` per loop; any wait without an end gets one), `app/app_main.c` (console `I`: the bench hang), spec §6.1 and §11.4; test `test/host/test_board.c`.
 
-- `int hb_add(const char *name, uint32_t timeout_ms, uint32_t now_ms)` (a slot of `HB_MAX` 24, its first beat now; -1 when full), `void hb_beat(int id, uint32_t now_ms)` (a 32-bit store: no lock), `int hb_expired(uint32_t now_ms)` (the first slot whose last beat is older than its timeout, else -1; wrap-safe), `const char *hb_name(int id)`.
+- `int hb_add(const char *name, uint32_t timeout_ms, uint32_t now_ms)`, `void hb_beat(int id, uint32_t now_ms)`, `int hb_expired(uint32_t now_ms)` (the first slot whose last beat is older than its timeout, else -1; wrap-safe), `const char *hb_name(int id)`.
+- **Concurrency** (Codex plan r4): tasks register while the scheduler runs and the wdog scans. `hb_add` runs inside a critical section (`wdog_hb_add()` in `wdog.c` wraps it with `taskENTER_CRITICAL`); the slot is filled (its name **copied** into `char name[16]`: some task names are built on a stack, `bridge%d`; its timeout; its first beat) before the count that publishes it is stored (`__atomic_store_n`, release); `hb_beat` and the scan use `__atomic_store_n`/`__atomic_load_n` on the timestamp. `HB_MAX` is 32, above the 18 tasks that can run at once; a full table is never silent: `hb_add` returns -1, the caller logs `hb: no slot for <name>`, and `/api/status` counts it in `hbMissing` (the bench checks 0).
 - **Supervised, with the timeout each gets** (generous: a reset must never come from a slow but working task):
 
   | Task | Timeout | Its beat |
@@ -61,11 +62,17 @@ The wdog task, at priority 31, kicks even while another task hangs (`tcpip` stuc
   | serial RX tasks, `io`, `syslog` | 10 s, 10 s, 60 s | their loops |
 
   Tasks that do not run (a service off at boot) never register: nothing to watch.
-- On an expired slot: the wdog logs `"wdog: <name> stopped for <n> s: restart"` (syslog, kept across the reset), waits 1 s for the log to land, then stops kicking: IWDG1 resets the board about 1.6 s later. No other recovery (keep it simple).
+- **A wait that is work, and a wait that is stuck** (Codex plan r4):
+  - waiting for data (a queue, a message buffer, a notification, a socket) and sleeping on a schedule (MQTT's `retryInterval` up to 65535 s, Edge's report interval, a serial line with no traffic) are cut into slices of at most a third of the task's timeout, beating between slices, with the business deadline kept as it was (the remaining time carried over);
+  - waiting for a lock (a mutex or a semaphore that guards shared state: `mqttgw.c` `lock_wait()`, the Edge cache, the serial bus) never beats: a lock that makes no progress past the timeout trips the supervisor, which is the point.
+- On an expired slot (Codex plan r4: the path must not block; `blog` takes a mutex with no end, and syslog may be the task that hangs): the wdog writes the reason, `{magic, the slot's name, its seconds late, CRC-32}`, into a `.noinit` section in SRAM4 that neither the bootloader nor the app's startup clears (checked in `boot.ld` and `startup_app.c`), then stops kicking at once: IWDG1 resets the board about 1.6 s later. At the next boot, `init` finds a valid reason (and RCC_RSR's IWDG1 flag), logs `"wdog: <name> stopped for <n> s: restarted"` through the normal log, and clears it. No other recovery (keep it simple).
 
-- [ ] Test (host): `hb_expired` is -1 while every slot beats within its timeout; the slot past its timeout is returned, the first of two; a slot that beats again is no longer expired; wrap-safe across `UINT32_MAX`; `hb_add` past `HB_MAX` returns -1 and changes nothing.
+- [ ] Test (host): `hb_expired` is -1 while every slot beats within its timeout; the slot past its timeout is returned, the first of two; a slot that beats again is no longer expired; wrap-safe across `UINT32_MAX`; `hb_add` past `HB_MAX` returns -1 and changes nothing; a name built in a buffer that is then overwritten stays as given; the reset reason encodes, decodes, and is refused with a wrong magic or CRC (random RAM after a power-up).
 - [ ] Fix as above; every supervised task's waits end within a third of its timeout.
-- [ ] Board: console `I` makes the `web` task stop for 40 s: the board resets about 31–33 s after it, and the log after the boot holds `wdog: web stopped`; normal running and the bench suites never trip it (`hb` restarts 0 in the log).
+- [ ] Board:
+  - console `I` makes the `web` task stop for 40 s: the board resets about 31–33 s after it, and the log after the boot holds `wdog: web stopped ... restarted`;
+  - a valid long wait does not trip it: MQTT on with `retryInterval` 300 and an unreachable broker, 7 minutes, no reset;
+  - a power-up (not an IWDG1 reset) logs no reason; `hbMissing` is 0; the bench suites never trip it.
 - [ ] Commit.
 
 ### Task 1: binding record version 2 (C and Python)

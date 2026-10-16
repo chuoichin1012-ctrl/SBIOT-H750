@@ -32,7 +32,7 @@
 
 **Files:** `firmware/CMakeLists.txt`, `firmware/test/host/Makefile` (`CFLAGS`), `web/src/lib/edge.ts` (`templateError`); tests `test/host/test_proto.c` (rwprot), `test/host/test_edge_text.c` or the test that compiles `edgecore.c` (`edge_tmpl_compile`), `web/tests/unit/rules.test.ts`.
 
-- [ ] Test: `rwprot_handle` on `{"rw_prot":` + 300 `[` + `0` + 300 `]` + `}` returns NULL without a crash; the same with depth 15 still answers; `edge_tmpl_compile` on a 17-deep template returns NULL, a 16-deep one compiles. Run: FAIL (300 deep parses: depth limit 1000).
+- [ ] Test (Codex plan r1: a request that is otherwise valid, so only the depth decides): `{"rw_prot":{"ver":"1.0","dir":"down","id":"7","r_data":[{"name":"x"}]},"z":` + D nested arrays + `}`. At the limit (the whole document 16 levels deep) `rwprot_handle` answers; one level more, and 300 levels, it returns NULL (cJSON refuses the document), with no crash. `edge_tmpl_compile` the same at 16 and 17 levels. Run: FAIL (17 and 300 levels answer: the limit is 1000).
 - [ ] Fix: `-DCJSON_NESTING_LIMIT=16` for the firmware (CMake `add_compile_definitions`) and the host tests (`CFLAGS`). cJSON then refuses deeper input at `parse_value` and deeper output at print; 16 levels cost about 0.8 KB of stack (48 B a level, Codex's measure).
 - [ ] UI: `templateError` refuses a template deeper than 16 (`The template nests more than 16 levels.`); a web unit test pins it.
 - [ ] Run the tests that compile cJSON (`test_proto`, `test_edge_text`, `test_edge_core`, `test_cfgmodel`, `test_store`) and web unit. Commit.
@@ -63,18 +63,36 @@
 
 ### Task 5: one snapshot per Modbus register read (Important 5)
 
-**Files:** `firmware/components/proto/include/modbus.h` (`mb_map_t`: optional `void (*begin)(void *ctx)`, `void (*end)(void *ctx)`), `proto/modbus.c` (FC3/FC4 loop), `services/edge_rt.c` (`map_read_reg` without its own lock; `begin`/`end` = `cache_lock`/`cache_unlock`); test `test/host/test_proto.c`.
+**Files:** `firmware/components/proto/include/modbus.h` (`mb_map_t`: optional `bool (*begin)(void *ctx)` and `void (*end)(void *ctx)`), `proto/modbus.c` (`mb_serve`, the FC3/FC4 loop), `services/edge_rt.c` (`map_read_reg` without its own lock; `begin` = `cache_lock`, `end` = `cache_unlock`); test `test/host/test_proto.c`.
 
-- [ ] Test: a fake map counts `begin`/`end` and records whether each `read_reg` ran between them; an FC3 read of 4 registers calls `begin` once, 4 reads inside, `end` once; a map without hooks still works. Run: FAIL (no hooks).
-- [ ] Fix: `mb_map_handle` calls `begin` before the FC3/FC4 loop and `end` after it (also on an exception return). In `edge_rt.c`, `begin` takes the cache lock (failing: the read answers `MB_EX_DEVICE_FAILURE`), `map_read_reg` reads without locking, `end` unlocks. Writes keep their own path: no lock held while writing to the bus.
+- [ ] Test: a fake map counts `begin`/`end` and records whether each `read_reg` ran between them:
+  - an FC3 read of 4 registers: `begin` once, the 4 reads inside, `end` once;
+  - `begin` returns false: the answer is exception `MB_EX_DEVICE_FAILURE`, no read, no `end`;
+  - `read_reg` fails on the 3rd register: the exception answer, `end` exactly once;
+  - a map without hooks reads as before.
+
+  Run: FAIL (no hooks).
+- [ ] Fix: `mb_serve` calls `begin` before the FC3/FC4 loop (false: `MB_EX_DEVICE_FAILURE`, nothing read, no `end`) and `end` once after it, on every return after a successful `begin`. In `edge_rt.c`, `begin` takes the cache lock, `map_read_reg` reads without locking, `end` unlocks. Writes keep their own path: no lock held while writing to the bus.
 - [ ] Run `test_proto`, `test_edge_core`; build. Commit.
 
 ### Task 6: one owner for the OTA staging slot (Important 6)
 
-**Files:** `firmware/components/ota/ota_app.c/.h` (an owner flag, `OTA_EBUSY` if absent, `void ota_stage_release(ota_stage_t *st)`), `components/webapi/web.c` (`upload_end`), `app/bench_ota.c`; test `test/host/test_ota.c` (or the test that links `ota_app.c`).
+**Files:** `firmware/components/ota/ota_app.c/.h` (the owner, `OTA_EBUSY` if absent, `void ota_stage_release(ota_stage_t *st)`, `bool done` in `ota_stage_t`), `components/webapi/web.c` (`upload_end`), `app/bench_ota.c`; test `test/host/test_ota.c` (or the test that links `ota_app.c`).
 
-- [ ] Test: `ota_stage_begin` twice → the second `OTA_EBUSY`; after `ota_stage_finish` OK, `begin` → `OTA_EBUSY` (an image waits for the restart); after a failed finish or `ota_stage_release`, `begin` → OK. Run: FAIL.
-- [ ] Fix: `ota_stage_begin` takes the owner (refused when held); a failed `ota_stage_finish` and `ota_stage_release` free it; a successful finish keeps it until the restart. `web.c` answers 409 on `OTA_EBUSY` ("A firmware image is waiting for the restart." or "Another upload is in progress.") and calls `ota_stage_release` when an upload ends without success; `bench_ota.c` (UART7) releases on its failures.
+**The contract** (Codex plan r1):
+- One owner, `static ota_stage_t *s_owner`, taken and given back with an atomic compare-and-swap (`__atomic_compare_exchange_n`: LDREX/STREX on the M7, the same on the host); web and UART7 run in different tasks.
+- `ota_stage_begin(st, …)` takes it (NULL → st) **before** it touches `st` or erases staging; refused: `OTA_EBUSY`, nothing changed. If `begin` then fails (an erase error), it gives the owner back.
+- `ota_stage_finish(st)`: OK sets `st->done` and keeps the owner until the reboot; a failure gives it back.
+- `ota_stage_release(st)` gives it back only if `st` holds it and is not `done`; any other caller (one that was refused) changes nothing. Cleanup after a success (the connection closing) keeps the image.
+
+- [ ] Test:
+  - A begins, B begins → `OTA_EBUSY`; B's cleanup (`release(B)`) leaves A's session going, and A's writes and finish succeed;
+  - after A's finish OK: B begins → `OTA_EBUSY`; `release(A)` (A's cleanup) → still held; B begins → still `OTA_EBUSY`;
+  - a failed finish, or `release` by the owner before finishing → B begins OK;
+  - a `begin` that fails after taking the owner (the simulated erase error) gives it back.
+
+  Run: FAIL.
+- [ ] Fix as the contract says. `web.c` answers 409 on `OTA_EBUSY` ("A firmware image is waiting for the restart, or another upload is in progress.") and calls `ota_stage_release` from `upload_end` (it does nothing after a success); `bench_ota.c` (UART7) does the same on its failures.
 - [ ] Run the OTA host tests; build. Commit.
 
 ### Task 7: `rw_prot` out of memory (Important 7)
@@ -95,10 +113,19 @@
 
 ### Task 9: a web client that stops reading (Important 9)
 
-**Files:** `firmware/components/webapi/web_core.c/.h` (new `bool web_send_stalled(uint32_t last_progress_ms, uint32_t now_ms)`, same stall time as `web_stalled`), `web.c` (`MG_EV_WRITE` updates the slot's progress time; `MG_EV_POLL` closes a connection whose send queue is not empty and has not moved for the stall time; its close path already frees an Edge pin); test `test/host/test_web_core.c`.
+**Files:** `firmware/components/webapi/web_core.c/.h` (new `typedef struct { uint32_t since; bool on; } web_send_t;` and `bool web_send_poll(web_send_t *t, size_t queued, bool wrote, uint32_t now_ms)`, the stall time `web_stalled` uses), `web.c` (the slot holds a `web_send_t`; `MG_EV_WRITE` and `MG_EV_POLL` call it; a stall closes the connection, whose close path already frees an Edge pin); test `test/host/test_web_core.c`.
 
-- [ ] Test: `web_send_stalled` false before the stall time, true at it, wrap-safe across `UINT32_MAX`. Run: FAIL (no such function).
-- [ ] Fix as above. A moving download refreshes its progress at every write: not cut.
+**When the clock runs** (Codex plan r1): it starts when the send queue goes from empty to not empty, restarts at each write that sent bytes (`wrote`), and stops when the queue is empty. `web_send_poll` returns true when it has run for the stall time.
+
+- [ ] Test:
+  - a connection idle for an hour, then an answer queued: not stalled at once, nor before the stall time;
+  - queued, nothing written for the stall time: stalled;
+  - queued, a write every second for twice the stall time: never stalled;
+  - the queue empties, then fills again later: counted from the new fill;
+  - wrap-safe across `UINT32_MAX`.
+
+  Run: FAIL (no such function).
+- [ ] Fix as above. A moving download refreshes its clock at every write: not cut.
 - [ ] Run `test_web_core`; build. Commit.
 
 ### Task 10: a placeholder that is only partly a literal (Important 10)

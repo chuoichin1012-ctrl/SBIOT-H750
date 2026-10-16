@@ -63,7 +63,7 @@ def report():
 def image(build, version, pad_to=None):
     """app.bin under a new header (and padded with zeros: never executed)."""
     body = open(os.path.join(build, 'app.bin'), 'rb').read()
-    if pad_to:
+    if pad_to and pad_to > len(body):  # an app already larger (it is ~580 KB since Plan 10) is used as it is
         body += bytes(pad_to - len(body))
     d = tempfile.mkdtemp()
     src, out = os.path.join(d, 'app.bin'), os.path.join(d, 'app-%s.img' % version)

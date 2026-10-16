@@ -25,7 +25,6 @@
 #define MODEL "SBIOT-H750"
 #define HARDWARE "STM32H750VBT6"
 
-unsigned web_arena_peak(void);
 void console_buffer_use(unsigned *used, unsigned *size);
 
 void api_json(struct mg_connection *c, int status, cJSON *doc)
@@ -185,7 +184,6 @@ static void status_get(struct mg_connection *c)
     cJSON *heap = cJSON_AddObjectToObject(mem, "heap");
     cJSON_AddNumberToObject(heap, "free", heap_free_now());
     cJSON_AddNumberToObject(heap, "min", heap_free_min());
-    cJSON_AddNumberToObject(mem, "arenaPeak", web_arena_peak());
     cJSON *pools = cJSON_AddArrayToObject(mem, "pools");
     add_pool(pools, "lwip_heap", ns.heap.max, ns.heap.size);
     add_pool(pools, "netconn", ns.netconn.max, ns.netconn.size);

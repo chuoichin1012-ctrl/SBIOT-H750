@@ -226,6 +226,34 @@ def log_since_start():
     return d.decode(errors='replace').split('# Since the last start', 1)[-1] if s == 200 else ''
 
 
+def heap_free():
+    _, st = get_json('/api/status')
+    return st['system']['heapFree'] if st else -1
+
+
+def case_heap_loop(rounds=200):
+    """Plan 09c: every API endpoint, many times; the heap returns to its level (no forgotten free)."""
+    _, sysc = get_json('/api/config/system')
+    sysb = json.dumps(sysc, separators=(',', ':')).encode()
+    get_json('/api/status')
+    time.sleep(1)
+    before = heap_free()
+    for _ in range(rounds):
+        get_json('/api/status')
+        get_json('/api/io')
+        get_json('/api/device')
+        req('POST', '/api/io', body=b'{"do":9,"value":true}')        # refused: no DO10
+        req('POST', '/api/time', body=b'{"time":"not a date"}')      # refused
+        req('POST', '/api/config/system', body=sysb)
+        req('POST', '/api/config/system', body=b'{"x":')            # bad JSON
+        get_json('/api/config/port1')
+        req('GET', '/api/config/edgeDevices')
+        req('POST', '/api/cert?scope=mqtt&kind=ca', body=b'not a pem', headers={'Content-Type': 'application/octet-stream'})
+    time.sleep(2)
+    after = heap_free()
+    check(before > 0 and abs(after - before) <= 2048, 'heap after %d rounds of every endpoint: %d -> %d bytes free' % (rounds, before, after))
+
+
 def case_plain():
     """Plan 09b: a save stores the bytes as sent; the device runs with them, a wrong field taking its default."""
     _, p2 = get_json('/api/config/port2')

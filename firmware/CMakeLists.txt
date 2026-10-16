@@ -117,7 +117,7 @@ set(APP_OWN
   app/store_port.c ${STORE}/store.c ${STORE}/fal_nor.c ${CMAKE_SOURCE_DIR}/components/syslog/syslog.c ${CFGM}/cfgmodel.c ${PROTO}/ipacl.c ${PROTO}/jsonscan.c
   ${BOARD}/board_rng.c ${BOARD}/rng_core.c ${NET}/ip101.c ${NET}/netcfg.c ${NET}/eth_drv.c ${NET}/netmgr.c app/fdset_check.c
   ${SYS}/clock.c ${SYS}/sysmgr.c ${WEB}/web_core.c ${WEB}/web.c ${WEB}/api.c ${WEB}/console.c ${WEB}/mg_port.c
-  ${CMAKE_SOURCE_DIR}/components/arena/arena.c app/arena_port.c
+  ${CMAKE_SOURCE_DIR}/components/arena/arena.c
   ${SER}/serial_frame.c ${SER}/uart_drv.c ${SER}/serial.c
   ${IOM}/io_core.c ${IOM}/adc_core.c ${IOM}/adc_drv.c ${IOM}/iomgr.c ${IOM}/io_mb.c ${SVC}/bridge_core.c ${SVC}/edge_core.c ${SVC}/edge_rt.c ${PROTO}/edgecore.c ${PROTO}/rwprot.c ${PROTO}/mqttutil.c ${SVC}/tls_core.c ${SVC}/tls_port.c ${SVC}/tlsconn.c ${SVC}/net.c ${SVC}/bridge.c ${SVC}/services.c ${SVC}/mqtt_transport.c ${SVC}/mqtt_outbox.c ${SVC}/mqtt_sess.c ${SVC}/mqttgw.c ${PROTO}/modbus.c ${SYS}/reload.c app/bench_io.c)
 # The embedded UI (Plan 06b): tools/embed_web.py writes the gzip bytes as C arrays and their table.
@@ -140,13 +140,13 @@ set(FDB ${CMAKE_SOURCE_DIR}/third_party/flashdb)
 set(UPSTREAM_APP ${FDB}/src/fdb.c ${FDB}/src/fdb_kvdb.c ${FDB}/src/fdb_tsdb.c ${FDB}/src/fdb_utils.c
   ${FDB}/port/fal/src/fal.c ${FDB}/port/fal/src/fal_flash.c ${FDB}/port/fal/src/fal_partition.c
   ${CMAKE_SOURCE_DIR}/third_party/cjson/cJSON.c ${LWIP_SRC} ${CMAKE_SOURCE_DIR}/third_party/mongoose/mongoose.c
-  ${CMAKE_SOURCE_DIR}/third_party/tlsf/tlsf.c ${MBED_SRC} ${CMQTT_SRC})
+  ${MBED_SRC} ${CMQTT_SRC})
 add_executable(app ${APP_CUBE} ${APP_HAL} ${APP_RTOS} ${APP_OWN} ${MONO_SRC} ${UPSTREAM_APP} ${APP_WWW})
 image_includes(app ${CUBE}/app)
 target_include_directories(app PRIVATE app ${RTOS}/include ${RTOS}/portable/GCC/ARM_CM4F ${OTA}/include ${MONO} ${CMAKE_BINARY_DIR}/gen
   ${CMAKE_SOURCE_DIR}/components/syslog/include ${STORE}/include ${STORE}/port ${FDB}/inc ${FDB}/port/fal/inc ${CFGM}/include ${PROTO}/include ${CMAKE_SOURCE_DIR}/third_party/cjson
   ${NET}/include ${LWIP}/src/include ${LWIP}/contrib/ports/freertos/include
-  ${SYS}/include ${WEB}/include ${SER}/include ${IOM}/include ${SVC}/include ${CMAKE_SOURCE_DIR}/components/arena/include ${CMAKE_SOURCE_DIR}/third_party/tlsf
+  ${SYS}/include ${WEB}/include ${SER}/include ${IOM}/include ${SVC}/include ${CMAKE_SOURCE_DIR}/components/arena/include
   ${CMAKE_SOURCE_DIR}/third_party/mongoose ${MBED}/include ${CMQTT}/include ${CMQTT}/interface)
 target_compile_definitions(app PRIVATE MBEDTLS_CONFIG_FILE="tls_config.h")
 set_source_files_properties(${APP_OWN} TARGET_DIRECTORY app PROPERTIES COMPILE_OPTIONS "${STRICT}")

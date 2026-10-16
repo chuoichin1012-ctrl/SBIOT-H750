@@ -30,13 +30,10 @@
 
 web_boot_t g_web;
 
-// AXI (spec §5.3): the JSON arena, the Edge and certificate body, the web stack.
-static uint8_t s_web_arena[64 * 1024] __attribute__((section(".axi_bss"), aligned(8)));
+// AXI (spec §5.3): the Edge and certificate body, the web stack.
 static char s_edge_body[WEB_EDGE_MAX + 1] __attribute__((section(".axi_bss")));
 static StackType_t s_web_stack[WEB_STACK_WORDS] __attribute__((section(".axi_bss")));
 static StaticTask_t s_tcb;
-static arena_t s_arena;
-static unsigned s_arena_peak;  // the highest of any scope's peak, for /api/status
 static char s_record[STORE_EDGE_RECORD] __attribute__((section(".axi_bss")));  // one Edge record at a time, for any GET
 static ota_stage_t s_ota;
 static struct mg_mgr s_mgr;
@@ -72,18 +69,6 @@ typedef struct {
 
 static slot_t s_slots[WEB_MAX_CONNS];
 static bool s_body_busy, s_ota_busy;
-
-static void scope_end(void)
-{
-    if (s_arena.peak > s_arena_peak)
-        s_arena_peak = (unsigned)s_arena.peak;
-    arena_end(&s_arena);
-}
-
-unsigned web_arena_peak(void)
-{
-    return s_arena_peak;
-}
 
 static uint64_t ms_now(void)
 {
@@ -302,10 +287,7 @@ static void upload_complete(struct mg_connection *c, slot_t *s)
     } else if (s->ep == WEB_EP_CERT) {
         cert_upload(c, s);
     } else {
-        // One callback, one arena scope (Codex 06b r1): the body is complete, the save is synchronous.
-        arena_begin(&s_arena);
         store_err_t e = store_edge_save(s_edge_body, s->got, err, sizeof err);
-        scope_end();
         if (e == STORE_OK)
             api_ok(c);
         else
@@ -509,10 +491,7 @@ static void on_message(struct mg_connection *c, slot_t *s, struct mg_http_messag
         pump(c, s);
         return;
     }
-    // One callback, one arena scope: JSON parsing and validation of a body of at most WEB_BODY_MAX.
-    arena_begin(&s_arena);
-    api_handle(c, hm);
-    scope_end();
+    api_handle(c, hm);  // cJSON on the heap: every handler frees what it builds (Plan 09c)
 }
 
 static void handler(struct mg_connection *c, int ev, void *ev_data)
@@ -633,7 +612,6 @@ int webapi_start(const cJSON *system)
     g_web.web_port = int_of(system, "webPort", 80);
     g_web.ws_port = int_of(system, "websocketPort", 6432);
     g_web.ws_target = int_of(system, "websocketTarget", 0);
-    arena_init(&s_arena, s_web_arena, sizeof s_web_arena);
     json_alloc_install();
     xTaskCreateStatic(web_task, "web", WEB_STACK_WORDS, NULL, WEB_PRIO, s_web_stack, &s_tcb);
     if (g_web.ws_target != 0)

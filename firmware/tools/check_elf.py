@@ -52,7 +52,9 @@ MQTT_CALLERS = {'mqttgw_start', 'mqtt_task', 'dial', 'publish', 'next_id', 'ms_r
 # newlib's close/fcntl on an lwIP socket would leak it (LWIP_POSIX_SOCKETS_IO_NAMES 0, Plan 08a).
 APP_NO_LIBC_IO = ['close', 'fcntl']  # _close is syscalls.c's stub, always there
 # The JSON arena, the Edge and certificate body and the web stack: static, in AXI (spec §5.3, Plan 06b).
-APP_AXI = ['s_web_arena', 's_edge_body', 's_web_stack', 's_bridge_stack']  # bridge[n] (Plan 08a)
+APP_AXI = ['s_edge_body', 's_web_stack', 's_bridge_stack']  # bridge[n] (Plan 08a)
+# Gone for good (Plan 09c): the static JSON arena.
+APP_ABSENT = ['s_web_arena']
 # The BDMA's ADC buffer: the 1 KB non-cacheable region in SRAM4 (MPU region 3, spec §6.6).
 ADCBUF = (0x3800FC00, 0x38010000)
 DTCM = (0x20000000, 0x20020000)
@@ -169,6 +171,8 @@ def main():
     for name in APP_SRAM1:
         a = sym.get(name, 0)
         check(SRAM1[0] <= a < SRAM1[1], 'app: %s in SRAM1 (0x%08x)' % (name, a))
+    for name in APP_ABSENT:
+        check(name not in sym, 'app: no %s (Plan 09c)' % name)
     for name in APP_AXI:
         a = sym.get(name, 0)
         check(AXI[0] <= a < AXI[1], 'app: %s in AXI (0x%08x)' % (name, a))

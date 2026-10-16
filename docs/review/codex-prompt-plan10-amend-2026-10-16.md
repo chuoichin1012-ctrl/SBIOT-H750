@@ -16,6 +16,6 @@ Ngoài ra đã sửa một lỗi CMUX phát hiện trên bench: byte độ dài 
 - Chỉ rời link ưu tiên khi nó mất Internet **và** link kia có cả địa chỉ lẫn Internet. Nếu cả hai đều không ping được thì chọn theo địa chỉ như cũ. Priority 0 vẫn chỉ dùng Ethernet.
 - Thêm `eth.internet` và `cell.internet` vào `/api/status`.
 
-**Phạm vi:** `git diff HEAD -- stm32/docs/plans/2026-10-16-10-lte.md`.
+**Phạm vi:** `git diff HEAD~1 HEAD -- stm32/docs/plans/2026-10-16-10-lte.md`.
 
 Trả lời APPROVED, hoặc NOT APPROVED kèm điểm cần sửa. Nhớ là người dùng muốn giữ đơn giản.

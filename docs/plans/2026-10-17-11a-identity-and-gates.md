@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (Native, chosen) to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** LED WORK tells normal running, a firmware transfer or install, and a halt apart; the programming tool writes each board's MAC and serial number into its signed binding record; the firmware reads them from there and refuses to run without them; a production tool writes the ADC calibration; `audit_keys.py` reports 0 unread config keys.
+**Goal:** a supervisor restarts the gateway when one of its tasks stops; LED WORK tells normal running, a firmware transfer or install, and a halt apart; the programming tool writes each board's MAC and serial number into its signed binding record; the firmware reads them from there and refuses to run without them; a production tool writes the ADC calibration; `audit_keys.py` reports 0 unread config keys.
 
 **Architecture:** The binding record (spec §11.5) grows to a version 2 carrying the MAC and the SN under the same Ed25519 signature, so neither can be changed without the private key. `provision.py` computes the MAC from the UID (today's formula, so a board keeps its MAC) and takes the SN from a counter file on the production PC. The bootloader and the app accept only version 2; an older record halts without erasing. Plan 11 of the roadmap is split: 11a is this (firmware and tools, host-tested), 11b the bench HIL runs.
 
@@ -39,6 +39,34 @@
 - [ ] Fix as above. `/api/status` reports both gaps: `iwdgMaxGapMs` (the loop, nominal 50 ms; the 400 ms criteria of §6.1 and §12.2 now apply to it) and `wdiMaxGapMs` (the toggles, nominal 500 ms; criterion < 600 ms, inside the SGM706's 1.0 s minimum).
 - [ ] Build boot and app; board: the LED blinks at 1 s when running, 0.2 s during a web OTA upload (and the install after it), 0.5 s halted (an unbound board); `iwdgMaxGapMs` < 400 ms and `wdiMaxGapMs` < 600 ms after the bench suites.
 - [ ] Spec: §6.1 (`wdog` row), §11.2 and §11.5 (the LED patterns). Commit.
+
+### Task 0b: a supervisor of the other tasks (the user)
+
+The wdog task, at priority 31, kicks even while another task hangs (`tcpip` stuck, `web` frozen, `mqtt_io` locked): today only a dead scheduler or a late `init` resets the board. The user (2026-10-17): a task that watches the others. Heartbeats, not an idle-task kick (idle legitimately starves during a TLS handshake, a FlashDB GC, a LAN flood).
+
+**Files:** new `firmware/components/board/hb.c/.h` (pure; FreeRTOS-free), `components/board/wdog.c` (checks every 1 s), the supervised tasks (one `hb_beat` per loop; any wait without an end gets one), `app/app_main.c` (console `I`: the bench hang), spec §6.1 and §11.4; test `test/host/test_board.c`.
+
+- `int hb_add(const char *name, uint32_t timeout_ms, uint32_t now_ms)` (a slot of `HB_MAX` 24, its first beat now; -1 when full), `void hb_beat(int id, uint32_t now_ms)` (a 32-bit store: no lock), `int hb_expired(uint32_t now_ms)` (the first slot whose last beat is older than its timeout, else -1; wrap-safe), `const char *hb_name(int id)`.
+- **Supervised, with the timeout each gets** (generous: a reset must never come from a slow but working task):
+
+  | Task | Timeout | Its beat |
+  |---|---|---|
+  | `tcpip` | 10 s | a `sys_timeout` every 1 s in the tcpip thread |
+  | `eth_rx` | 10 s | its loop (its wait capped at 1 s) |
+  | `web`, `console` | 30 s | each `mg_mgr_poll` round |
+  | `bridge1`, `bridge2` | 60 s | their loops |
+  | `mqtt`, `mqtt_io` | 120 s | their loops (a TLS handshake, a broker that hangs) |
+  | Edge poll tasks, `edge_ctl`, `edge_rpt` | 120 s | their loops |
+  | `lte`, `cmux_rx` | 180 s, 10 s | `lte`: `wait_events` and the AT waits (up to 60 s); `cmux_rx`: its loop |
+  | serial RX tasks, `io`, `syslog` | 10 s, 10 s, 60 s | their loops |
+
+  Tasks that do not run (a service off at boot) never register: nothing to watch.
+- On an expired slot: the wdog logs `"wdog: <name> stopped for <n> s: restart"` (syslog, kept across the reset), waits 1 s for the log to land, then stops kicking: IWDG1 resets the board about 1.6 s later. No other recovery (keep it simple).
+
+- [ ] Test (host): `hb_expired` is -1 while every slot beats within its timeout; the slot past its timeout is returned, the first of two; a slot that beats again is no longer expired; wrap-safe across `UINT32_MAX`; `hb_add` past `HB_MAX` returns -1 and changes nothing.
+- [ ] Fix as above; every supervised task's waits end within a third of its timeout.
+- [ ] Board: console `I` makes the `web` task stop for 40 s: the board resets about 31–33 s after it, and the log after the boot holds `wdog: web stopped`; normal running and the bench suites never trip it (`hb` restarts 0 in the log).
+- [ ] Commit.
 
 ### Task 1: binding record version 2 (C and Python)
 

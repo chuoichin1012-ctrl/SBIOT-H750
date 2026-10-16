@@ -11,6 +11,7 @@
 #include "bridge.h"
 #include "edge_core.h"
 #include "edge_rt.h"
+#include "mqttgw.h"
 #include "netmgr.h"
 #include "serial.h"
 #include "store.h"
@@ -170,7 +171,9 @@ static void status_get(struct mg_connection *c)
     }
     cJSON *mq = cJSON_AddObjectToObject(o, "mqtt");  // Plan 09
     cJSON_AddBoolToObject(mq, "enabled", enabled("mqtt"));
-    cJSON_AddStringToObject(mq, "state", "NOT STARTED");
+    char mstate[24];
+    mqttgw_status(mstate, sizeof mstate);
+    cJSON_AddStringToObject(mq, "state", mstate);
     cJSON *ed = cJSON_AddObjectToObject(o, "edge");  // Plan 08
     cJSON_AddBoolToObject(ed, "enabled", enabled("edge"));
     char est[48];

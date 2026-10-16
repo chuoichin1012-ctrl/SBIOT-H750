@@ -146,10 +146,10 @@ Mọi thao tác trên slot **xóa** theo sector 4 KB và **ghi** theo page 256 B
 |---|---|---|---|
 | ITCM | 64 KB | Code nóng chép từ QSPI lúc khởi động: kernel FreeRTOS, các ISR (ETH, USART, DMA, TIM), `memcpy`/`memset`, lõi bignum của mbedTLS | Section `.itcm_text` |
 | DTCM | 128 KB | MSP 4 KB, `.data`/`.bss` nhỏ, stack tĩnh của mọi task **trừ** `web` và `edge_tcpN` (khoảng 95 KB theo §6.1, kể cả `init`, timer và `cmux_rx`), TCB. Tổng DTCM ≤ 120 KB, kiểm bằng file map của linker | ETH và DMA1/2 không truy cập được vùng này. §5.4 bảo đảm không DMA nào đọc hay ghi trực tiếp ở đây |
-| AXI SRAM (D1) | 512 KB | **Tĩnh** (các section, tổng khoảng 193 KB): arena JSON 64 KB (§9.3), buffer văn bản Edge 48 KB (§9.3), cache văn bản cấu hình của `store` 20 KB cộng bộ đệm bản ghi Edge 8 KB, stack của `web` 8 KB, stack của `bridge[n]` 2 × 6 KB (Plan 08a). **Heap** (`heap_5`, vùng heap duy nhất) **256 KB**, dự kiến dùng bên trong như sau: 3 phiên TLS khoảng 105 KB cộng đỉnh lúc handshake khoảng 30 KB, Mongoose khoảng 40 KB, buffer report ≤ 26 KB (§9.4), mô hình Edge lúc chạy (216 B mỗi điểm, 96 B mỗi thiết bị) và stack các task Edge (tối đa khoảng 45 KB, chỉ khi Edge bật; Plan 08c: AXI và DTCM không còn chỗ cho phương án tĩnh), buffer mạng coreMQTT 2 × 4 KB, các cấp phát nhỏ lúc chạy khoảng 20 KB, tổng khoảng 229 KB. **Mỗi allocation chỉ tính một lần**, hoặc ở phần tĩnh, hoặc ở phần heap | Cacheable (write-back). Các pool memp và `PBUF_POOL` của lwIP chiếm 26 KB tĩnh (§5.6), nên phần AXI chưa cấp còn khoảng 37 KB. Phần heap còn dư khoảng 27 KB, kiểm bằng §12.3. Đo trên bench (Plan 08b): một phiên TLS 27,9 KB; port1 trong phiên cộng các request HTTPS của port2 dùng tối đa 58,7 KB trên mức nghỉ (heap thấp nhất còn 200 KB) |
+| AXI SRAM (D1) | 512 KB | **Tĩnh** (các section, tổng khoảng 193 KB): arena JSON 64 KB (§9.3), buffer văn bản Edge 48 KB (§9.3), cache văn bản cấu hình của `store` 20 KB cộng bộ đệm bản ghi Edge 8 KB, stack của `web` 8 KB, stack của `bridge[n]` 2 × 6 KB (Plan 08a), bảng topic, cấu hình và buffer tin nhận của MQTT khoảng 16,5 KB (Plan 09: DTCM chỉ giữ stack). **Heap** (`heap_5`, vùng heap duy nhất) **256 KB**, dự kiến dùng bên trong như sau: 3 phiên TLS khoảng 105 KB cộng đỉnh lúc handshake khoảng 30 KB, Mongoose khoảng 40 KB, buffer report ≤ 26 KB (§9.4), mô hình Edge lúc chạy (216 B mỗi điểm, 96 B mỗi thiết bị) và stack các task Edge (tối đa khoảng 45 KB, chỉ khi Edge bật; Plan 08c: AXI và DTCM không còn chỗ cho phương án tĩnh), buffer mạng coreMQTT 2 × 4 KB, các cấp phát nhỏ lúc chạy khoảng 20 KB, tổng khoảng 229 KB. **Mỗi allocation chỉ tính một lần**, hoặc ở phần tĩnh, hoặc ở phần heap | Cacheable (write-back). Các pool memp và `PBUF_POOL` của lwIP chiếm 26 KB tĩnh (§5.6), nên phần AXI chưa cấp còn khoảng 37 KB, sau Plan 09 còn khoảng 22 KB. Phần heap còn dư khoảng 27 KB, kiểm bằng §12.3. Đo trên bench (Plan 08b): một phiên TLS 27,9 KB; port1 trong phiên cộng các request HTTPS của port2 dùng tối đa 58,7 KB trên mức nghỉ (heap thấp nhất còn 200 KB) |
 | SRAM1 (D2) | 128 KB | Chỉ những gì DMA chạm tới, cộng heap `MEM` của lwIP 64 KB: descriptor, buffer RX và buffer TX của ETH, ring DMA RX và buffer TX của USART1/2/3, buffer trung chuyển SPI4. Các pool memp của lwIP chỉ CPU dùng nên nằm ở AXI (Plan 06a). Sau 06a đã dùng 99 KB, còn khoảng 29 KB cho USART (14 KB, Plan 07). Số lượng và kích thước chốt trong bảng pool lwIP (§5.6) | **Non-cacheable qua MPU.** Startup bật clock SRAM D2 trước khi khởi tạo `.data` |
 | SRAM2+3 (D2) | 160 KB | Hàng đợi serial → mạng của mỗi cổng, 8 KB hoặc 32 KB khi bật `bufferOffline`, cấp tĩnh 2 × 32 KB. Trạng thái và buffer của hai bridge khoảng 24 KB (Plan 08a). Outbox MQTT 64 KB. Còn khoảng 8 KB cho metadata và căn lề | Cacheable |
-| SRAM4 (D3) | 64 KB | Ring syslog 32 KB, ring của `mqtt_io` 2 × 12 KB, **buffer BDMA của ADC3** (800 B) trong region non-cacheable 1 KB riêng ở 0x3800FC00 (§6.6). Còn khoảng 7 KB | Region 1 KB của ADC đặt non-cacheable qua MPU, phần còn lại cacheable |
+| SRAM4 (D3) | 64 KB | Ring syslog 32 KB, ring của `mqtt_io` 24 KB (serial → `mqtt_io` 6 KB mỗi cổng, broker → `mqtt_io` 12 KB; Plan 09), **buffer BDMA của ADC3** (800 B) trong region non-cacheable 1 KB riêng ở 0x3800FC00 (§6.6). Còn khoảng 7 KB | Region 1 KB của ADC đặt non-cacheable qua MPU, phần còn lại cacheable |
 | Backup SRAM | 4 KB | Bản ghi HardFault (§11.4) | |
 
 **Cách tính ngân sách:**
@@ -606,7 +606,7 @@ Quy tắc riêng của bản STM32:
   | Lỗi | −1 |
 
   Ghi một phần thì trả số byte đã ghi. Có host test cho mọi trường hợp: đọc một phần, AGAIN, EOF.
-- **Vá MQTT 3.1:** CONNECT dùng protocol name `MQIsdp`, level 3. Bản vá nằm ở `third_party/patches/coremqtt-mqtt31.patch`. Host test kiểm từng byte, gồm cả Remaining Length. Bench kiểm với mosquitto ở cả 3.1 và 3.1.1: CONNACK, Client ID, **ngắt kết nối ở từng pha QoS 1/2** (trước PUBACK, trước PUBREC, sau PUBREL trước PUBCOMP) khi `cleanSession` = 0 và = 1. Điều kiện đạt **tùy theo phiên**:
+- **Vá MQTT 3.1:** CONNECT dùng protocol name `MQIsdp`, level 3. Bản vá nằm ở `third_party/patches/coremqtt-2.3.1-sbiot.patch` (Plan 09). Host test kiểm từng byte, gồm cả Remaining Length. Bench kiểm với mosquitto ở cả 3.1 và 3.1.1: CONNACK, Client ID, **ngắt kết nối ở từng pha QoS 1/2** (trước PUBACK, trước PUBREC, sau PUBREL trước PUBCOMP) khi `cleanSession` = 0 và = 1. Điều kiện đạt **tùy theo phiên**:
   - **Phiên được giữ:** không mất tin, và **không nhân đôi** tin QoS 2.
   - **Phiên mới** (clean session, hoặc 3.1.1 trả Session Present = 0): không mất tin, và **được phép trùng payload**, vì tin đang dở được gửi lại với packet id mới. MQTT không bảo đảm exactly-once giữa hai phiên độc lập (OASIS 3.1.1 §3.1.2.4, §4.1). Bench kiểm đúng chính sách này: mỗi tin đến ít nhất một lần.
 - **Outbox** (`services/mqtt_outbox.c`, đặt trong SRAM2+3), mỗi tin có một trạng thái:
@@ -623,7 +623,7 @@ Quy tắc riêng của bản STM32:
       - **3.1.1:** theo cờ Session Present trong CONNACK.
       - **3.1:** CONNACK của 3.1 không có cờ này (byte đó là reserved), nên coi là phiên được giữ **khi và chỉ khi `cleanSession` = 0**.
 
-      Bản vá coreMQTT (`coremqtt-mqtt31.patch`) đặt `sessionPresent` theo đúng quy tắc này trước khi `MQTT_Connect()` chạy `handleSessionResumption`.
+      Bản vá coreMQTT (`coremqtt-2.3.1-sbiot.patch`) đặt `sessionPresent` theo đúng quy tắc này trước khi `MQTT_Connect()` chạy `handleSessionResumption`.
     - **Ai giữ trạng thái gì:**
       - coreMQTT giữ bảng packet id và trạng thái QoS, qua `MQTT_InitStatefulQoS` với mảng 16 phần tử cho mỗi chiều. Nó tự gửi lại **PUBREL** khi phiên được giữ.
       - Outbox giữ payload. Outbox tự gửi lại **PUBLISH**: `MQTT_Publish` với `dup = true` và đúng packet id cũ.
@@ -643,6 +643,17 @@ Quy tắc riêng của bản STM32:
   - IO control dạng JSON và Modbus RTU;
   - trạng thái `NO CA CERTIFICATE` và `NO CLIENT CERTIFICATE`.
   - Trạng thái `WAITING FOR CLOCK` **bị bỏ** (§10.4).
+- **Chốt khi làm (Plan 09):**
+  - **Hai task.** `mqtt` là nơi duy nhất gọi coreMQTT (connect, gửi từ outbox, gửi lại, `MQTT_ProcessLoop`, `reconnectIfSilent`); `mqttgw_start` chỉ gọi `MQTT_Init` một lần, trước khi task chạy, vì `MQTT_Init` đặt lại bộ đếm packet id. `mqtt_io` chuyển frame serial vào outbox và tin từ broker ra cổng, IO control và Edge; chỉ `mqtt_io` được chờ UART hay thiết bị. Hai task trao dữ liệu qua ring trong SRAM4; subscriber serial chỉ xếp frame vào ring, không chờ. `check_elf` kiểm nơi gọi `MQTT_*`.
+  - **Outbox giữ tin tại chỗ.** Bản ghi không bao giờ di chuyển, nên `mqtt` gửi thẳng từ bản ghi mà không giữ mutex (coreMQTT gửi payload bằng I/O vector). Tối đa 16 tin đang dở. Một PUBLISH hỏng giữa chừng vẫn chuyển sang `WAIT_*` với id đã cấp, vì byte của nó có thể đã tới broker. Hết hạn tính theo uptime.
+  - **Client ID** rỗng thì là `SBIOT-<6 chữ số hex cuối của MAC>`, như esp-mqtt.
+  - **TLS:** tên dùng cho SNI và kiểm chứng chỉ là `sniHost` khi bật `sni` và `sniHost` không rỗng, nếu không là `host`. Chứng chỉ đọc lại ở mỗi lần kết nối; `NO CA CERTIFICATE` / `NO CLIENT CERTIFICATE` quyết định lúc boot, và MQTT khi đó tắt.
+  - **IO control chỉ là Modbus RTU** (`io_mb_remote`), như code ESP32; trả lời được publish lên mọi topic publish có `ioControl`.
+  - **`reconnectIfSilent`** chỉ tính PUBLISH nhận được và lần kết nối, không tính PINGRESP.
+  - **Hai cổng:** `ports` của topic là bitmask (bit 0 UART1, bit 1 UART2); custom mode đọc các cổng trong `customModePorts`.
+  - **Tin nhận lớn hơn buffer 4 KB** bị bỏ kèm cảnh báo, nhưng bản vá vẫn trả PUBACK hoặc PUBREC cho QoS 1/2, để cửa sổ in-flight của broker không bị kẹt.
+  - **Edge kênh 0:** report đi vào outbox qua `mqttgw_publish`; request topic là một listener chạy trong `mqtt_io`, trả lời qua outbox lên `replyTopic`. `mqttgw_start` chạy trước `edge_start`, và mọi listener được subscribe lại ở mỗi lần kết nối, kể cả listener thêm khi đang kết nối.
+  - **`/api/status` `mqtt.state`:** `NOT RUNNING`, `CONNECTING`, `CONNECTED`, `REFUSED`, `NO CA CERTIFICATE`, `NO CLIENT CERTIFICATE`, `NO MEMORY`.
 
 ## 9. Lưu trữ và Edge xử lý theo node
 

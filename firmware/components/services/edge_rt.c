@@ -2,9 +2,10 @@
 //
 //  - Polling: Modbus RTU and DL/T645 on UART1/UART2 (serial_transact), up to 5 Modbus TCP devices, the
 //    gateway's own IO, and virtual (formula) points.
-//  - Report: the JSON template through a port's socket (bridge_send); periodic, scheduled, on change.
-//    Channel 0 (MQTT) comes with Plan 09: Edge then runs without sending reports.
-//  - Remote access: Modbus RTU / Modbus TCP on the mapped addresses, or rw_prot JSON, on that port's socket.
+//  - Report: the JSON template through a port's socket (bridge_send), or channel 0 into MQTT's outbox
+//    (mqttgw_publish, Plan 09); periodic, scheduled, on change.
+//  - Remote access: Modbus RTU / Modbus TCP on the mapped addresses, or rw_prot JSON, on that port's socket, or
+//    on MQTT's request topic with the reply on the reply topic (a listener, run in `mqtt_io`).
 //  - Linkage: conditions on points drive the digital outputs.
 //
 // Tasks, split by what they wait on (a slow device never delays control): edge_bus1/2 poll their port's
@@ -25,6 +26,7 @@
 #include "io_mb.h"
 #include "iomgr.h"
 #include "modbus.h"
+#include "mqttgw.h"
 #include "netmgr.h"
 #include "now_us.h"
 #include "rwprot.h"
@@ -39,6 +41,7 @@
 
 #define REPORT_MAX (26 * 1024)  // spec §9.4
 #define LOCK_MS 2000u           // every wait on a lock (spec §6.4)
+#define MQ_REPLY_MAX 1500       // as a bridge's reply (NET_BUF)
 #define BUS_STACK 6144
 #define TCP_STACK 5120
 #define CTL_STACK 4096
@@ -61,6 +64,9 @@ typedef struct {
     bool reporting, periodic, scheduled, placeholder_on, quote;
     int interval_s, schedule, hour, minute;
     char placeholder[17];
+    char report_topic[73], req_topic[73], reply_topic[73];  // channel 0 (MQTT)
+    int report_qos, req_qos, reply_qos;
+    bool report_retain, reply_retain;
 } report_cfg_t;
 
 typedef struct {  // a poll task's devices
@@ -75,6 +81,7 @@ static edge_index_t s_index;
 static edge_tmpl_t *s_tmpl;
 static char *s_report;  // the rendered report (heap, sized once from the template)
 static size_t s_report_max;
+static uint8_t *s_mq_reply;  // a reply to a request over MQTT (heap; only mqtt_io calls mqtt_remote)
 static tcp_link_t *s_tcp;  // one per Modbus TCP device
 static dev_list_t s_lists[EDGE_MAX_TASKS];
 static report_cfg_t R;
@@ -182,6 +189,14 @@ static void read_report(const cJSON *r)
     R.placeholder_on = flag(r, "failurePlaceholder");
     snprintf(R.placeholder, sizeof R.placeholder, "%s", text(r, "placeholder"));
     R.quote = flag(r, "quoteValues");
+    snprintf(R.report_topic, sizeof R.report_topic, "%s", text(r, "reportTopic"));
+    snprintf(R.req_topic, sizeof R.req_topic, "%s", text(r, "requestTopic"));
+    snprintf(R.reply_topic, sizeof R.reply_topic, "%s", text(r, "replyTopic"));
+    R.report_qos = num(r, "reportQos");
+    R.req_qos = num(r, "requestQos");
+    R.reply_qos = num(r, "replyQos");
+    R.report_retain = flag(r, "reportRetain");
+    R.reply_retain = flag(r, "replyRetain");
 }
 
 /** "DO2" -> index 1; -1 when it is not an output of this gateway. */
@@ -607,6 +622,14 @@ static size_t remote(const uint8_t *req, size_t len, uint8_t *reply, size_t max)
     return n ? mb_tcp_wrap(pdu, n, (uint16_t)(req[0] << 8 | req[1]), reply, max) : 0;
 }
 
+/** The request topic's listener (channel 0): the message is one request; the reply goes on the reply topic. */
+static void mqtt_remote(const uint8_t *data, size_t len)
+{
+    size_t n = remote(data, len, s_mq_reply, MQ_REPLY_MAX);
+    if (n && !mqttgw_publish(R.reply_topic, s_mq_reply, n, R.reply_qos, R.reply_retain))
+        SLOG_W("edge", "the reply to an MQTT request was not queued: MQTT is away or its outbox is full");
+}
+
 // ---- report -------------------------------------------------------------------------------------------
 
 static char s_sys_handle[EDGE_SYS_FIELDS];  // their addresses are the slot handles of system fields
@@ -651,13 +674,14 @@ static void report(const char *why)
         SLOG_W("edge", "report (%s) did not fit in %u bytes", why, (unsigned)s_report_max);
         return;
     }
-    bool ok = R.channel > 0 && bridge_send(R.channel, (const uint8_t *)s_report, n);
+    bool ok = R.channel > 0 ? bridge_send(R.channel, (const uint8_t *)s_report, n)
+                            : mqttgw_publish(R.report_topic, s_report, n, R.report_qos, R.report_retain);
     if (!ok) {
         // The baselines stay: a change not delivered is still a change, reported again on the next poll.
         if (now_ms() - s_warned > 60000 || !s_warned) {
             s_warned = now_ms();
             if (R.channel == 0)
-                SLOG_W("edge", "report (%s) not sent: reports over MQTT come with Plan 09", why);
+                SLOG_W("edge", "report (%s) not sent: MQTT is off or away, or its outbox is full", why);
             else
                 SLOG_W("edge", "report (%s) not sent: UART%d's socket has no peer", why, R.channel);
         }
@@ -798,6 +822,8 @@ static void give_up(const char *why, const char *step)
     s_tmpl = NULL;
     free(s_report);
     s_report = NULL;
+    free(s_mq_reply);
+    s_mq_reply = NULL;
     edge_unreserve(&M, free);
     s_devs = NULL;
     s_ndev = s_npts = s_nlinks = 0;
@@ -888,6 +914,10 @@ void edge_start(void)
             return;
         }
     }
+    if (R.channel == 0 && R.remote && !(s_mq_reply = malloc(MQ_REPLY_MAX))) {
+        give_up("NO MEMORY", "the MQTT reply buffer");
+        return;
+    }
 
     // Nothing can fail from here on: locks and tasks on reserved memory.
     net_status_t ns;
@@ -947,10 +977,9 @@ void edge_start(void)
     if (R.reporting && s_tmpl)
         s_tasks[s_ntasks++] = s_rpt_task = xTaskCreateStatic(rpt_task, "edge_rpt", c.stack_bytes[task] / sizeof(StackType_t), NULL, PRIO_RPT, M.stacks[task],
                                        M.tcbs[task]);
-    if (R.channel == 0 && (R.reporting || R.remote)) {
-        s_note = "MQTT: Plan 09";
-        SLOG_W("edge", "reports and remote access over MQTT come with Plan 09: Edge runs without them");
-    }
+    // mqttgw_start ran first (Plan 09 ruling 10): the listener is subscribed on each connect.
+    if (R.channel == 0 && R.remote && !mqttgw_add_listener(R.req_topic, R.req_qos, mqtt_remote))
+        SLOG_W("edge", "remote access over MQTT is off: MQTT does not run, or the request topic is empty");
     s_running = true;
     SLOG_I("edge", "%d devices (%d on the buses, %d Modbus TCP, %d local), %d points, %d linkage events; reports %s via %s%s",
            s_ndev, nbus, ntcp, nlocal, s_npts, s_nlinks, R.reporting ? "on" : "off", R.channel == 0 ? "MQTT" : R.channel == 1 ? "UART1's socket" : "UART2's socket",

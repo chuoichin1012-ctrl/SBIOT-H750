@@ -15,6 +15,10 @@ MODE tcpserver  port, secs, delay_ms (listen only after), send_hex + send_ms (to
                 send_ms (after the handshake), big=N (one send of N bytes after the handshake), silent=1 (accept
                 TCP, never answer the handshake); events hs (cipher, sni, peer), hsfail, data, close (Plan 08b)
      https      port, secs, cert, key, reply: the http mode over TLS
+     mqttrelay  port, secs, to (the broker's port on 127.0.0.1: mosquitto in WSL, through localhost forwarding),
+                cut=DIR:TYPE:N (on the first connection, close both sides instead of forwarding the Nth packet of TYPE
+                going DIR, up = board to broker, down = broker to board; e.g. up:PUBREL:1), hold=1 (after the cut,
+                refuse new connections for hold_ms, default 0); events pkt (dir, type, len, conn), cut, accept, close (Plan 09)
 """
 import json
 import socket
@@ -253,6 +257,105 @@ def https(args):
             pass
 
 
+MQTT_TYPES = ['', 'CONNECT', 'CONNACK', 'PUBLISH', 'PUBACK', 'PUBREC', 'PUBREL', 'PUBCOMP', 'SUBSCRIBE', 'SUBACK',
+              'UNSUBSCRIBE', 'UNSUBACK', 'PINGREQ', 'PINGRESP', 'DISCONNECT']
+
+
+def mqtt_split(buf):
+    """Whole MQTT packets at the front of buf: ([packet], rest)."""
+    pkts = []
+    while len(buf) >= 2:
+        n, mul, i = 0, 1, 1
+        while i < len(buf) and i <= 4:
+            n += (buf[i] & 0x7F) * mul
+            mul *= 128
+            i += 1
+            if not buf[i - 1] & 0x80:
+                break
+        else:
+            break
+        if buf[i - 1] & 0x80 or len(buf) < i + n:
+            break
+        pkts.append(buf[:i + n])
+        buf = buf[i + n:]
+    return pkts, buf
+
+
+def mqtt_pipe(src, dst, way, conn, state):
+    buf, counts = b'', {}
+    while not state['closed']:
+        try:
+            d = src.recv(65536)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        if not d:
+            break
+        pkts, buf = mqtt_split(buf + d)
+        for p in pkts:
+            kind = MQTT_TYPES[p[0] >> 4]
+            counts[kind] = counts.get(kind, 0) + 1
+            info = {'dir': way, 'type': kind, 'len': len(p), 'conn': conn}
+            out(ev='pkt', **info, hex=p[:48].hex())
+            if conn == 0 and state['cut'] == (way, kind, counts[kind]):
+                out(ev='cut', **info)
+                state['closed'] = True
+                state['cut_at'] = time.time()
+                break
+            try:
+                dst.sendall(p)
+            except OSError:
+                state['closed'] = True
+                break
+    state['closed'] = True
+    for x in (src, dst):
+        try:
+            x.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        x.close()
+
+
+def mqttrelay(args):
+    cut = args.get('cut')
+    cut = (cut.split(':')[0], cut.split(':')[1], int(cut.split(':')[2])) if cut else None
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(('0.0.0.0', int(args['port'])))
+    s.listen(4)
+    s.settimeout(0.2)
+    out(ev='listen')
+    conn = 0
+    states = []
+    while time.time() - T0 < float(args.get('secs', 20)):
+        try:
+            c, a = s.accept()
+        except socket.timeout:
+            continue
+        hold = float(args.get('hold_ms', 0)) / 1000
+        if any(st.get('cut_at') and time.time() - st['cut_at'] < hold for st in states):
+            out(ev='refused', peer=a[0])
+            c.close()
+            continue
+        try:
+            b = socket.create_connection(('127.0.0.1', int(args['to'])), 3)
+        except OSError as e:
+            out(ev='nobroker', err=str(e))
+            c.close()
+            continue
+        for x in (c, b):
+            x.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            x.settimeout(0.2)
+        st = {'closed': False, 'cut': cut}
+        states.append(st)
+        out(ev='accept', peer=a[0], conn=conn)
+        threading.Thread(target=mqtt_pipe, args=(c, b, 'up', conn, st), daemon=True).start()
+        threading.Thread(target=mqtt_pipe, args=(b, c, 'down', conn, st), daemon=True).start()
+        conn += 1
+    time.sleep(0.2)
+
+
 def mcast(args):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(args['iface']))
@@ -288,4 +391,4 @@ if __name__ == '__main__':
     mode = sys.argv[1]
     a = dict(x.split('=', 1) for x in sys.argv[2:])
     {'tcpserver': tcpserver, 'udp': udp, 'http': http, 'mcast': mcast, 'stuckpair': stuckpair, 'tlsserver': tlsserver,
-     'https': https}[mode](a)
+     'https': https, 'mqttrelay': mqttrelay}[mode](a)

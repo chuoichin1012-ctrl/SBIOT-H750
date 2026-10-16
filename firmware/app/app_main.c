@@ -10,6 +10,8 @@
 #include "heap_newlib.h"
 #include "board_rng.h"
 #include "cfgmodel.h"
+#include "lte.h"
+#include "lte_uart.h"
 #include "netmgr.h"
 #include "serial.h"
 #include "uart_drv.h"
@@ -84,6 +86,7 @@ static void net_start(const cfg_env_t *env)
     if (board_rng_init())
         blog("app: RNG FAILED\r\n");
     netmgr_init(&nc, mac);
+    lte_start(&nc);  // Plan 10: UART3 is netmgr/lte's (spec §4)
 }
 
 static const char *ip_str(uint32_t a, char *buf)
@@ -265,6 +268,18 @@ static void init_task(void *arg)
         case 'o':
             bench_ota_report();
             break;
+        case 'M': {  // bench: UART3 to the modem: the DMA's write position and the last bytes received (Plan 10)
+            uint32_t wr = lte_uart_wr();
+            const uint8_t *r = lte_uart_ring();
+            char hex[3 * 24 + 1];
+            size_t o = 0;
+            for (uint32_t i = wr >= 24 ? wr - 24 : 0; i < wr && o + 3 < sizeof hex; i++)
+                o += (size_t)snprintf(hex + o, sizeof hex - o, "%02x ", r[i % LTE_UART_RING]);
+            hex[o] = '\0';
+            blog("app: uart3 rx %lu bytes, errors %lu, PD9 %d, ISR %08lx, last: %s\r\n", (unsigned long)wr,
+                 (unsigned long)lte_uart_errors(), (int)((GPIOD->IDR >> 9) & 1u), (unsigned long)USART3->ISR, hex);
+            break;
+        }
         case 'S': {  // bench: the store's state
             store_edge_pin_t p;
             store_edge_pin(&p);

@@ -426,7 +426,9 @@ static void test_queues(void)
     cmux_t m;
     open_all(&m);
     static uint8_t big[CMUX_DLC1_Q + 1];
-    CHECK(cmux_send(&m, 1, big, CMUX_DLC1_Q) == CMUX_DLC1_Q && cmux_send(&m, 1, big, 1) == 0, "DLC1: 4 KB, then no room");
+    CHECK(cmux_room(&m, 1) == CMUX_DLC1_Q && cmux_room(&m, 0) == 0, "room: DLC1 empty, none on DLC0");
+    CHECK(cmux_send(&m, 1, big, CMUX_DLC1_Q) == CMUX_DLC1_Q && cmux_send(&m, 1, big, 1) == 0 && cmux_room(&m, 1) == 0,
+          "DLC1: 4 KB, then no room");
     CHECK(cmux_send(&m, 2, big, CMUX_DLC2_Q + 1) == 0 && cmux_send(&m, 2, big, CMUX_DLC2_Q) == CMUX_DLC2_Q, "DLC2: 512 B, all or nothing");
     cmux_input(&m, (const uint8_t *)"", 0, 5000);
     CHECK(cmux_last_rx_ms(&m) == 20, "the last frame's time, not the last call's (%u)", (unsigned)cmux_last_rx_ms(&m));

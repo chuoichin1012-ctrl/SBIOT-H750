@@ -342,6 +342,11 @@ size_t cmux_send(cmux_t *m, int dlc, const uint8_t *p, size_t n)
     return took;
 }
 
+size_t cmux_room(const cmux_t *m, int dlc)
+{
+    return dlc >= 1 && dlc < CMUX_DLCS ? m->q[dlc].size - m->q[dlc].len : 0;
+}
+
 size_t cmux_tx_next(cmux_t *m, uint8_t *out, size_t max)
 {
     if (m->ctrl_len) {

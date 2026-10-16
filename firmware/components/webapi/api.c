@@ -7,6 +7,7 @@
 #include "heap_newlib.h"
 #include "io_core.h"
 #include "iomgr.h"
+#include "lte.h"
 #include "arena.h"
 #include "bridge.h"
 #include "edge_core.h"
@@ -100,6 +101,15 @@ static void add_ip(cJSON *o, const char *k, uint32_t a)
     cJSON_AddStringToObject(o, k, b);
 }
 
+/** As add_ip, but "" for none (the cell's fields, which the UI shows as "—"). */
+static void add_ip_or_empty(cJSON *o, const char *k, uint32_t a)
+{
+    if (a)
+        add_ip(o, k, a);
+    else
+        cJSON_AddStringToObject(o, k, "");
+}
+
 /** Appends item to arr, or frees it when it cannot be attached (arr or a key missing for lack of memory, Plan 09c). */
 static void push(cJSON *arr, cJSON *item)
 {
@@ -133,12 +143,14 @@ static void status_get(struct mg_connection *c)
     char t[20], mac[18];
     sysmgr_display_time(t);
     snprintf(mac, sizeof mac, "%02X:%02X:%02X:%02X:%02X:%02X", ns.mac[0], ns.mac[1], ns.mac[2], ns.mac[3], ns.mac[4], ns.mac[5]);
+    lte_info_t li;
+    lte_info(&li);
     cJSON *o = cJSON_CreateObject();
     cJSON *sys = cJSON_AddObjectToObject(o, "system");
     cJSON_AddNumberToObject(sys, "uptime", sysmgr_uptime_s());
     cJSON_AddStringToObject(sys, "os", "FreeRTOS " tskKERNEL_VERSION_NUMBER " + lwIP");
     cJSON_AddStringToObject(sys, "mac", mac);
-    cJSON_AddStringToObject(sys, "imei", "");
+    cJSON_AddStringToObject(sys, "imei", li.imei);
     cJSON_AddStringToObject(sys, "sn", sysmgr_serial());
     cJSON_AddStringToObject(sys, "activeNet", ns.bound && ns.eth.up ? "ETH" : "NONE");
     cJSON_AddStringToObject(sys, "time", t);  // 2020-01-01 plus the uptime while the clock is not set (spec §10.4)
@@ -155,14 +167,25 @@ static void status_get(struct mg_connection *c)
     add_ip(eth, "gateway", ns.gw);
     add_ip(eth, "dns1", ns.dns1);
     add_ip(eth, "dns2", ns.dns2);
-    cJSON *cell = cJSON_AddObjectToObject(o, "cell");  // LTE: Plan 10
-    cJSON_AddStringToObject(cell, "iccid", "");
-    cJSON_AddStringToObject(cell, "ip", "");
-    cJSON_AddStringToObject(cell, "dns1", "");
-    cJSON_AddStringToObject(cell, "dns2", "");
-    cJSON_AddNumberToObject(cell, "signal", 99);
-    cJSON_AddStringToObject(cell, "netType", "");
-    cJSON_AddStringToObject(cell, "state", "disconnected");
+    cJSON *cell = cJSON_AddObjectToObject(o, "cell");  // LTE (Plan 10 ruling 8)
+    cJSON_AddStringToObject(cell, "iccid", li.iccid);
+    add_ip_or_empty(cell, "ip", li.ip);
+    add_ip_or_empty(cell, "dns1", li.dns1);
+    add_ip_or_empty(cell, "dns2", li.dns2);
+    cJSON_AddNumberToObject(cell, "signal", li.csq);
+    cJSON_AddStringToObject(cell, "netType", li.net_type);
+    cJSON_AddStringToObject(cell, "state", li.state);
+    cJSON_AddStringToObject(cell, "modem", li.modem);
+    cJSON_AddStringToObject(cell, "mux", li.mux);
+    cJSON_AddStringToObject(cell, "sim", li.sim);
+    cJSON_AddStringToObject(cell, "firmware", li.fw);
+    cJSON_AddNumberToObject(cell, "readyMs", li.ready_ms);
+    cJSON *cc = cJSON_AddObjectToObject(cell, "counters");
+    cJSON_AddNumberToObject(cc, "overrun", li.overrun);
+    cJSON_AddNumberToObject(cc, "badFcs", li.bad_fcs);
+    cJSON_AddNumberToObject(cc, "pppInDrop", li.ppp_in_drop);
+    cJSON_AddNumberToObject(cc, "pppOutDrop", li.ppp_out_drop);
+    cJSON_AddNumberToObject(cc, "uartErrors", li.uart_errors);
 
     cJSON *ports = cJSON_AddArrayToObject(o, "ports");  // the bridge (the state): Plan 08
     for (int p = 1; p <= store_env()->uart_count; p++) {

@@ -39,7 +39,8 @@ ITCM = (0x00000400, 0x00010000)
 AXI = (0x24000000, 0x24080000)
 SRAM1 = (0x30000000, 0x30020000)
 # What a DMA engine touches, plus lwIP's MEM heap: SRAM1, non-cacheable (spec §5.4, §5.6).
-APP_SRAM1 = ['lwip_ram_heap', 'DMARxDscrTab', 'DMATxDscrTab', 's_eth_rx_bufs', 's_eth_tx_bufs', 's_uart_ring', 's_uart_txbuf']
+APP_SRAM1 = ['lwip_ram_heap', 'DMARxDscrTab', 'DMATxDscrTab', 's_eth_rx_bufs', 's_eth_tx_bufs', 's_uart_ring', 's_uart_txbuf',
+             's_lte_ring', 's_lte_tx']  # UART3 to the modem (Plan 10)
 # The bridges' serial -> network queues and bufferOffline: SRAM2+3 (spec §5.3, Plan 08a).
 SRAM23 = (0x30020000, 0x30048000)
 APP_SRAM23 = ['s_mb_store', 's_ob_mem']  # and MQTT's outbox (Plan 09)
@@ -52,7 +53,8 @@ MQTT_CALLERS = {'mqttgw_start', 'mqtt_task', 'dial', 'publish', 'next_id', 'ms_r
 # newlib's close/fcntl on an lwIP socket would leak it (LWIP_POSIX_SOCKETS_IO_NAMES 0, Plan 08a).
 APP_NO_LIBC_IO = ['close', 'fcntl']  # _close is syscalls.c's stub, always there
 # The JSON arena, the Edge and certificate body and the web stack: static, in AXI (spec §5.3, Plan 06b).
-APP_AXI = ['s_web_stack', 's_bridge_stack', 's_heap']  # bridge[n] (Plan 08a), the heap (spec §5.5)
+APP_AXI = ['s_web_stack', 's_bridge_stack', 's_heap',  # bridge[n] (Plan 08a), the heap (spec §5.5)
+           's_mux', 's_at_out_mem', 's_at_in_mem', 's_ppp_out_mem']  # CMUX and the LTE streams (Plan 10)
 # Gone for good (Plan 09c): the static JSON arena and the 48 KB Edge body.
 APP_ABSENT = ['s_web_arena', 's_edge_body']
 HEAP_BYTES = 352 * 1024

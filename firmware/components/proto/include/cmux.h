@@ -89,6 +89,8 @@ void cmux_input(cmux_t *m, const uint8_t *p, size_t n, uint32_t now_ms);
 void cmux_tick(cmux_t *m, uint32_t now_ms);   // T1 resends, N2
 /** n or 0: all of it into the DLC's queue, or nothing (DLC1 counts out_drop). */
 size_t cmux_send(cmux_t *m, int dlc, const uint8_t *p, size_t n);
+/** The free bytes in a data DLC's queue (0 for DLC0). */
+size_t cmux_room(const cmux_t *m, int dlc);
 /** The next whole frame to send, 0 for none: DLC0 first, then DLC1 and DLC2 in turn, when not stopped. */
 size_t cmux_tx_next(cmux_t *m, uint8_t *out, size_t max);
 void cmux_close(cmux_t *m);  // CLD on DLC0

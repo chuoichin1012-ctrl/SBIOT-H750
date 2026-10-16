@@ -35,7 +35,7 @@ const eth: FieldDef[] = [
 ];
 
 const lteDnsAuto = (v: Values) => Number(v.cellDnsMode) !== 1;
-/** Quectel EC600U (LTE Cat 1, single SIM) over PPP. */
+/** Quectel EC600G-EU (LTE Cat 1, single SIM) over PPP (Plan 10). */
 const lte: FieldDef[] = ([
   { id: 'apn', label: 'APN', kind: 'text', maxLength: 30, help: 'From your carrier. Leave empty to use the carrier default.' },
   { id: 'apnAuth', label: 'Authentication', kind: 'select', options: [[0, 'None'], [1, 'PAP'], [2, 'CHAP'], [3, 'PAP or CHAP (automatic)']] },
@@ -73,7 +73,7 @@ export function NetworkPage(_: { path?: string }) {
       </Notice>
       <Panel><Fields defs={priority} {...props} /></Panel>
       <Panel title="Ethernet"><Fields defs={eth} {...props} /></Panel>
-      <Panel title="Cellular (EC600U LTE)">
+      <Panel title="Cellular (EC600G-EU LTE)">
         {lteUsed(f.values) ? <Fields defs={lte} {...props} /> : <p class="py-2 text-muted">Cellular is off while the priority is Ethernet only.</p>}
       </Panel>
       <SaveBar

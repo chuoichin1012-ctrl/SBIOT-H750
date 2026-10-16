@@ -115,7 +115,7 @@ set(APP_OWN
   ${BOARD}/board_io.c ${BOARD}/now_us.c ${BOARD}/tick64.c ${BOARD}/wdog.c ${BOARD}/blog.c ${BOARD}/crc32.c
   ${BOARD}/syscalls.c ${BOARD}/spi_nor.c ${OTA}/sha256.c ${OTA}/ota_image.c ${OTA}/ota_app.c ${OTA}/bind.c
   app/store_port.c ${STORE}/store.c ${STORE}/fal_nor.c ${CMAKE_SOURCE_DIR}/components/syslog/syslog.c ${CFGM}/cfgmodel.c ${PROTO}/ipacl.c ${PROTO}/jsonscan.c
-  ${BOARD}/board_rng.c ${BOARD}/rng_core.c ${NET}/ip101.c ${NET}/netcfg.c ${NET}/eth_drv.c ${NET}/netmgr.c app/fdset_check.c
+  ${BOARD}/board_rng.c ${BOARD}/rng_core.c ${NET}/ip101.c ${NET}/netcfg.c ${NET}/eth_drv.c ${NET}/netmgr.c ${NET}/lte.c ${NET}/lte_uart.c ${NET}/lte_power.c ${PROTO}/cmux.c ${PROTO}/at_parse.c app/fdset_check.c
   ${SYS}/clock.c ${SYS}/sysmgr.c ${WEB}/web_core.c ${WEB}/web.c ${WEB}/api.c ${WEB}/console.c ${WEB}/mg_port.c
   ${CMAKE_SOURCE_DIR}/components/arena/arena.c
   ${SER}/serial_frame.c ${SER}/uart_drv.c ${SER}/serial.c
@@ -129,6 +129,9 @@ endif()
 set(LWIP ${CMAKE_SOURCE_DIR}/third_party/lwip)
 file(GLOB LWIP_SRC ${LWIP}/src/core/*.c ${LWIP}/src/core/ipv4/*.c ${LWIP}/src/api/*.c)
 list(APPEND LWIP_SRC ${LWIP}/src/netif/ethernet.c ${LWIP}/contrib/ports/freertos/sys_arch.c ${LWIP}/src/apps/sntp/sntp.c)
+# PPPoS (Plan 10): every file of src/netif/ppp; the ones lwipopts.h turns off compile to nothing.
+file(GLOB LWIP_PPP ${LWIP}/src/netif/ppp/*.c ${LWIP}/src/netif/ppp/polarssl/*.c)
+list(APPEND LWIP_SRC ${LWIP_PPP})
 # MQTT (Plan 09): coreMQTT 2.3.1 with the SBIOT patch (third_party/coremqtt/README.md).
 set(CMQTT ${CMAKE_SOURCE_DIR}/third_party/coremqtt/source)
 set(CMQTT_SRC ${CMQTT}/core_mqtt.c ${CMQTT}/core_mqtt_serializer.c ${CMQTT}/core_mqtt_state.c)

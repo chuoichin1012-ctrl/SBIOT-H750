@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "arena.h"
+#include "heap_meter.h"
 #include "cfgmodel.h"
 
 static const cfg_env_t ENV = {.uart_count = 2, .do_count = 2, .di_count = 2, .ai_count = 2};
@@ -215,8 +215,6 @@ static void test_random(void)
 
 // ---- Limits and the arena -------------------------------------------------------------
 
-static _Alignas(8) char region[60 * 1024];  // the gate: 61 440 bytes in total, TLSF overhead included
-static arena_t s_arena;
 
 /** The largest model this firmware accepts: 64 devices, 100 points, every text field at its limit. */
 static void largest_model(char *b, size_t cap)
@@ -247,13 +245,12 @@ static void test_limits(void)
     char err[200];
     sbuf_t out = {0};
 
-    arena_begin(&s_arena);
+    meter_peak_restart();
     cfg_result_t r = cfg_edge_text(&ENV, b, strlen(b), true, CFG_EDGE_MAX, sink, &out, err, sizeof err);
-    size_t peak = s_arena.peak;
-    arena_end(&s_arena);
+    size_t peak = meter_peak_restart();
     CHECK(r == CFG_OK, "largest model rejected (%d: %s)", r, err);
     CHECK(out.n <= CFG_EDGE_MAX, "largest model normalises to %zu bytes", out.n);
-    printf("  largest Edge model: %zu bytes in, %zu bytes out, live-block peak %zu bytes in a 61 440-byte pool\n", strlen(b), out.n, peak);
+    printf("  largest Edge model: %zu bytes in, %zu bytes out, live-block peak %zu bytes within 61 440\n", strlen(b), out.n, peak);
 
     // The normalised text over the limit: 413, and nothing is valid to keep.
     out.n = 0;
@@ -262,7 +259,7 @@ static void test_limits(void)
     free(out.p);
 }
 
-/** Unknown keys are skipped without being parsed, and a full arena is reported, never half a model. */
+/** Unknown keys are skipped without being parsed, and a heap that runs out is reported, never half a model. */
 static void test_memory_edges(void)
 {
     static char b[49152];
@@ -271,24 +268,19 @@ static void test_memory_edges(void)
     while (o < 40000) o += (size_t)snprintf(b + o, sizeof b - o, "1,");
     snprintf(b + o, sizeof b - o, "1],\"nodes\":[{\"name\":\"p\"}]}]");
     sbuf_t out = {0};
-    arena_begin(&s_arena);
+    meter_peak_restart();
     cfg_result_t r = cfg_edge_text(&ENV, b, strlen(b), true, CFG_EDGE_MAX, sink, &out, err, sizeof err);
-    size_t peak = s_arena.peak;
-    arena_end(&s_arena);
+    size_t peak = meter_peak_restart();
     CHECK(r == CFG_OK, "a 40 KB unknown key must be skipped (%d: %s)", r, err);
-    CHECK(peak < 20 * 1024, "the unknown key was parsed: arena peak %zu bytes", peak);
+    CHECK(peak < 20 * 1024, "the unknown key was parsed: heap peak %zu bytes", peak);
     free(out.p);
 
-    static _Alignas(8) char tiny[12 * 1024];
-    arena_t small;
-    arena_init(&small, tiny, sizeof tiny);
     largest_model(b, sizeof b);
     out = (sbuf_t){0};
-    arena_begin(&small);
+    s_meter_limit = s_meter_live + 12 * 1024;  // 12 KB more for cJSON, then it runs out
     r = cfg_edge_text(&ENV, b, strlen(b), true, CFG_EDGE_MAX, sink, &out, err, sizeof err);
-    arena_end(&small);
-    arena_init(&s_arena, region, sizeof region);  // json_free must keep recognising the main arena
-    CHECK(r == CFG_NO_MEMORY && strcmp(err, "Out of memory.") == 0, "a full arena: %d %s", r, err);
+    s_meter_limit = 60 * 1024;
+    CHECK(r == CFG_NO_MEMORY && strcmp(err, "Out of memory.") == 0, "a heap that runs out: %d %s", r, err);
     free(out.p);
 }
 
@@ -333,8 +325,7 @@ int main(void)
 {
     test_cases();
     test_random();
-    arena_init(&s_arena, region, sizeof region);
-    json_alloc_install();
+    meter_install(60 * 1024);
     test_limits();
     test_abort();
     test_bad_text_in_skipped_member();

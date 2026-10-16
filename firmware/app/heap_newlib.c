@@ -7,7 +7,7 @@
 #include "heap_wrap.h"
 #include "heap_newlib.h"
 
-#define HEAP_SIZE (256u * 1024u)
+#define HEAP_SIZE (352u * 1024u)  // 256 KB, plus 96 KB of the AXI the arena and the Edge buffer left (Plan 09c)
 
 static uint8_t s_heap[HEAP_SIZE] __attribute__((section(".axi_bss"), aligned(8)));
 
@@ -19,6 +19,12 @@ void heap_init(void)
 
 size_t heap_free_now(void) { return xPortGetFreeHeapSize(); }
 size_t heap_free_min(void) { return xPortGetMinimumEverFreeHeapSize(); }
+size_t heap_largest_free(void)
+{
+    HeapStats_t st;
+    vPortGetHeapStats(&st);
+    return st.xSizeOfLargestFreeBlockInBytes;
+}
 
 void *malloc(size_t n) { return sb_malloc(n); }
 void free(void *p) { sb_free(p); }

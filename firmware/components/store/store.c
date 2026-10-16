@@ -8,6 +8,7 @@
 #include "store_port.h"
 
 #define MAX_CONFIGS 16
+#define KV_VALUE_MAX (64u * 1024u)  // above every value stored: configs 10 KB, records 8 KB, certificates 12 KB
 #define MAX_LISTENERS 12
 #define MAX_PINS 4
 
@@ -110,9 +111,10 @@ static bool kvdb_open(fdb_kvdb_t db, const char *part, uint32_t sector, struct f
 static char *kv_read(fdb_kvdb_t db, const char *key, size_t *len_out)
 {
     struct fdb_kv kv;
-    if (!fdb_kv_get_obj(db, key, &kv))
+    // A length no value of ours has (a header read wrong, Plan 09c): unreadable, never a wrapped malloc size.
+    if (!fdb_kv_get_obj(db, key, &kv) || kv.value_len > KV_VALUE_MAX)
         return NULL;
-    char *buf = malloc(kv.value_len + 1);
+    char *buf = malloc((size_t)kv.value_len + 1);
     if (!buf)
         return NULL;
     struct fdb_blob blob;
@@ -347,6 +349,14 @@ typedef struct {
     bool failed;
 } edge_writer_t;
 
+// The one edgeDevices session (Plan 09c ruling 2), see store_edge_begin.
+static struct {
+    bool open, wfail;   // a session; a record write failed in it
+    size_t len, got;    // announced, received
+    edge_writer_t w;
+    js_stream_t js;
+} s_es;
+
 static bool flush(edge_writer_t *w)
 {
     char key[FDB_KV_NAME_MAX];
@@ -453,6 +463,7 @@ void store_deinit(void)
     s_used = s_ncache = s_nlisteners = 0;
     s_gen = s_count = 0;
     memset(s_pins, 0, sizeof s_pins);
+    memset(&s_es, 0, sizeof s_es);  // a session does not outlive the mount (a reboot clears RAM; host tests reboot this way)
     UNLOCK();
 }
 
@@ -583,10 +594,21 @@ store_err_t store_set_text(const char *name, const char *text, size_t len, char 
 
 // ---- edgeDevices -------------------------------------------------------------------------------
 
-store_err_t store_edge_save(const char *text, size_t len, char *err, size_t errlen)
+// The one edgeDevices session (Plan 09c ruling 2): its records are written as the body arrives, under a
+// streaming syntax check, and only a whole, valid array is committed.
+store_err_t store_edge_begin(size_t len, char *err, size_t errlen)
 {
     err[0] = '\0';
+    if (len > CFG_EDGE_MAX) {
+        snprintf(err, errlen, "The Edge model is too large.");
+        return STORE_ETOOLARGE;
+    }
     LOCK();
+    if (s_es.open) {
+        UNLOCK();
+        snprintf(err, errlen, "Another Edge save is in progress.");
+        return STORE_EBUSY;
+    }
     if (!edge_usable() || s_resetting) {
         UNLOCK();
         snprintf(err, errlen, s_resetting ? "A factory reset is in progress; the gateway restarts."
@@ -594,14 +616,67 @@ store_err_t store_edge_save(const char *text, size_t len, char *err, size_t errl
         return STORE_EFLASH;
     }
     // Above the committed generation and above every record in flash, so this save never has to
-    // delete anything before it is validated (records of a lost or unreadable manifest survive it).
+    // delete anything before it is checked (records of a lost or unreadable manifest survive it).
     uint32_t top = highest_record_gen();
-    edge_writer_t w = {.gen = (top > s_gen ? top : s_gen) + 1};
-    // The body as sent, cut into 8 KB records by byte (Plan 09b ruling 3); the rules are the loader's.
-    store_err_t chk = body_check(EDGE, text, len, CFG_EDGE_MAX, err, errlen);
-    cfg_result_t r = chk == STORE_OK ? CFG_OK : chk == STORE_ETOOLARGE ? CFG_TOO_LARGE : CFG_INVALID;
-    if (r == CFG_OK && (!emit(&w, text, len) || (w.fill && !flush(&w))))
+    memset(&s_es, 0, sizeof s_es);
+    s_es.open = true;
+    s_es.len = len;
+    s_es.w.gen = (top > s_gen ? top : s_gen) + 1;
+    js_stream_init(&s_es.js, JS_INVALID);  // the root type is checked at the commit, for its own message
+    UNLOCK();
+    return STORE_OK;
+}
+
+store_err_t store_edge_write(const void *data, size_t n)
+{
+    LOCK();
+    if (!s_es.open) {
+        UNLOCK();
+        return STORE_EINVALID;
+    }
+    if (n > s_es.len - s_es.got)
+        n = s_es.len - s_es.got;  // past the announced length: ignored
+    s_es.got += n;
+    // Once the text can no longer be valid, or a write failed, nothing more is written; the commit refuses it.
+    if (js_stream_feed(&s_es.js, data, n) && !s_es.wfail && !s_resetting && !emit(&s_es.w, data, n))
+        s_es.wfail = true;
+    UNLOCK();
+    return STORE_OK;
+}
+
+void store_edge_abort(void)
+{
+    LOCK();
+    if (s_es.open && edge_usable())  // a locked flash or an unknown commit: delete nothing (spec §9.1)
+        delete_records(s_es.w.gen, false);
+    s_es.open = false;
+    UNLOCK();
+}
+
+store_err_t store_edge_commit(char *err, size_t errlen)
+{
+    err[0] = '\0';
+    LOCK();
+    if (!s_es.open) {
+        UNLOCK();
+        snprintf(err, errlen, "No Edge save is in progress.");
+        return STORE_EINVALID;
+    }
+    s_es.open = false;
+    edge_writer_t w = s_es.w;
+    cfg_result_t r = CFG_OK;
+    if (s_es.got != s_es.len) {
+        snprintf(err, errlen, "The Edge model was not received whole.");
+        r = CFG_INVALID;
+    } else if (!js_stream_end(&s_es.js)) {
+        snprintf(err, errlen, "The request body is not valid JSON.");
+        r = CFG_INVALID;
+    } else if (s_es.js.root != JS_ARRAY) {
+        snprintf(err, errlen, "The settings must be a JSON array.");
+        r = CFG_INVALID;
+    } else if (s_es.wfail || s_resetting || (w.fill && !flush(&w))) {
         r = CFG_ABORTED;
+    }
     // A flash write FlashDB did not report (a garbage collection's sector status) locked the FAL: never
     // commit after it; the remount below decides, and writes nothing more this boot.
     if (r == CFG_OK && fal_nor_read_failed()) {
@@ -654,6 +729,15 @@ store_err_t store_edge_save(const char *text, size_t len, char *err, size_t errl
     store_port_log("edgeDevices saved: generation %lu, %lu records", (unsigned long)w.gen, (unsigned long)w.idx);
     notify(EDGE);
     return STORE_OK;
+}
+
+store_err_t store_edge_save(const char *text, size_t len, char *err, size_t errlen)
+{
+    store_err_t e = store_edge_begin(len, err, errlen);
+    if (e != STORE_OK)
+        return e;
+    store_edge_write(text, len);
+    return store_edge_commit(err, errlen);
 }
 
 void store_edge_pin(store_edge_pin_t *p)

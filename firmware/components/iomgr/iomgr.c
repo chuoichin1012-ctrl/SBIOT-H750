@@ -226,6 +226,13 @@ bool iomgr_ai_ok(int i)
     return v;
 }
 
+/** Appends item to arr, or frees it when it cannot be attached (out of memory, Plan 09c). */
+static void push(cJSON *arr, cJSON *item)
+{
+    if (!cJSON_AddItemToArray(arr, item))
+        cJSON_Delete(item);
+}
+
 cJSON *iomgr_state_json(void)
 {
     bool d[IO_DO], di[IO_DI];
@@ -241,13 +248,13 @@ cJSON *iomgr_state_json(void)
     cJSON *o = cJSON_CreateObject();
     cJSON *x = cJSON_AddArrayToObject(o, "do");
     for (int i = 0; i < IO_DO; i++)
-        cJSON_AddItemToArray(x, cJSON_CreateBool(d[i]));
+        push(x, cJSON_CreateBool(d[i]));
     x = cJSON_AddArrayToObject(o, "di");
     for (int i = 0; i < IO_DI; i++)
-        cJSON_AddItemToArray(x, cJSON_CreateBool(di[i]));
+        push(x, cJSON_CreateBool(di[i]));
     x = cJSON_AddArrayToObject(o, "ai");
     for (int i = 0; i < ADC_CH; i++)
-        cJSON_AddItemToArray(x, cJSON_CreateNumber(ai[i]));
+        push(x, cJSON_CreateNumber(ai[i]));
     cJSON_AddArrayToObject(o, "ao");  // no analog outputs on this hardware
     return o;
 }

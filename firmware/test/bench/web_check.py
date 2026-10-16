@@ -42,18 +42,39 @@ def check(ok, what):
         failures.append(what)
 
 
-def req(method, path, body=None, auth=AUTH, headers=None, timeout=20):
+def req(method, path, body=None, auth=AUTH, headers=None, timeout=20, sock=None):
     c = http.client.HTTPConnection(HOST, PORT, timeout=timeout)
-    h = dict(headers or {})
-    if auth:
-        h['Authorization'] = auth
-    if body is not None and 'Content-Type' not in h:
-        h['Content-Type'] = 'application/json'
-    c.request(method, path, body=body, headers=h)
-    r = c.getresponse()
-    data = r.read()
-    c.close()
+    c.sock = sock  # connected already (req_retry), or None: the request connects
+    try:
+        h = dict(headers or {})
+        if auth:
+            h['Authorization'] = auth
+        if body is not None and 'Content-Type' not in h:
+            h['Content-Type'] = 'application/json'
+        c.request(method, path, body=body, headers=h)
+        r = c.getresponse()
+        data = r.read()
+    finally:
+        c.close()
     return r.status, dict((k.lower(), v) for k, v in r.getheaders()), data
+
+
+RETRY_PAUSE = 2
+
+
+def req_retry(method, path, body=None, headers=None, timeout=20):
+    """req's status, and whether its connect was tried again: a connect that times out is tried once more,
+    RETRY_PAUSE s later (on this bench, WSL NAT, one in a few thousand does while the board answers the next).
+    A timeout once connected, sending or waiting for the reply, fails as in req."""
+    again = False
+    try:
+        sock = socket.create_connection((HOST, PORT), 5)
+    except (socket.timeout, TimeoutError):
+        again = True
+        time.sleep(RETRY_PAUSE)
+        sock = socket.create_connection((HOST, PORT), 5)
+    sock.settimeout(timeout)
+    return req(method, path, body=body, headers=headers, timeout=timeout, sock=sock)[0], again
 
 
 def get_json(path):
@@ -224,6 +245,80 @@ def case_configs():
 def log_since_start():
     s, _, d = req('GET', '/api/log')
     return d.decode(errors='replace').split('# Since the last start', 1)[-1] if s == 200 else ''
+
+
+def heap_free():
+    _, st = get_json('/api/status')
+    return st['system']['heapFree'] if st else -1
+
+
+def case_heap_loop(rounds=200):
+    """Plan 09c: every API endpoint, many times; the heap returns to its level (no forgotten free)."""
+    _, sysc = get_json('/api/config/system')
+    sysb = json.dumps(sysc, separators=(',', ':')).encode()
+    get_json('/api/status')
+    time.sleep(1)
+    before = heap_free()
+    wrong, blips = 0, 0
+
+    def st(method, path, body=None, headers=None):
+        nonlocal blips
+        s, again = req_retry(method, path, body=body, headers=headers)
+        blips += again
+        return s
+
+    for r in range(rounds):
+        got = [st('GET', '/api/status'), st('GET', '/api/io'), st('GET', '/api/device'),
+               st('POST', '/api/io', body=b'{"do":9,"value":true}'),        # refused: no DO10
+               st('POST', '/api/time', body=b'{"time":"not a date"}'),      # refused
+               st('POST', '/api/config/system', body=sysb),
+               st('POST', '/api/config/system', body=b'{"x":'),            # bad JSON
+               st('GET', '/api/config/port1'), st('GET', '/api/config/edgeDevices')]
+        want = [200, 200, 200, 400, 400, 200, 400, 200, 200]
+        if r % 10 == 0:  # the board closes an upload's connection itself: a TIME_WAIT each, so not every round
+            got.append(st('POST', '/api/cert?scope=mqtt&kind=ca', body=b'not a pem', headers={'Content-Type': 'application/octet-stream'}))
+            want.append(400)
+        wrong += got != want
+    time.sleep(2)
+    after = heap_free()
+    check(wrong == 0, 'every endpoint answered as it should, %d rounds (%d rounds otherwise; %d connects tried again)' % (rounds, wrong, blips))
+    check(before > 0 and abs(after - before) <= 2048, 'heap after %d rounds of every endpoint: %d -> %d bytes free' % (rounds, before, after))
+
+
+def case_edge_stream():
+    """Plan 09c: an edgeDevices body streams into the records; a client that goes away commits nothing."""
+    small = json.dumps(edge_model(2, 2)).encode()
+    s, _, _ = req('POST', '/api/config/edgeDevices', body=small)
+    big = json.dumps(edge_model(10, 10)).encode()
+    big = big[:-1] + b' ' * (40 * 1024 - len(big)) + b']'
+    head = ('POST /api/config/edgeDevices HTTP/1.1\r\nHost: x\r\nAuthorization: %s\r\nContent-Type: application/json\r\n'
+            'Content-Length: %d\r\n\r\n' % (AUTH, len(big))).encode()
+    a = socket.create_connection((HOST, PORT), 5)
+    a.sendall(head + big[:20000])
+    time.sleep(0.5)
+    a.close()  # gone halfway
+    time.sleep(1)
+    s2, _, now = req('GET', '/api/config/edgeDevices')
+    check(s == 200 and s2 == 200 and now == small, 'a client that closes halfway: the committed model is unchanged')
+    a = socket.create_connection((HOST, PORT), 5)
+    a.sendall(head + big[:20000])
+    time.sleep(0.3)
+    sb, _, _ = req('POST', '/api/config/edgeDevices', body=small)  # B, while A is open
+    a.sendall(big[20000:])
+    a.settimeout(10)
+    reply = b''
+    try:
+        while b'\r\n\r\n' not in reply:
+            d = a.recv(4096)
+            if not d:
+                break
+            reply += d
+    except OSError:
+        pass
+    a.close()
+    s3, _, now = req('GET', '/api/config/edgeDevices')
+    check(sb == 503 and reply.startswith(b'HTTP/1.1 200') and now == big, 'B gets 503 while A uploads; A still commits (%d, %r)' % (sb, reply[:20]))
+    req('POST', '/api/config/edgeDevices', body=b'[]')
 
 
 def case_plain():
@@ -477,6 +572,7 @@ def case_review(ws_port):
 
     # 5. Edge GETs that hold 4 generations: the fifth gets 503, not an empty 200; closing frees them.
     big = json.dumps(edge_model(10, 10)).encode()
+    big = big[:-1] + b" " * (17 * 1024 - len(big)) + b"]"  # stored as sent (Plan 09b): 3 records, so a slow GET stays pinned
     holders = []
     for i in range(4):
         req('POST', '/api/config/edgeDevices', body=big.replace(b'"p0"', b'"q%d"' % i), timeout=60)

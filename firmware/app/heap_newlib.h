@@ -5,3 +5,4 @@
 void heap_init(void);
 size_t heap_free_now(void);
 size_t heap_free_min(void);  // the lowest free size since the boot
+size_t heap_largest_free(void);  // the largest free block now (fragmentation, Plan 09c)

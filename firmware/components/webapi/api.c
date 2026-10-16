@@ -25,7 +25,6 @@
 #define MODEL "SBIOT-H750"
 #define HARDWARE "STM32H750VBT6"
 
-unsigned web_arena_peak(void);
 void console_buffer_use(unsigned *used, unsigned *size);
 
 void api_json(struct mg_connection *c, int status, cJSON *doc)
@@ -101,13 +100,20 @@ static void add_ip(cJSON *o, const char *k, uint32_t a)
     cJSON_AddStringToObject(o, k, b);
 }
 
+/** Appends item to arr, or frees it when it cannot be attached (arr or a key missing for lack of memory, Plan 09c). */
+static void push(cJSON *arr, cJSON *item)
+{
+    if (!cJSON_AddItemToArray(arr, item))
+        cJSON_Delete(item);
+}
+
 static void add_pool(cJSON *arr, const char *name, unsigned used, unsigned size)
 {
     cJSON *p = cJSON_CreateObject();
     cJSON_AddStringToObject(p, "name", name);
     cJSON_AddNumberToObject(p, "used", used);
     cJSON_AddNumberToObject(p, "size", size);
-    cJSON_AddItemToArray(arr, p);
+    push(arr, p);
 }
 
 // Whether a saved config enables its service: `enabled` is 1 (mqtt) or true (edge).
@@ -139,6 +145,7 @@ static void status_get(struct mg_connection *c)
     cJSON_AddBoolToObject(sys, "clockSet", sysmgr_clock_set());
     cJSON_AddNumberToObject(sys, "heapFree", heap_free_now());
     cJSON_AddNumberToObject(sys, "heapMin", heap_free_min());
+    cJSON_AddNumberToObject(sys, "heapLargest", heap_largest_free());  // the largest free block (Plan 09c)
     cJSON_AddNumberToObject(sys, "psramFree", 0);
     cJSON_AddNumberToObject(sys, "wdiMaxGapMs", wdog_max_gap_us() / 1000u);
 
@@ -167,7 +174,7 @@ static void status_get(struct mg_connection *c)
         cJSON_AddStringToObject(x, "state", st);
         cJSON_AddNumberToObject(x, "tx", sc.tx);
         cJSON_AddNumberToObject(x, "rx", sc.rx);
-        cJSON_AddItemToArray(ports, x);
+        push(ports, x);
     }
     cJSON *mq = cJSON_AddObjectToObject(o, "mqtt");  // Plan 09
     cJSON_AddBoolToObject(mq, "enabled", enabled("mqtt"));
@@ -185,7 +192,6 @@ static void status_get(struct mg_connection *c)
     cJSON *heap = cJSON_AddObjectToObject(mem, "heap");
     cJSON_AddNumberToObject(heap, "free", heap_free_now());
     cJSON_AddNumberToObject(heap, "min", heap_free_min());
-    cJSON_AddNumberToObject(mem, "arenaPeak", web_arena_peak());
     cJSON *pools = cJSON_AddArrayToObject(mem, "pools");
     add_pool(pools, "lwip_heap", ns.heap.max, ns.heap.size);
     add_pool(pools, "netconn", ns.netconn.max, ns.netconn.size);
@@ -228,7 +234,7 @@ static void status_get(struct mg_connection *c)
         cJSON_AddNumberToObject(x, "lineErrors", sc.line_errors);
         cJSON_AddNumberToObject(x, "t15Violations", sc.violations);
         cJSON_AddNumberToObject(x, "bridgeDropped", bridge_dropped(p));
-        cJSON_AddItemToArray(uart, x);
+        push(uart, x);
     }
     api_json(c, 200, o);
 }

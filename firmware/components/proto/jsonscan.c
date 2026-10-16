@@ -237,3 +237,219 @@ bool js_key_is(js_span_t key, const char *lit, bool nocase)
         lit++;
     }
 }
+
+// ---- streaming (Plan 09c) -------------------------------------------------------------------------------
+// The same grammar as the scanners above, one byte at a time, so a body can be checked as it arrives.
+
+enum {
+    S_VALUE,      // a value must start (whitespace first)
+    S_ARR_FIRST,  // just after '[': a value or ']'
+    S_OBJ_FIRST,  // just after '{': a key or '}'
+    S_KEY,        // after ',' in an object: a key
+    S_COLON,      // after a key: ':'
+    S_AFTER,      // after a value inside a container: ',' or its close
+    S_END,        // the root value is whole: whitespace only
+    S_STR,        // inside a string
+    S_ESC,        // after '\' in a string
+    S_HEX,        // in \uXXXX, s->sub digits read
+    S_UTF8,       // in a UTF-8 sequence, s->sub continuation bytes still to come
+    S_LIT,        // in true/false/null, s->sub letters matched
+    N_MINUS,      // number: after '-'
+    N_ZERO,       // a leading 0
+    N_INT,        // integer digits
+    N_DOT,        // after '.'
+    N_FRAC,       // fraction digits
+    N_EXP,        // after 'e'/'E'
+    N_EXP_SIGN,   // after the exponent's sign
+    N_EXP_DIG,    // exponent digits
+};
+
+void js_stream_init(js_stream_t *s, js_type_t want)
+{
+    memset(s, 0, sizeof *s);
+    s->state = S_VALUE;
+    s->want = want;
+}
+
+static bool is_ws(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+static bool number_ends(int st) { return st == N_ZERO || st == N_INT || st == N_FRAC || st == N_EXP_DIG; }
+
+static void value_done(js_stream_t *s) { s->state = s->depth ? S_AFTER : S_END; }
+
+/** A value starts with c (whitespace already skipped). */
+static bool value_start(js_stream_t *s, char c)
+{
+    js_type_t t;
+    switch (c) {
+    case '[':
+    case '{':
+        if (s->depth >= JS_MAX_DEPTH) return false;
+        s->stack[s->depth++] = (unsigned char)c;
+        s->state = c == '[' ? S_ARR_FIRST : S_OBJ_FIRST;
+        t = c == '[' ? JS_ARRAY : JS_OBJECT;
+        break;
+    case '"':
+        s->state = S_STR, s->key = false;
+        t = JS_STRING;
+        break;
+    case 't':
+    case 'f':
+    case 'n':
+        s->lit = c == 't' ? "true" : c == 'f' ? "false" : "null";
+        s->state = S_LIT, s->sub = 1;
+        t = c == 't' ? JS_TRUE : c == 'f' ? JS_FALSE : JS_NULL;
+        break;
+    case '-': s->state = N_MINUS, t = JS_NUMBER; break;
+    case '0': s->state = N_ZERO, t = JS_NUMBER; break;
+    default:
+        if (c < '1' || c > '9') return false;
+        s->state = N_INT, t = JS_NUMBER;
+    }
+    if (s->depth == (t == JS_ARRAY || t == JS_OBJECT ? 1 : 0)) s->root = t;  // the root value's own start
+    return true;
+}
+
+/** A container closes with c, or not. */
+static bool close_with(js_stream_t *s, char c)
+{
+    if (!s->depth || s->stack[s->depth - 1] != (c == ']' ? '[' : '{')) return false;
+    s->depth--;
+    value_done(s);
+    return true;
+}
+
+static bool step(js_stream_t *s, char ch)
+{
+    unsigned char c = (unsigned char)ch;
+    switch (s->state) {
+    case S_VALUE: return is_ws(ch) || value_start(s, ch);
+    case S_ARR_FIRST: return is_ws(ch) || (ch == ']' ? close_with(s, ch) : value_start(s, ch));
+    case S_OBJ_FIRST:
+        if (is_ws(ch)) return true;
+        if (ch == '}') return close_with(s, ch);
+        if (ch != '"') return false;
+        s->state = S_STR, s->key = true;
+        return true;
+    case S_KEY:
+        if (is_ws(ch)) return true;
+        if (ch != '"') return false;
+        s->state = S_STR, s->key = true;
+        return true;
+    case S_COLON:
+        if (is_ws(ch)) return true;
+        if (ch != ':') return false;
+        s->state = S_VALUE;
+        return true;
+    case S_AFTER:
+        if (is_ws(ch)) return true;
+        if (ch == ',') {
+            s->state = s->stack[s->depth - 1] == '{' ? S_KEY : S_VALUE;
+            return true;
+        }
+        return (ch == ']' || ch == '}') && close_with(s, ch);
+    case S_END: return is_ws(ch);
+    case S_STR:
+        if (s->high) {  // a high surrogate must be followed by \u and a low one, as cJSON requires
+            if (ch != '\\') return false;
+            s->state = S_ESC;
+            return true;
+        }
+        if (ch == '"') {
+            if (s->key) s->state = S_COLON;
+            else value_done(s);
+            return true;
+        }
+        if (c < 0x20) return false;
+        if (ch == '\\') {
+            s->state = S_ESC;
+            return true;
+        }
+        if (c >= 0x80) {  // RFC 3629, as utf8_len
+            if (c < 0xC2 || c > 0xF4) return false;
+            s->lead = c;
+            s->sub = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : 1;
+            s->state = S_UTF8;
+        }
+        return true;
+    case S_UTF8: {
+        if ((c & 0xC0) != 0x80) return false;
+        bool second = s->lead && (s->sub == (s->lead >= 0xF0 ? 3 : s->lead >= 0xE0 ? 2 : 1));
+        if (second && ((s->lead == 0xE0 && c < 0xA0) || (s->lead == 0xED && c > 0x9F) || (s->lead == 0xF0 && c < 0x90) ||
+                       (s->lead == 0xF4 && c > 0x8F)))
+            return false;  // overlong, an encoded surrogate, beyond U+10FFFF
+        if (--s->sub == 0) s->state = S_STR, s->lead = 0;
+        return true;
+    }
+    case S_ESC:
+        if (ch == 'u') {
+            s->state = S_HEX, s->sub = 0, s->u = 0;
+            return true;
+        }
+        if (s->high || !ch || !strchr("\"\\/bfnrt", ch)) return false;
+        s->state = S_STR;
+        return true;
+    case S_HEX: {
+        int h = hexval(ch);
+        if (h < 0) return false;
+        s->u = s->u << 4 | (unsigned long)h;
+        if (++s->sub < 4) return true;
+        bool lo = s->u >= 0xDC00 && s->u <= 0xDFFF, hi = s->u >= 0xD800 && s->u <= 0xDBFF;
+        if (s->high ? !lo : lo) return false;  // a low one alone, or a high one not followed by a low one
+        s->high = !s->high && hi;
+        s->state = S_STR;
+        return true;
+    }
+    case S_LIT:
+        if (ch != s->lit[s->sub]) return false;
+        if (!s->lit[++s->sub]) value_done(s);
+        return true;
+    default: {  // a number: a byte that does not extend it ends it, and is then read as what follows it
+        bool digit = ch >= '0' && ch <= '9';
+        switch (s->state) {
+        case N_MINUS:
+            if (ch == '0') return s->state = N_ZERO, true;
+            if (digit) return s->state = N_INT, true;
+            return false;
+        case N_INT:
+            if (digit) return true;
+            /* fall through */
+        case N_ZERO:
+            if (ch == '.') return s->state = N_DOT, true;
+            if (ch == 'e' || ch == 'E') return s->state = N_EXP, true;
+            break;
+        case N_DOT:
+            if (digit) return s->state = N_FRAC, true;
+            return false;
+        case N_FRAC:
+            if (digit) return true;
+            if (ch == 'e' || ch == 'E') return s->state = N_EXP, true;
+            break;
+        case N_EXP:
+            if (ch == '+' || ch == '-') return s->state = N_EXP_SIGN, true;
+            /* fall through */
+        case N_EXP_SIGN:
+            if (digit) return s->state = N_EXP_DIG, true;
+            return false;
+        case N_EXP_DIG:
+            if (digit) return true;
+            break;
+        }
+        if (!number_ends(s->state)) return false;
+        value_done(s);
+        return step(s, ch);
+    }
+    }
+}
+
+bool js_stream_feed(js_stream_t *s, const char *data, size_t n)
+{
+    for (size_t i = 0; i < n && !s->bad; i++)
+        if (!step(s, data[i])) s->bad = true;
+    return !s->bad;
+}
+
+bool js_stream_end(js_stream_t *s)
+{
+    if (!s->bad && number_ends(s->state) && !s->depth) value_done(s);  // a number at the root ends with the text
+    return !s->bad && s->state == S_END && (s->want == JS_INVALID || s->root == s->want);
+}

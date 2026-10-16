@@ -146,7 +146,7 @@ Mọi thao tác trên slot **xóa** theo sector 4 KB và **ghi** theo page 256 B
 |---|---|---|---|
 | ITCM | 64 KB | Code nóng chép từ QSPI lúc khởi động: kernel FreeRTOS, các ISR (ETH, USART, DMA, TIM), `memcpy`/`memset`, lõi bignum của mbedTLS | Section `.itcm_text` |
 | DTCM | 128 KB | MSP 4 KB, `.data`/`.bss` nhỏ, stack tĩnh của mọi task **trừ** `web` và `edge_tcpN` (khoảng 95 KB theo §6.1, kể cả `init`, timer và `cmux_rx`), TCB. Tổng DTCM ≤ 120 KB, kiểm bằng file map của linker | ETH và DMA1/2 không truy cập được vùng này. §5.4 bảo đảm không DMA nào đọc hay ghi trực tiếp ở đây |
-| AXI SRAM (D1) | 512 KB | **Tĩnh** (các section, tổng khoảng 193 KB): arena JSON 64 KB (§9.3), buffer văn bản Edge 48 KB (§9.3), cache văn bản cấu hình của `store` 20 KB cộng bộ đệm bản ghi Edge 8 KB, stack của `web` 8 KB, stack của `bridge[n]` 2 × 6 KB (Plan 08a), bảng topic, cấu hình và buffer tin nhận của MQTT khoảng 16,5 KB (Plan 09: DTCM chỉ giữ stack). **Heap** (`heap_5`, vùng heap duy nhất) **256 KB**, dự kiến dùng bên trong như sau: 3 phiên TLS khoảng 105 KB cộng đỉnh lúc handshake khoảng 30 KB, Mongoose khoảng 40 KB, buffer report ≤ 26 KB (§9.4), mô hình Edge lúc chạy (216 B mỗi điểm, 96 B mỗi thiết bị) và stack các task Edge (tối đa khoảng 45 KB, chỉ khi Edge bật; Plan 08c: AXI và DTCM không còn chỗ cho phương án tĩnh), buffer mạng coreMQTT 2 × 4 KB, các cấp phát nhỏ lúc chạy khoảng 20 KB, tổng khoảng 229 KB. **Mỗi allocation chỉ tính một lần**, hoặc ở phần tĩnh, hoặc ở phần heap | Cacheable (write-back). Các pool memp và `PBUF_POOL` của lwIP chiếm 26 KB tĩnh (§5.6), nên phần AXI chưa cấp còn khoảng 37 KB, sau Plan 09 còn khoảng 22 KB. Phần heap còn dư khoảng 27 KB, kiểm bằng §12.3. Đo trên bench (Plan 08b): một phiên TLS 27,9 KB; port1 trong phiên cộng các request HTTPS của port2 dùng tối đa 58,7 KB trên mức nghỉ (heap thấp nhất còn 200 KB) |
+| AXI SRAM (D1) | 512 KB | **Plan 09c:** arena JSON và buffer văn bản Edge 48 KB đã bỏ; heap tăng lên **352 KB**; AXI dùng 475.072 B, còn khoảng 48 KB trống. Phần dưới đây là bố trí trước 09c. **Tĩnh** (các section, tổng khoảng 193 KB): arena JSON 64 KB (§9.3), buffer văn bản Edge 48 KB (§9.3), cache văn bản cấu hình của `store` 20 KB cộng bộ đệm bản ghi Edge 8 KB, stack của `web` 8 KB, stack của `bridge[n]` 2 × 6 KB (Plan 08a), bảng topic, cấu hình và buffer tin nhận của MQTT khoảng 16,5 KB (Plan 09: DTCM chỉ giữ stack). **Heap** (`heap_5`, vùng heap duy nhất) **256 KB**, dự kiến dùng bên trong như sau: 3 phiên TLS khoảng 105 KB cộng đỉnh lúc handshake khoảng 30 KB, Mongoose khoảng 40 KB, buffer report ≤ 26 KB (§9.4), mô hình Edge lúc chạy (216 B mỗi điểm, 96 B mỗi thiết bị) và stack các task Edge (tối đa khoảng 45 KB, chỉ khi Edge bật; Plan 08c: AXI và DTCM không còn chỗ cho phương án tĩnh), buffer mạng coreMQTT 2 × 4 KB, các cấp phát nhỏ lúc chạy khoảng 20 KB, tổng khoảng 229 KB. **Mỗi allocation chỉ tính một lần**, hoặc ở phần tĩnh, hoặc ở phần heap | Cacheable (write-back). Các pool memp và `PBUF_POOL` của lwIP chiếm 26 KB tĩnh (§5.6), nên phần AXI chưa cấp còn khoảng 37 KB, sau Plan 09 còn khoảng 22 KB. Phần heap còn dư khoảng 27 KB, kiểm bằng §12.3. Đo trên bench (Plan 08b): một phiên TLS 27,9 KB; port1 trong phiên cộng các request HTTPS của port2 dùng tối đa 58,7 KB trên mức nghỉ (heap thấp nhất còn 200 KB) |
 | SRAM1 (D2) | 128 KB | Chỉ những gì DMA chạm tới, cộng heap `MEM` của lwIP 64 KB: descriptor, buffer RX và buffer TX của ETH, ring DMA RX và buffer TX của USART1/2/3, buffer trung chuyển SPI4. Các pool memp của lwIP chỉ CPU dùng nên nằm ở AXI (Plan 06a). Sau 06a đã dùng 99 KB, còn khoảng 29 KB cho USART (14 KB, Plan 07). Số lượng và kích thước chốt trong bảng pool lwIP (§5.6) | **Non-cacheable qua MPU.** Startup bật clock SRAM D2 trước khi khởi tạo `.data` |
 | SRAM2+3 (D2) | 160 KB | Hàng đợi serial → mạng của mỗi cổng, 8 KB hoặc 32 KB khi bật `bufferOffline`, cấp tĩnh 2 × 32 KB. Trạng thái và buffer của hai bridge khoảng 24 KB (Plan 08a). Outbox MQTT 64 KB. Còn khoảng 8 KB cho metadata và căn lề | Cacheable |
 | SRAM4 (D3) | 64 KB | Ring syslog 32 KB, ring của `mqtt_io` 24 KB (serial → `mqtt_io` 6 KB mỗi cổng, broker → `mqtt_io` 12 KB; Plan 09), **buffer BDMA của ADC3** (800 B) trong region non-cacheable 1 KB riêng ở 0x3800FC00 (§6.6). Còn khoảng 7 KB | Region 1 KB của ADC đặt non-cacheable qua MPU, phần còn lại cacheable |
@@ -732,6 +732,14 @@ Với 100 điểm, đỉnh vẫn khoảng 235 KB. H750 không có PSRAM, nên kh
 
 ### 9.3 Arena JSON và buffer văn bản Edge
 
+**Plan 09c:** cả hai vùng đã bỏ.
+- cJSON cấp phát từ heap qua allocator đếm lỗi (`json_alloc_install`, cài trước `store_init`). Không còn scope arena, nên mọi handler phải tự giải phóng cây và chuỗi của mình; bench `heap_loop` kiểm điều đó.
+- Body `edgeDevices` đi thẳng vào record 8 KB của store (`store_edge_begin`, `store_edge_write`, `store_edge_commit`, `store_edge_abort`; mỗi lúc một phiên; chỉ request đã `begin` mới sở hữu phiên). Cú pháp được kiểm bằng scanner theo luồng `js_stream_*`, cho cùng kết quả với `js_parse_root` dù body bị cắt thành chunk thế nào.
+- Lúc boot, model được đọc vào một buffer heap tạm (49.153 B), giải phóng trước khi các task Edge chạy.
+- Chứng chỉ dùng buffer heap 12.289 B, chỉ trong lúc upload; với khóa riêng, nội dung được xóa trước khi giải phóng.
+
+Phần dưới đây là thiết kế trước 09c, giữ lại làm lịch sử.
+
 Có hai vùng tĩnh riêng trong AXI, vì chúng có vòng đời khác nhau.
 
 **Arena JSON, 64 KB:**
@@ -828,8 +836,8 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
 - Khi chưa lưu model nào, `GET` gửi văn bản mặc định (`[]`) như một bản ghi duy nhất.
 - Có test: `GET` chạy xen với `POST`, và trong lúc FlashDB đang dọn rác.
 
-**Khởi động:**
-1. Đọc văn bản chuẩn hóa (≤ 48 KB) vào buffer văn bản Edge.
+**Khởi động** (Plan 09c: buffer heap tạm thay cho buffer văn bản Edge):
+1. Đọc văn bản (≤ 48 KB) vào buffer heap tạm.
 2. Chạy `cfg_load` theo node (pha 1 và 2).
 3. Dựng mô hình lúc chạy bằng struct C cấp phát lâu dài: thiết bị, node, chỉ mục FNV-1a.
 4. Biên dịch template report, cấp từ heap.
@@ -1137,7 +1145,7 @@ Hai cổng không thể đồng thời vừa là TCP server vừa là TCP/TLS cl
 Bộ test đọc `/api/status.mem` sau mỗi kịch bản. Điều kiện đạt:
 - mọi stack còn dư ≥ 1 KB;
 - heap AXI còn trống thấp nhất ≥ 16 KB;
-- đỉnh arena ≤ 60 KB;
+- block trống lớn nhất của heap (`heapLargest`, Plan 09c) đủ cho một buffer tạm 48 KB lúc boot và 12 KB khi upload chứng chỉ (arena đã bỏ ở Plan 09c);
 - không pool tĩnh nào đầy, trừ những pool được thiết kế để bỏ dữ liệu khi đầy (outbox, ring) và có bộ đếm.
 
 Ngoài ra, file map của linker phải cho thấy mỗi section nằm trong ngân sách ở §5.3.

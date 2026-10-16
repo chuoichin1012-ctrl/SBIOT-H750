@@ -505,6 +505,90 @@ static void test_certs_and_factory_reset(void)
     CHECK(edge_keys("ed.") == 0, "no edge records left");  // the log is checked in test_log
 }
 
+// ---- Plan 09c T3: edgeDevices streamed into the records ---------------------------------------------
+
+/** Feeds `m` to a session in chunks of `chunk` bytes, stopping after `stop` chunks (-1: all); the commit's result
+ * when it went to the end, else what the last write gave. */
+static store_err_t stream_save(const char *m, size_t len, size_t chunk, long stop, char *err, size_t errlen)
+{
+    store_err_t e = store_edge_begin(len, err, errlen);
+    if (e != STORE_OK)
+        return e;
+    long k = 0;
+    for (size_t o = 0; o < len; o += chunk, k++) {
+        if (stop >= 0 && k == stop)
+            return STORE_OK;  // the caller aborts or leaves it open
+        e = store_edge_write(m + o, len - o < chunk ? len - o : chunk);
+        if (e != STORE_OK)
+            return e;
+    }
+    return store_edge_commit(err, errlen);
+}
+
+static void test_edge_stream(void)
+{
+    flash_new(41);
+    reboot();
+    char err[200], *m0 = edge_model(10, 3, 1), *m = edge_model(100, 3, 2);
+    size_t len = strlen(m);
+    CHECK(store_edge_save(m0, strlen(m0), err, sizeof err) == STORE_OK, "a first model (%s)", err);
+    CHECK(len > 2 * STORE_EDGE_RECORD, "the body spans three records (%zu bytes)", len);
+    const size_t sizes[] = {1, 2, 3, 5, 7, 64, 1000, 4095, 4096, 4097, 8191, 8192, 8193, 9000};
+    for (size_t i = 0; i < sizeof sizes / sizeof *sizes; i++) {
+        CHECK(stream_save(m, len, sizes[i], -1, err, sizeof err) == STORE_OK, "chunks of %zu: committed (%s)", sizes[i], err);
+        char *e = edge_now();
+        store_edge_pin_t p;
+        store_edge_pin(&p);
+        store_edge_unpin(&p);
+        CHECK(e && !strcmp(e, m) && p.count == (len + STORE_EDGE_RECORD - 1) / STORE_EDGE_RECORD && edge_keys("ed.") == (int)p.count,
+              "chunks of %zu: the same text and records as one save (%u records)", sizes[i], (unsigned)p.count);
+        free(e);
+    }
+    // An abort after any chunk: the committed model stays, and so does a GET pinned before the session.
+    CHECK(store_edge_save(m0, strlen(m0), err, sizeof err) == STORE_OK, "back to the first model");
+    for (long stop = 0; stop <= (long)(len / 1000); stop += 3) {
+        store_edge_pin_t pin;
+        store_edge_pin(&pin);
+        stream_save(m, len, 1000, stop, err, sizeof err);
+        store_edge_abort();
+        char *e = edge_now(), buf[STORE_EDGE_RECORD];
+        size_t got = 0;
+        bool same = true;
+        for (uint32_t r = 0; r < pin.count; r++) {
+            size_t n = store_edge_record(&pin, r, buf, sizeof buf);
+            same &= n && got + n <= strlen(m0) && !memcmp(buf, m0 + got, n);
+            got += n;
+        }
+        store_edge_unpin(&pin);
+        CHECK(e && !strcmp(e, m0) && same && got == strlen(m0) && edge_keys("ed.") == (int)pin.count,
+              "abort after %ld chunks: the committed model, its pinned GET, and no record left of the session", stop);
+        free(e);
+    }
+    // What a whole body must be: valid JSON, an array, all of it.
+    char *bad = malloc(len + 1);
+    memcpy(bad, m, len + 1);
+    bad[len - 3000] = '#';  // in the last record
+    char *e;
+    CHECK(stream_save(bad, len, 1000, -1, err, sizeof err) == STORE_EINVALID && !strcmp(err, "The request body is not valid JSON."),
+          "bad JSON in the last record: 400 (%s)", err);
+    const char *obj = "{\"name\":\"x\"}";
+    CHECK(stream_save(obj, strlen(obj), 4, -1, err, sizeof err) == STORE_EINVALID && !strcmp(err, "The settings must be a JSON array."),
+          "an object: 400 (%s)", err);
+    CHECK(store_edge_begin(len, err, sizeof err) == STORE_OK && store_edge_write(m, len - 1) == STORE_OK &&
+              store_edge_commit(err, sizeof err) == STORE_EINVALID,
+          "a body one byte short: nothing committed (%s)", err);
+    e = edge_now();
+    CHECK(e && !strcmp(e, m0) && edge_keys("ed.") == 1, "the first model stands, no record of the refused bodies");
+    free(e);
+    CHECK(store_edge_begin(CFG_EDGE_MAX + 1, err, sizeof err) == STORE_ETOOLARGE, "over 48 KB announced: 413");
+    CHECK(store_edge_begin(len, err, sizeof err) == STORE_OK && store_edge_begin(len, err, sizeof err) == STORE_EBUSY,
+          "a second session while one is open: 503");
+    store_edge_abort();
+    CHECK(stream_save(m, len, 4096, -1, err, sizeof err) == STORE_OK, "after the abort a new save works (%s)", err);
+    free(bad), free(m), free(m0);
+    BALANCED("edge stream");
+}
+
 // ---- Plan 09b T3: configs saved by the previous firmware ------------------------------------------
 
 static bool count_dev(void *ctx, const cJSON *dev, int index) { (void)dev, (void)index; ((int *)ctx)[0]++; return true; }
@@ -1574,6 +1658,38 @@ static void test_small_power_cuts(void)
     free(s_snap);
 }
 
+/** A power cut in the middle of a streamed body over 8 KB, then a reboot: the next save works (Codex 09c review). */
+static void test_stream_cut_reboot(void)
+{
+    flash_new(42);
+    reboot();
+    char err[200], *m = edge_model(100, 3, 4);
+    size_t len = strlen(m);
+    long cuts = 0, bad = 0;
+    s_quiet = true;
+    for (long cut = 1; cut < 40; cut += 3) {
+        s_w.ops = 0;
+        s_w.cut_at = cut;
+        volatile bool was_cut = false;
+        if (!setjmp(s_jb)) {
+            store_edge_begin(len, err, sizeof err);
+            for (size_t o = 0; o < len; o += 2000) store_edge_write(m + o, len - o < 2000 ? len - o : 2000);
+            store_edge_abort();
+        } else {
+            was_cut = true;
+        }
+        s_w.cut_at = -1;
+        cuts += was_cut;
+        reboot();
+        store_err_t e = store_edge_save(m, len, err, sizeof err);
+        if (e != STORE_OK && bad++ < 3)
+            printf("  cut at op %ld mid-body, then a reboot: the next save gives %d (%s)\n", cut, e, err);
+    }
+    s_quiet = false;
+    CHECK(cuts > 0 && bad == 0, "a cut mid-body over 8 KB, a reboot, a save: %ld of %ld cuts end refused", bad, cuts);
+    free(m);
+}
+
 static void test_reset_power_cuts(void)
 {
     s_snap = malloc(0x100000);
@@ -1696,6 +1812,7 @@ int main(void)
     if (getenv("STORE_CUTS")) {
         test_small_power_cuts();
         test_reset_power_cuts();
+        test_stream_cut_reboot();
         test_power_cuts();
         test_write_failures();
         test_gc_write_failures();
@@ -1709,6 +1826,7 @@ int main(void)
         test_state_read_failures();
         test_certs_and_factory_reset();
         test_factory_reset_fails();
+        test_edge_stream();
         test_previous_firmware();
         test_defaults_stored();
         test_reset_blocks_and_restarts();

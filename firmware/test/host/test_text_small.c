@@ -1,13 +1,12 @@
-// cfg_validate_text: the round trip, the 10 240-byte limit and the arena peak for the configs
-// other than edgeDevices (spec §9.3). Every call runs inside a real arena scope, as on the
-// target, over a pool of only 60 KB in total: TLSF's control block and any fragmentation must
-// fit too, so "no out-of-memory here" proves the whole need is at most 60 KB (on the 64-bit
-// host, which needs more than the 32-bit target): make -C stm32/firmware/test/host
+// cfg_validate_text: the round trip, the 10 240-byte limit and the heap peak for the configs other than
+// edgeDevices (spec §9.3). cJSON runs on a metered heap (heap_meter.h, Plan 09c) limited to 60 KB of live
+// blocks, so "no out-of-memory here" proves the need is at most 60 KB (on the 64-bit host, which needs more
+// than the 32-bit target): make -C stm32/firmware/test/host
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "arena.h"
 #include "cfgmodel.h"
+#include "heap_meter.h"
 
 static const cfg_env_t ENV = {.uart_count = 2, .do_count = 2, .di_count = 2, .ai_count = 2};
 static int failures;
@@ -21,19 +20,17 @@ static int failures;
         }                                               \
     } while (0)
 
-static _Alignas(8) char region[60 * 1024];  // the gate: 61 440 bytes in total
-static arena_t s_arena;
-static size_t s_worst;  // highest live-block peak seen in this run (TLSF overhead not included)
+static size_t s_worst;  // highest live-block peak seen in this run
 static char s_out[CFG_SMALL_BUF], s_err[200];
 
-/** cfg_validate_text inside one arena scope, the way the web task calls it. */
+/** cfg_validate_text on the metered heap; its peak of live blocks is noted. */
 static cfg_result_t run(const char *name, const char *text, const cJSON *current)
 {
-    arena_begin(&s_arena);
+    meter_peak_restart();
     cfg_result_t r = cfg_validate_text(&ENV, name, text, strlen(text), current, s_out, sizeof s_out, s_err, sizeof s_err);
-    if (s_arena.peak > s_worst) s_worst = s_arena.peak;
-    CHECK(r != CFG_NO_MEMORY, "%s: out of memory in a 60 KB pool (%s)", name, s_err);
-    arena_end(&s_arena);
+    size_t peak = meter_peak_restart();
+    if (peak > s_worst) s_worst = peak;
+    CHECK(r != CFG_NO_MEMORY, "%s: out of memory within 60 KB of live blocks (%s)", name, s_err);
     return r;
 }
 
@@ -45,7 +42,7 @@ static size_t reference_len(const char *name, const char *text)
     cJSON *out = in ? cfg_validate(&ENV, name, in, NULL, err, sizeof err) : NULL;
     char *t = out ? cJSON_PrintUnformatted(out) : NULL;
     size_t n = t ? strlen(t) : 0;
-    free(t);
+    cJSON_free(t);
     cJSON_Delete(out);
     cJSON_Delete(in);
     return n;
@@ -90,7 +87,7 @@ static char *largest_doc(const char *name)
             char *txt = cJSON_PrintUnformatted(doc);
             if (accepted(name, txt)) lo = mid;
             else hi = mid;
-            free(txt), free(s), cJSON_Delete(doc);
+            cJSON_free(txt), free(s), cJSON_Delete(doc);
         }
         if (lo >= 3) {
             char *s = malloc((size_t)lo + 1);
@@ -113,7 +110,7 @@ static char *largest_doc(const char *name)
             cJSON_AddItemToArray(doc, t);
             char *txt = cJSON_PrintUnformatted(doc);
             bool ok = accepted(name, txt);
-            free(txt);
+            cJSON_free(txt);
             if (!ok) {
                 cJSON_DeleteItemFromArray(doc, cJSON_GetArraySize(doc) - 1);
                 break;
@@ -183,7 +180,7 @@ static void test_largest_each(void)
         CHECK(r == (ref <= CFG_SMALL_MAX ? CFG_OK : CFG_TOO_LARGE), "%s: largest document gives %d (%s), reference %zu bytes", names[i], r,
               s_err, ref);
         printf("  %-13s largest: %5zu bytes in, %5zu normalised, result %d\n", names[i], strlen(doc), ref, r);
-        free(doc);
+        cJSON_free(doc);
     }
 }
 
@@ -200,12 +197,12 @@ static void test_round_trip_and_errors(void)
             cfg_result_t r = run(names[i], again, NULL);
             CHECK(r == CFG_OK && strcmp(again, s_out) == 0, "%s: POST -> GET -> POST changes the text", names[i]);
         }
-        free(doc);
+        cJSON_free(doc);
         cJSON *d = cfg_default(&ENV, names[i]);
         char *t = cJSON_PrintUnformatted(d);
         cfg_result_t r = run(names[i], t, NULL);
         CHECK(r == CFG_OK && strcmp(s_out, t) == 0, "%s defaults do not round-trip (%d %s)", names[i], r, s_err);
-        free(t);
+        cJSON_free(t);
         cJSON_Delete(d);
     }
     // `current` (a full stored document, as the store passes it) supplies the keys the request leaves out.
@@ -224,12 +221,11 @@ static void test_round_trip_and_errors(void)
 
 int main(void)
 {
-    arena_init(&s_arena, region, sizeof region);
-    json_alloc_install();
+    meter_install(60 * 1024);
     test_exact_limit();
     test_largest_each();
     test_round_trip_and_errors();
-    printf("  worst live-block peak: %zu bytes, all within a 61 440-byte pool\n", s_worst);
+    printf("  worst live-block peak: %zu bytes, within the 61 440-byte limit\n", s_worst);
     printf(failures ? "%d FAILED\n" : "text_small: all tests passed\n", failures);
     return failures != 0;
 }

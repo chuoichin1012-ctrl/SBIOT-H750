@@ -1,18 +1,15 @@
 # Host tests for the hardware-free modules of the STM32 firmware: make -C stm32/firmware/test/host
 CJSON := ../../third_party/cjson
-TLSF := ../../third_party/tlsf
-INC := -I../../components/cfgmodel/include -I../../components/proto/include -I../../components/arena/include -I$(CJSON) -I$(TLSF) -I../../components/board/include -I../../boot -I../../components/ota/include -I.
+INC := -I../../components/cfgmodel/include -I../../components/proto/include -I../../components/arena/include -I$(CJSON) -I../../components/board/include -I../../boot -I../../components/ota/include -I.
 # UBSan findings stop the test (-fno-sanitize-recover), so a NULL dereference can never pass unnoticed.
 CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all $(INC)
 BUILD := build
 CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c ../../components/proto/jsonscan.c
-ARENA := ../../components/arena/arena.c $(TLSF)/tlsf.c
 
-all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/bind_sample.bin $(BUILD)/test_bind $(BUILD)/test_store $(BUILD)/test_store_small $(BUILD)/test_heap $(BUILD)/test_ip101 $(BUILD)/test_netcfg $(BUILD)/test_dhcp_dns $(BUILD)/test_rng $(BUILD)/test_clock $(BUILD)/test_web_core $(BUILD)/test_serial_frame $(BUILD)/test_io_core $(BUILD)/test_adc_core $(BUILD)/test_reload $(BUILD)/test_bridge_core $(BUILD)/test_io_mb $(BUILD)/test_tls_core $(BUILD)/test_tlsconn $(BUILD)/test_edge_core $(BUILD)/test_mqtt_wire $(BUILD)/test_mqtt_transport $(BUILD)/test_mqtt_outbox $(BUILD)/test_mqtt_session
+all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/bind_sample.bin $(BUILD)/test_bind $(BUILD)/test_store $(BUILD)/test_store_small $(BUILD)/test_heap $(BUILD)/test_ip101 $(BUILD)/test_netcfg $(BUILD)/test_dhcp_dns $(BUILD)/test_rng $(BUILD)/test_clock $(BUILD)/test_web_core $(BUILD)/test_serial_frame $(BUILD)/test_io_core $(BUILD)/test_adc_core $(BUILD)/test_reload $(BUILD)/test_bridge_core $(BUILD)/test_io_mb $(BUILD)/test_tls_core $(BUILD)/test_tlsconn $(BUILD)/test_edge_core $(BUILD)/test_mqtt_wire $(BUILD)/test_mqtt_transport $(BUILD)/test_mqtt_outbox $(BUILD)/test_mqtt_session
 	$(BUILD)/test_cfgmodel
 	$(BUILD)/test_proto
 	$(BUILD)/test_jsonscan
-	ASAN_OPTIONS=detect_invalid_pointer_pairs=2 $(BUILD)/test_arena
 	$(BUILD)/test_text_small
 	$(BUILD)/test_edge_text
 	$(BUILD)/test_oom
@@ -57,15 +54,11 @@ $(BUILD)/test_jsonscan: test_jsonscan.c ../../components/proto/jsonscan.c
 	$(CC) $(CFLAGS) $^ -o $@
 
 # pointer-compare: ownership checks must not compare pointers into different objects (C11 6.5.8p5).
-$(BUILD)/test_arena: test_arena.c $(ARENA) $(CJSON)/cJSON.c
-	mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -fsanitize=pointer-compare $^ -lm -o $@
-
-$(BUILD)/test_text_small: test_text_small.c $(CFG) $(ARENA) $(CJSON)/cJSON.c
+$(BUILD)/test_text_small: test_text_small.c $(CFG) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $^ -lm -o $@
 
-$(BUILD)/test_edge_text: test_edge_text.c $(CFG) $(ARENA) $(CJSON)/cJSON.c
+$(BUILD)/test_edge_text: test_edge_text.c $(CFG) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $^ -lm -o $@
 

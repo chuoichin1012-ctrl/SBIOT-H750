@@ -45,7 +45,7 @@ void *netmgr_static_thread(void (*fn)(void *), const char *name, unsigned words,
 #define MEMP_NUM_IGMP_GROUP 8
 #define MEMP_NUM_REASSDATA 4
 #define MEMP_NUM_FRAG_PBUF 16
-#define MEMP_NUM_SYS_TIMEOUT (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 4)
+#define MEMP_NUM_SYS_TIMEOUT (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 6)  // + netmgr's Internet check (2), Plan 10
 #define PBUF_POOL_SIZE 16  // PPPoS input only (Plan 09): ETH RX has its own pool
 #define PBUF_POOL_BUFSIZE 512
 #define ARP_TABLE_SIZE 16
@@ -70,11 +70,12 @@ void *netmgr_static_thread(void (*fn)(void *), const char *name, unsigned words,
 #define LWIP_DNS 1
 #define DNS_TABLE_SIZE 4
 #define DNS_MAX_SERVERS 2
-// DHCP takes the DNS servers of an accepted ACK only when dnsMode is automatic: a manual DNS is never
-// overwritten, renewals included (spec §7.1; patch 2 in third_party/patches/lwip-2.2.1-sbiot.patch).
+// Each accepted DHCP ACK hands its whole DNS list to netmgr, which keeps each link's servers and sets lwIP's
+// (spec §7.1, §7.2; patch 2 in third_party/patches/lwip-2.2.1-sbiot.patch, Plan 10 ruling 5).
 struct netif;
-int netmgr_dns_from_lease(struct netif *netif);
-#define LWIP_DHCP_DNS_FROM_LEASE(netif) netmgr_dns_from_lease(netif)
+struct ip4_addr;
+void netmgr_dhcp_dns(struct netif *netif, int n, const struct ip4_addr *servers);
+#define LWIP_HOOK_DHCP_DNS(netif, n, servers) netmgr_dhcp_dns(netif, n, servers)  // patched dhcp.c, Plan 10
 #define LWIP_UDP 1
 #define LWIP_TCP 1
 #define TCP_MSS 1460
@@ -88,6 +89,27 @@ int netmgr_dns_from_lease(struct netif *netif);
 #define SO_REUSE 1
 uint32_t board_rand32(void);
 #define LWIP_RAND() board_rand32()
+
+// --- PPPoS over the modem's CMUX DLC1 (spec §7.2, Plan 10) -----------------------------------------
+#define PPP_SUPPORT 1
+#define PPPOS_SUPPORT 1
+#define PPPOE_SUPPORT 0
+#define PPPOL2TP_SUPPORT 0
+#define PPP_IPV4_SUPPORT 1
+#define PPP_IPV6_SUPPORT 0
+#define PAP_SUPPORT 1
+#define CHAP_SUPPORT 1
+#define MSCHAP_SUPPORT 0
+#define EAP_SUPPORT 0
+#define CCP_SUPPORT 0
+#define MPPE_SUPPORT 0
+#define VJ_SUPPORT 0
+#define LWIP_INCLUDED_POLARSSL_MD5 1  // CHAP's MD5
+#define LWIP_PPP_API 1
+#define MEMP_NUM_PPP_PCB 1
+#define PPP_INPROC_IRQ_SAFE 0  // pppos_input_tcpip from cmux_rx
+#define PPP_NOTIFY_PHASE 0
+#define PRINTPKT_SUPPORT 0
 
 // --- checksums in software (TX inserts none in hardware: eth_drv.c) --------------------------------
 #define CHECKSUM_GEN_IP 1

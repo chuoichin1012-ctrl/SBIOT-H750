@@ -1,4 +1,4 @@
-// The network manager (spec §4, §7.1). Plan 06a: Ethernet only; LTE comes in Plan 09.
+// The network manager (spec §4, §7.1, §7.2): Ethernet, and the LTE link with the route and DNS choice (Plan 10).
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
@@ -30,3 +30,11 @@ void netmgr_status(net_status_t *out);
 bool netmgr_online(void);
 /** Netconns free in lwIP's pool (spec §5.6: the TCP servers' accept gate). */
 int netmgr_netconn_free(void);
+struct netif;
+/** PPP's status (lte.c, in the tcpip thread): the cell link up with the DNS IPCP gave (0 for none), or down. The
+ *  route and the DNS are chosen again. */
+void netmgr_cell(struct netif *nif, bool up, const uint32_t dns[2]);
+/** "ETH", "LTE" or "NONE": the link holding the default route. */
+const char *netmgr_route_name(void);
+/** The Internet check per link (Plan 10 ruling 14): an address and replies to the probe. */
+void netmgr_internet(bool *eth, bool *cell);

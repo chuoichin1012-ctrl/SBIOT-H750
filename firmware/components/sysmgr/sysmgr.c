@@ -6,6 +6,7 @@
 #include "clock.h"
 #include "lwip/apps/sntp.h"
 #include "lwip/tcpip.h"
+#include "lte.h"
 #include "netmgr.h"
 #include "now_us.h"
 #include "serial_frame.h"
@@ -113,6 +114,8 @@ void sysmgr_start(const cJSON *system)
 static void restart_task(void *arg)
 {
     vTaskDelay(pdMS_TO_TICKS((uint32_t)(uintptr_t)arg));
+    if (!lte_shutdown(60000))  // the modem powered down first (spec §7.2, Plan 10 T5)
+        blog("sys: the modem did not confirm POWERED DOWN\r\n");
     blog("sys: restarting\r\n");
     vTaskDelay(pdMS_TO_TICKS(20));  // the line out of UART7
     NVIC_SystemReset();
@@ -148,7 +151,11 @@ size_t sysmgr_payload(int content, const char *custom, bool hex, uint8_t *out, s
         net_status_t ns;
         netmgr_status(&ns);
         snprintf(text, sizeof text, "%02x:%02x:%02x:%02x:%02x:%02x", ns.mac[0], ns.mac[1], ns.mac[2], ns.mac[3], ns.mac[4], ns.mac[5]);
-    }  // 1 IMEI, 3 ICCID: the modem comes with Plan 10; nothing until then, as the ESP32 without a modem
+    } else if (content == 1 || content == 3) {  // empty until the modem has answered, as the ESP32 without one
+        lte_info_t li;
+        lte_info(&li);
+        snprintf(text, sizeof text, "%s", content == 1 ? li.imei : li.iccid);
+    }
     size_t n = strlen(text) < max ? strlen(text) : max;
     memcpy(out, text, n);
     return n;

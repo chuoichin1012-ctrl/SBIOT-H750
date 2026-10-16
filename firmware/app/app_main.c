@@ -10,6 +10,8 @@
 #include "heap_newlib.h"
 #include "board_rng.h"
 #include "cfgmodel.h"
+#include "lte.h"
+#include "lte_uart.h"
 #include "netmgr.h"
 #include "serial.h"
 #include "uart_drv.h"
@@ -84,6 +86,7 @@ static void net_start(const cfg_env_t *env)
     if (board_rng_init())
         blog("app: RNG FAILED\r\n");
     netmgr_init(&nc, mac);
+    lte_start(&nc);  // Plan 10: UART3 is netmgr/lte's (spec §4)
 }
 
 static const char *ip_str(uint32_t a, char *buf)
@@ -265,6 +268,49 @@ static void init_task(void *arg)
         case 'o':
             bench_ota_report();
             break;
+        case 'V': {  // bench: "V<text>": the text and CR out of UART3, raw (Plan 10 bring-up)
+            char l[64];
+            read_line(l, sizeof l);
+            lte_send_raw(l);
+            blog("app: sent \"%s\" to UART3\r\n", l);
+            break;
+        }
+        case 'K': {  // bench: "K<ms>" presses PWRKEY, "K-<ms>" pulses RESET_N, for ms (under 3 s); Plan 10 bring-up
+            char l[12];
+            read_line(l, sizeof l);
+            bool reset = l[0] == '-';
+            long len = strtol(reset ? l + 1 : l, NULL, 10);
+            if (len <= 0 || len >= 3000) {
+                blog("app: K needs 1..2999 ms\r\n");
+                break;
+            }
+            GPIO_TypeDef *port = reset ? LTE_RESET_GPIO_Port : LTE_PWR_GPIO_Port;
+            uint16_t pin = reset ? LTE_RESET_Pin : LTE_PWR_Pin;
+            blog("app: %s %ld ms\r\n", reset ? "RESET_N" : "PWRKEY", len);
+            HAL_GPIO_WritePin(port, pin, GPIO_PIN_SET);
+            vTaskDelay(pdMS_TO_TICKS((uint32_t)len));
+            HAL_GPIO_WritePin(port, pin, GPIO_PIN_RESET);
+            break;
+        }
+        case 'M': {  // bench: UART3 to the modem: the DMA's write position and the last bytes received (Plan 10)
+            uint32_t wr = lte_uart_wr();
+            const uint8_t *r = lte_uart_ring();
+            char hex[3 * 24 + 1];
+            size_t o = 0;
+            for (uint32_t i = wr >= 24 ? wr - 24 : 0; i < wr && o + 3 < sizeof hex; i++)
+                o += (size_t)snprintf(hex + o, sizeof hex - o, "%02x ", r[i % LTE_UART_RING]);
+            hex[o] = '\0';
+            blog("app: uart3 rx %lu bytes, errors %lu, PD9 %d, ISR %08lx, last: %s\r\n", (unsigned long)wr,
+                 (unsigned long)lte_uart_errors(), (int)((GPIOD->IDR >> 9) & 1u), (unsigned long)USART3->ISR, hex);
+            lte_info_t li;
+            lte_info(&li);
+            blog("app: cmux bad FCS %lu, last: addr %02x ctrl %02x len %02x %02x fcs got %02x want %02x\r\n", (unsigned long)li.bad_fcs,
+                 li.last_bad[0], li.last_bad[1], li.last_bad[2], li.last_bad[3], li.last_bad[4], li.last_bad[5]);
+            blog("app: uart3 GPIOD MODER %08lx AFRH %08lx, USART3 CR1 %08lx CR3 %08lx BRR %08lx, PA ODR %08lx MODER %08lx\r\n",
+                 (unsigned long)GPIOD->MODER, (unsigned long)GPIOD->AFR[1], (unsigned long)USART3->CR1, (unsigned long)USART3->CR3,
+                 (unsigned long)USART3->BRR, (unsigned long)GPIOA->ODR, (unsigned long)GPIOA->MODER);
+            break;
+        }
         case 'S': {  // bench: the store's state
             store_edge_pin_t p;
             store_edge_pin(&p);
@@ -321,6 +367,21 @@ static void init_task(void *arg)
         case 'L':  // bench: the PHY powered down for 3 s, then up (spec §7.1, link polled each second)
             blog("app: phy down %d\r\n", eth_drv_phy_power(true));
             vTaskDelay(pdMS_TO_TICKS(3000));
+            blog("app: phy up %d\r\n", eth_drv_phy_power(false));
+            break;
+        case 'j':  // bench: toggle forcing the plain-PPP fallback at the next CMUX opening (Plan 10 review)
+            blog("app: plain fallback %s\r\n", lte_bench_plain() ? "forced" : "off");
+            break;
+        case 'q':  // bench: toggle dropping PPP's input (the CFUN case, Plan 10 T5)
+            blog("app: PPP input %s\r\n", lte_bench_drop() ? "dropped" : "passed");
+            break;
+        case 'Q':  // bench: DISC on CMUX DLC2: the lte task recovers (Plan 10 T5)
+            lte_bench_disc();
+            blog("app: DISC on DLC2\r\n");
+            break;
+        case 'H':  // bench: the PHY powered down for 30 s, then up: long enough for the services to move to LTE (Plan 10)
+            blog("app: phy down %d\r\n", eth_drv_phy_power(true));
+            vTaskDelay(pdMS_TO_TICKS(30000));
             blog("app: phy up %d\r\n", eth_drv_phy_power(false));
             break;
         case 'T':

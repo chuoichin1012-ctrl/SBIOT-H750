@@ -55,7 +55,7 @@ Lấy từ `docs/Job2.PDF`. Những mục có dấu (✓) phải đối chiếu 
 | USART1 TX / RX / **DE** | PA9 / PA10 / PA12 (AF7, DE phần cứng) | SN65HVD75 (RS485 #1) và SP3232 (RS232) **mắc song song**: TX đi ra cả hai, RX gộp qua diode MBR0540 |
 | USART2 TX / RX / **DE** | PD5 / PD6 / PD4 (AF7) | SN65HVD75 (RS485 #2) |
 | USART3 TX / RX | PD8 / PD9 | Tới MAIN_UART của EC600U qua bộ dịch mức UM3212 (1,8 V). **Không có RTS/CTS** |
-| LTE_PWR / LTE_RESET | PA5 / PA4 (✓) | Qua NPN Q1/Q2: mức cao tương ứng nhấn PWRKEY / kích RESET_N |
+| LTE_PWR / LTE_RESET | **PA6 / PA5** (Plan 10: đọc lại sơ đồ `docs/Job2.PDF` trang 2 bằng hình; trước đó ghi nhầm PA5 / PA4 vì đọc chữ trích từ PDF) | Qua NPN Q1/Q2: mức cao tương ứng nhấn PWRKEY / kích RESET_N. PA4 không nối |
 | UART7 RX / TX | PB3 / PB4 | Log debug ra cổng P4 |
 | UART8 RX / TX | PE0 / PE1 | Chưa dùng |
 | QUADSPI CLK / NCS | PB2 / PC11 | **Bank 2** (PC11 = BK2_NCS) |
@@ -477,6 +477,22 @@ Quy tắc riêng của bản STM32:
 
 ### 7.2 LTE EC600U
 
+**Plan 10 (đo trên bench, 2026-10-16):** board dùng **EC600G-EU**, không phải EC600U (firmware module `EC600GEULDR01A06M04_01.001.01.001`). Người dùng quyết định dùng timing của EC600U, và bench đã xác nhận:
+- PWRKEY nối PA6, RESET_N nối PA5 (§3);
+- `RDY` đến khoảng 8 s sau PWRKEY 2,5 s; `AT` trả lời 1,0 s sau RESET_N 200 ms;
+- xung 2,5 s trên module đang chạy không làm nó tắt;
+- `AT+QPOWD=1` nhận `POWERED DOWN` sau khoảng 0,5 s;
+- deadline chờ UART sẵn sàng đặt là **10 s** (2 lần giá trị đo, không dưới 10 s, theo quy tắc ở bảng dưới).
+
+Những gì Plan 10 thêm so với thiết kế dưới đây:
+- **NO SIM:** `AT+CPIN?` không `READY` thì không quay số, không RESET_N, không CFUN; hỏi lại mỗi 60 s.
+- **Chỉ quay số khi đã đăng ký mạng** (`+CEREG`/`+CGREG` là 1 hoặc 5); chưa thì ghi trạng thái đăng ký vào log.
+- **Sau `AT+CFUN=1,1`**, `AT` trên DLC2 không phản hồi trong 5 s thì vào RECOVER ngay.
+- **Tắt có chủ đích:** đóng mux (CLD) rồi gửi `AT+QPOWD=1` trên UART thường.
+- **Kiểm Internet theo từng link** (ruling 14), xem mục ưu tiên kết nối.
+- `cmux_rx` là chủ duy nhất của UART3 và của trạng thái CMUX; task `lte` và PPP chỉ trao đổi với nó qua stream buffer.
+
+
 - **Timing của EC600U** lấy theo *Quectel EC600U系列 QuecOpen 硬件设计手册 V1.3* (bản trên developer.quectel.com, 2024-09), mục 3.7–3.8. **Không** dùng timing của EC800 trong bản ESP32 (xung PWRKEY 700 ms ở `modem.c:47`). Mốc thời gian tính từ cạnh GPIO của MCU. Qua transistor, độ trễ không đáng kể so với các giá trị dưới đây.
 
   | Thao tác | Yêu cầu của tài liệu | Firmware dùng |
@@ -564,7 +580,11 @@ Quy tắc riêng của bản STM32:
   - 2: ưu tiên LTE.
 
   Default route chuyển sang link kia khi link đang ưu tiên mất địa chỉ (`netmgr.c:34`).
-  - **Giới hạn, giữ như ESP32:** firmware không phát hiện trường hợp mất Internet trong khi link vẫn còn địa chỉ.
+  - **Kiểm Internet theo từng link** (Plan 10 ruling 14, thay cho giới hạn của bản ESP32):
+    - timer lwIP trong thread `tcpip`, mỗi 30 s gửi ICMP echo tới 8.8.8.8 và 1.1.1.1 qua đúng từng link (`raw_sendto_if_src`, địa chỉ của chính link đó);
+    - một trong hai trả lời trong 2 s là có Internet; 3 vòng liên tiếp không trả lời là mất, 1 lần trả lời là có lại;
+    - chỉ rời link ưu tiên khi nó mất Internet và link kia có cả địa chỉ lẫn Internet; cả hai đều không ping được thì chọn theo địa chỉ như cũ; priority 0 chỉ dùng Ethernet;
+    - `/api/status` có `eth.internet` và `cell.internet`; tốn khoảng 12 KB mỗi giờ trên LTE.
   - DNS dùng server của link đang giữ default route.
   - Khi đổi route, các kết nối TCP/TLS đang mở (bridge client, MQTT, Modbus TCP) bị đóng và kết nối lại qua link mới.
 - Các chuỗi hiển thị trên UI đổi từ EC800 sang EC600U.
@@ -1131,7 +1151,7 @@ Logic quyết định và chép viết trong `boot/install.c` bằng C thuần, 
   - timing DE (DE giữ tới hết stop bit cuối), t1.5/t3.5, XON/XOFF, nhận liên tục sau nhiều lần RTO, DMA quay vòng có overrun;
   - **UART2:** đo riêng pinmux, DE và timing một lần. Chạy **hai bus đồng thời**: Edge poll trên UART2 trong lúc bộ test bridge chạy trên UART1;
   - DI, DO qua 74HC573 (kể cả trạng thái relay trong lúc bootloader chạy). AI1 và AI2 kiểm bằng nguồn dòng 4, 12 và 20 mA: hiệu chuẩn, độ ổn định khi có nhiễu 50 Hz bơm vào, khôi phục sau lỗi OVR, và xác nhận ADC không phát sinh ngắt theo từng mẫu;
-  - PPP + CMUX trên EC600U:
+  - PPP + CMUX trên EC600U (Plan 10: `test/bench/lte_check.py`, các ca identity, power, mux, priority, load, cfun, p0; chiều lên của load cần nối UART1 với UART2):
     - tải HTTPS lớn và liên tục trong lúc DLC2 đọc tín hiệu, `overrun` phải bằng 0;
     - phục hồi DLC;
     - chuyển đổi ưu tiên kết nối, kèm kết nối lại các phiên TCP/TLS;

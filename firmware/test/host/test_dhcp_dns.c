@@ -1,5 +1,7 @@
-// Host test of the DNS servers under DHCP (spec §7.1, patch 2 of third_party/patches/lwip-2.2.1-sbiot.patch):
-// lwIP's own DHCP client, fed with DHCP replies built here. make -C stm32/firmware/test/host
+// Host test of the DNS servers under DHCP (spec §7.1, §7.2; patch 2 of third_party/patches/lwip-2.2.1-sbiot.patch,
+// Plan 10 ruling 5): lwIP's own DHCP client, fed with DHCP replies built here. Each accepted ACK hands its whole DNS
+// list (0, 1 or 2 servers) to the hook once, and lwIP's global servers are never written by DHCP.
+// make -C stm32/firmware/test/host
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -24,13 +26,18 @@ static int failures;
         }                                               \
     } while (0)
 
-static int s_manual;   // the config's dnsMode is manual
-static int s_sent;     // frames lwIP sent
+static int s_sent;      // frames lwIP sent
+static int s_calls;     // hook calls
+static int s_last_n;    // the last call's count
+static uint32_t s_last[2];
 
-int test_dns_from_lease(struct netif *netif)
+void test_dhcp_dns(struct netif *netif, int n, const ip4_addr_t *servers)
 {
     (void)netif;
-    return !s_manual;  // what netmgr answers
+    s_calls++;
+    s_last_n = n;
+    s_last[0] = n > 0 ? lwip_ntohl(ip4_addr_get_u32(&servers[0])) : 0;
+    s_last[1] = n > 1 ? lwip_ntohl(ip4_addr_get_u32(&servers[1])) : 0;
 }
 
 u32_t sys_now(void)
@@ -74,8 +81,8 @@ static void put32(uint8_t *p, uint32_t v)
 
 typedef enum { GOOD, BAD_AFTER_DNS } shape_t;
 
-// An Ethernet frame holding a DHCP reply from SERVER: OFFER or ACK of LEASED, with two DNS servers.
-static size_t reply(uint8_t *f, uint8_t type, uint32_t xid, uint32_t dns1, uint32_t dns2, shape_t shape)
+// An Ethernet frame holding a DHCP reply from SERVER: OFFER or ACK of LEASED, with ndns DNS servers (0: no option 6).
+static size_t reply(uint8_t *f, uint8_t type, uint32_t xid, int ndns, uint32_t dns1, uint32_t dns2, shape_t shape)
 {
     memset(f, 0, 600);
     memcpy(f, k_mac, 6);
@@ -97,7 +104,10 @@ static size_t reply(uint8_t *f, uint8_t type, uint32_t xid, uint32_t dns1, uint3
     *o++ = 51, *o++ = 4, put32(o, 3600), o += 4;
     *o++ = 1, *o++ = 4, put32(o, 0xFFFFFF00u), o += 4;
     *o++ = 3, *o++ = 4, put32(o, SERVER), o += 4;
-    *o++ = 6, *o++ = 8, put32(o, dns1), put32(o + 4, dns2), o += 8;
+    if (ndns == 1)
+        *o++ = 6, *o++ = 4, put32(o, dns1), o += 4;
+    else if (ndns == 2)
+        *o++ = 6, *o++ = 8, put32(o, dns1), put32(o + 4, dns2), o += 8;
     if (shape == BAD_AFTER_DNS) {
         *o++ = 58, *o++ = 200;  // an option running past the end of the packet, and no end marker
     } else {
@@ -144,17 +154,17 @@ static void lease(struct netif *nif, uint32_t dns1, uint32_t dns2)
 {
     uint8_t f[600];
     CHECK(dhcp_start(nif) == ERR_OK, "dhcp_start");
-    feed(nif, f, reply(f, DHCP_OFFER, xid_of(nif), dns1, dns2, GOOD));
-    feed(nif, f, reply(f, DHCP_ACK, xid_of(nif), dns1, dns2, GOOD));
+    feed(nif, f, reply(f, DHCP_OFFER, xid_of(nif), 2, dns1, dns2, GOOD));
+    feed(nif, f, reply(f, DHCP_ACK, xid_of(nif), 2, dns1, dns2, GOOD));
     CHECK(state_of(nif) == DHCP_STATE_BOUND && lwip_ntohl(ip4_addr_get_u32(netif_ip4_addr(nif))) == LEASED,
           "bound to the leased address (state %u)", state_of(nif));
 }
 
-static void renew(struct netif *nif, uint32_t dns1, uint32_t dns2, shape_t shape)
+static void renew(struct netif *nif, int ndns, uint32_t dns1, uint32_t dns2, shape_t shape)
 {
     uint8_t f[600];
     CHECK(dhcp_renew(nif) == ERR_OK, "dhcp_renew");
-    feed(nif, f, reply(f, DHCP_ACK, xid_of(nif), dns1, dns2, shape));
+    feed(nif, f, reply(f, DHCP_ACK, xid_of(nif), ndns, dns1, dns2, shape));
 }
 
 static void set_dns(uint32_t a, uint32_t b)
@@ -174,41 +184,29 @@ static struct netif *fresh(struct netif *nif)
     return nif;
 }
 
-static void test_auto(void)
+static void test_hook(void)
 {
     struct netif nif;
-    s_manual = 0;
-    set_dns(0, 0);
+    set_dns(0x0A000001u, 0x0A000002u);  // what netmgr wrote: DHCP must leave them
     fresh(&nif);
     lease(&nif, 0x08080808u, 0x01010101u);
-    CHECK(dns_now(0) == 0x08080808u && dns_now(1) == 0x01010101u, "auto: the ACK's servers (%08x %08x)",
+    CHECK(s_calls == 1 && s_last_n == 2 && s_last[0] == 0x08080808u && s_last[1] == 0x01010101u, "the ACK's two servers, once (%d calls)",
+          s_calls);
+    CHECK(dns_now(0) == 0x0A000001u && dns_now(1) == 0x0A000002u, "and never lwIP's global servers (%08x %08x)",
           (unsigned)dns_now(0), (unsigned)dns_now(1));
-    renew(&nif, 0x09090909u, 0x04020202u, GOOD);
-    CHECK(state_of(&nif) == DHCP_STATE_BOUND && dns_now(0) == 0x09090909u && dns_now(1) == 0x04020202u,
-          "auto: a renewal ACK's servers");
-    renew(&nif, 0x05050505u, 0x06060606u, BAD_AFTER_DNS);
-    CHECK(state_of(&nif) == DHCP_STATE_RENEWING, "a malformed ACK is not accepted (state %u)", state_of(&nif));
-    CHECK(dns_now(0) == 0x09090909u && dns_now(1) == 0x04020202u, "a malformed ACK leaves the servers as they were");
+    renew(&nif, 2, 0x09090909u, 0x04020202u, GOOD);
+    CHECK(state_of(&nif) == DHCP_STATE_BOUND && s_calls == 2 && s_last_n == 2 && s_last[0] == 0x09090909u,
+          "a renewal that keeps the address: the hook again");
+    renew(&nif, 1, 0x05050505u, 0, GOOD);
+    CHECK(s_calls == 3 && s_last_n == 1 && s_last[0] == 0x05050505u && s_last[1] == 0, "a renewal with one server: the list of one");
+    renew(&nif, 0, 0, 0, GOOD);
+    CHECK(s_calls == 4 && s_last_n == 0, "a renewal without a DNS option: the hook with none (%d)", s_last_n);
+    renew(&nif, 2, 0x06060606u, 0x07070707u, BAD_AFTER_DNS);
+    CHECK(state_of(&nif) == DHCP_STATE_RENEWING && s_calls == 4, "a malformed ACK is not accepted, and the hook is not called");
     uint8_t f[600];
-    feed(&nif, f, reply(f, DHCP_ACK, xid_of(&nif), 0x07070707u, 0x03030303u, GOOD));
-    CHECK(state_of(&nif) == DHCP_STATE_BOUND && dns_now(0) == 0x07070707u, "then a good ACK is taken");
-    dhcp_stop(&nif);
-    dhcp_cleanup(&nif);
-    netif_remove(&nif);
-}
-
-static void test_manual(void)
-{
-    struct netif nif;
-    s_manual = 1;
-    set_dns(0x0A000001u, 0x0A000002u);  // what netmgr sets before dhcp_start
-    fresh(&nif);
-    lease(&nif, 0x08080808u, 0x01010101u);
-    CHECK(dns_now(0) == 0x0A000001u && dns_now(1) == 0x0A000002u, "manual: the lease keeps the manual DNS (%08x %08x)",
-          (unsigned)dns_now(0), (unsigned)dns_now(1));
-    renew(&nif, 0x09090909u, 0x04020202u, GOOD);
-    CHECK(state_of(&nif) == DHCP_STATE_BOUND && dns_now(0) == 0x0A000001u && dns_now(1) == 0x0A000002u,
-          "manual: a renewal keeps it too");
+    feed(&nif, f, reply(f, DHCP_ACK, xid_of(&nif), 2, 0x07070707u, 0x03030303u, GOOD));
+    CHECK(state_of(&nif) == DHCP_STATE_BOUND && s_calls == 5 && s_last[0] == 0x07070707u, "then a good ACK is taken");
+    CHECK(dns_now(0) == 0x0A000001u && dns_now(1) == 0x0A000002u, "lwIP's servers untouched throughout");
     dhcp_stop(&nif);
     dhcp_cleanup(&nif);
     netif_remove(&nif);
@@ -217,8 +215,7 @@ static void test_manual(void)
 int main(void)
 {
     lwip_init();
-    test_auto();
-    test_manual();
+    test_hook();
     CHECK(s_sent > 0, "lwIP sent its requests");
     printf("test_dhcp_dns: %s\n", failures ? "FAILED" : "ok");
     return failures ? 1 : 0;

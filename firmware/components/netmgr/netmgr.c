@@ -8,6 +8,13 @@
 #include "lwip/ip4_addr.h"
 #include "lwip/memp.h"
 #include "lwip/netif.h"
+#include "inet.h"
+#include "lwip/inet_chksum.h"
+#include "lwip/prot/icmp.h"
+#include "lwip/prot/ip4.h"
+#include "lwip/raw.h"
+#include "lwip/timeouts.h"
+#include "lwip/priv/tcp_priv.h"  // tcp_active_pcbs: the aborts on a route change (Plan 10 ruling 6)
 #include "lwip/stats.h"
 #include "lwip/tcpip.h"
 #include "semphr.h"
@@ -46,17 +53,195 @@ void netmgr_assert(const char *msg, const char *file, int line)
     configASSERT(0);
 }
 
-int netmgr_dns_from_lease(struct netif *netif)
-{
-    (void)netif;
-    return !s_cfg.dns_manual;  // spec §7.1: a manual DNS stays, renewals included
-}
-
 static void set_dns(int i, uint32_t a)
 {
     ip_addr_t x;
     ip_addr_set_ip4_u32_val(x, lwip_htonl(a));
     dns_setserver((u8_t)i, &x);
+}
+
+// ---- the links (Plan 10): the default route and the DNS follow network.priority --------------------------
+// Everything below runs in the tcpip thread: DHCP, the ETH netif's callbacks, PPP's status callback.
+
+static net_dns_t s_dns;           // each link's servers, from their own sources (ruling 5)
+static struct netif *s_cell;      // the PPP netif, once PPP is up
+static bool s_cell_up;
+static net_route_t s_route = NET_ROUTE_NONE;
+
+static bool eth_ok(void) { return s_added && netif_is_link_up(&s_netif) && ip4_addr_get_u32(netif_ip4_addr(&s_netif)) != 0; }
+
+static void dns_apply(void)
+{
+    uint32_t d[2];
+    netcfg_dns(&s_dns, s_route, d);
+    set_dns(0, d[0]);
+    set_dns(1, d[1]);
+}
+
+/** Ruling 6: every active TCP connection whose local address is not on the new default netif is aborted; its
+ *  socket fails, and its service dials again over the new link. */
+static void abort_others(struct netif *keep)
+{
+    const ip4_addr_t *a = netif_ip4_addr(keep);
+    int n = 0;
+    for (struct tcp_pcb *pcb = tcp_active_pcbs, *next; pcb; pcb = next) {
+        next = pcb->next;
+        if (!ip4_addr_eq(ip_2_ip4(&pcb->local_ip), a)) {
+            tcp_abort(pcb);
+            n++;
+        }
+    }
+    if (n)
+        blog("net: %d connections on the old link closed\r\n", n);
+}
+
+// ---- the Internet check per link (ruling 14): ICMP echo to 8.8.8.8 and 1.1.1.1 every 30 s, on each link --------
+
+#define PROBE_MS 30000
+#define PROBE_WAIT_MS 2000
+#define PROBE_ID INET_PROBE_ID
+static struct raw_pcb *s_probe;
+static inet_t s_inet[2];          // 0 Ethernet, 1 the cell
+static bool s_probed[2], s_replied[2];
+static uint16_t s_probe_round;
+static const uint32_t k_targets[2] = {INET_TARGET0, INET_TARGET1};
+
+static u8_t probe_recv(void *arg, struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *addr)
+{
+    (void)arg;
+    (void)pcb;
+    (void)addr;
+    // Only a reply for this round, from the target its sequence names, on the link it names, with a good checksum
+    // counts (inet_reply_ok, Codex code review): a forged packet from the LAN cannot move the route.
+    struct ip_hdr ih;
+    uint8_t icmp[64];
+    if (pbuf_copy_partial(p, &ih, sizeof ih, 0) != sizeof ih)
+        return 0;
+    u16_t hl = (u16_t)IPH_HL_BYTES(&ih), n = (u16_t)(p->tot_len - hl);
+    if (n > sizeof icmp || pbuf_copy_partial(p, icmp, n, hl) != n || icmp[0] != ICMP_ER)
+        return 0;  // not an echo reply of ours: lwIP goes on with it
+    struct netif *in = ip_current_input_netif();
+    int in_link = in == &s_netif ? 0 : (s_cell && in == s_cell) ? 1 : -1, link;
+    uint32_t src = lwip_ntohl(ip4_addr_get_u32(ip4_current_src_addr()));
+    if (!inet_reply_ok(icmp, n, src, in_link, s_probe_round, &link))
+        return 0;
+    s_replied[link] = true;
+    pbuf_free(p);
+    return 1;
+}
+
+static void probe_send(int link, struct netif *nif, int target)
+{
+    struct pbuf *p = pbuf_alloc(PBUF_IP, (u16_t)(sizeof(struct icmp_echo_hdr) + 8), PBUF_RAM);
+    if (!p)
+        return;
+    struct icmp_echo_hdr *e = p->payload;
+    memset(e, 0, p->len);
+    e->type = ICMP_ECHO;
+    e->id = lwip_htons(PROBE_ID);
+    e->seqno = lwip_htons((u16_t)((s_probe_round & 0x3FFF) << 2 | link << 1 | target));
+    e->chksum = inet_chksum(e, p->len);
+    ip_addr_t dst;
+    ip_addr_set_ip4_u32_val(dst, lwip_htonl(k_targets[target]));
+    raw_sendto_if_src(s_probe, p, &dst, nif, netif_ip_addr4(nif));  // through this link, from its own address
+    pbuf_free(p);
+}
+
+static void route_check(void);
+
+static void probe_judge(void *arg)
+{
+    (void)arg;
+    for (int l = 0; l < 2; l++) {
+        bool was = s_inet[l].ok;
+        if (s_probed[l])
+            inet_result(&s_inet[l], s_replied[l]);
+        else
+            inet_init(&s_inet[l]);  // no address: taken to have Internet again once it gets one
+        if (was != s_inet[l].ok)
+            blog("net: %s %s Internet\r\n", l ? "LTE" : "Ethernet", s_inet[l].ok ? "has" : "has no");
+    }
+    route_check();
+}
+
+static void probe_round(void *arg)
+{
+    (void)arg;
+    s_probe_round++;
+    s_probed[0] = eth_ok();
+    s_probed[1] = s_cell_up && s_cell;
+    s_replied[0] = s_replied[1] = false;
+    for (int t = 0; t < 2; t++) {
+        if (s_probed[0])
+            probe_send(0, &s_netif, t);
+        if (s_probed[1])
+            probe_send(1, s_cell, t);
+    }
+    sys_timeout(PROBE_WAIT_MS, probe_judge, NULL);
+    sys_timeout(PROBE_MS, probe_round, NULL);
+}
+
+static void probe_start(void)
+{
+    inet_init(&s_inet[0]);
+    inet_init(&s_inet[1]);
+    s_probe = raw_new(IP_PROTO_ICMP);
+    if (!s_probe)
+        return;
+    raw_recv(s_probe, probe_recv, NULL);
+    sys_timeout(PROBE_MS, probe_round, NULL);
+}
+
+void netmgr_internet(bool *eth, bool *cell)
+{
+    LOCK_TCPIP_CORE();
+    *eth = eth_ok() && s_inet[0].ok;
+    *cell = s_cell_up && s_inet[1].ok;
+    UNLOCK_TCPIP_CORE();
+}
+
+static void route_check(void)
+{
+    net_route_t r = netcfg_pick_inet(s_cfg.priority, eth_ok(), s_inet[0].ok, s_cell_up, s_inet[1].ok);
+    struct netif *want = r == NET_ROUTE_ETH ? &s_netif : r == NET_ROUTE_CELL ? s_cell : NULL;
+    if (r != s_route) {
+        s_route = r;
+        blog("net: default route via %s\r\n", r == NET_ROUTE_ETH ? "Ethernet" : r == NET_ROUTE_CELL ? "LTE" : "none");
+        if (want) {
+            netif_set_default(want);
+            abort_others(want);
+        }
+    }
+    dns_apply();  // after every event, the route unchanged included (Codex plan r1, r2)
+}
+
+static void eth_changed(struct netif *netif)
+{
+    (void)netif;
+    route_check();
+}
+
+// The patched dhcp.c: each accepted ACK's whole DNS list.
+void netmgr_dhcp_dns(struct netif *netif, int n, const struct ip4_addr *servers)
+{
+    (void)netif;
+    for (int i = 0; i < 2; i++)
+        s_dns.eth_lease[i] = i < n ? lwip_ntohl(ip4_addr_get_u32(&servers[i])) : 0;
+    dns_apply();
+}
+
+void netmgr_cell(struct netif *nif, bool up, const uint32_t dns[2])
+{
+    s_cell = nif;
+    s_cell_up = up;
+    s_dns.cell_peer[0] = up ? dns[0] : 0;
+    s_dns.cell_peer[1] = up ? dns[1] : 0;
+    route_check();
+}
+
+const char *netmgr_route_name(void)
+{
+    return s_route == NET_ROUTE_ETH ? "ETH" : s_route == NET_ROUTE_CELL ? "LTE" : "NONE";
 }
 
 // In the tcpip thread (lwIP's core lock is held). Order (Codex r2): netif_add, the static address and
@@ -79,7 +264,14 @@ static void tcpip_ready(void *arg)
         set_dns(0, s_cfg.dns1);
         set_dns(1, s_cfg.dns2);
     }
+    s_dns.eth_manual = s_cfg.dns_manual;
+    s_dns.eth_cfg[0] = s_cfg.dns1, s_dns.eth_cfg[1] = s_cfg.dns2;
+    s_dns.cell_manual = s_cfg.cell_dns_manual;
+    s_dns.cell_cfg[0] = s_cfg.cell_dns1, s_dns.cell_cfg[1] = s_cfg.cell_dns2;
+    netif_set_status_callback(&s_netif, eth_changed);  // an address (DHCP, static)
+    netif_set_link_callback(&s_netif, eth_changed);    // the link (eth_drv's poll)
     netif_set_default(&s_netif);
+    probe_start();
     netif_set_up(&s_netif);
     if (s_cfg.dhcp && dhcp_start(&s_netif) != ERR_OK)
         s_result = -2;
@@ -131,9 +323,9 @@ bool netmgr_online(void)
     eth_status_t e;
     eth_drv_status(&e);
     LOCK_TCPIP_CORE();
-    bool bound = s_added && ip4_addr_get_u32(netif_ip4_addr(&s_netif)) != 0;
+    bool bound = s_added && ip4_addr_get_u32(netif_ip4_addr(&s_netif)) != 0, cell = s_cell_up;
     UNLOCK_TCPIP_CORE();
-    return e.up && bound;
+    return (e.up && bound) || cell;  // ruling 7: either link with an address
 }
 
 int netmgr_netconn_free(void)

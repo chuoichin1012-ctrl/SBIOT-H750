@@ -11,7 +11,7 @@
 #define LTE_PWRKEY_LIMIT_MS 3000  // never reached, on any path
 #define LTE_READY_MS 10000     // AT tried every 500 ms after a release: 2 x the bench (1.0 s after RESET_N, at once after PWRKEY), not under 10 s (spec §7.2)
 #define LTE_RETRY_MS 60000     // MODEM NOT RESPONDING: the wait before the next round
-#define LTE_NO_ADDR_MS 120000  // PPP without an address this long: AT+CFUN=1,1
+#define LTE_NO_ADDR_MS 120000  // PPP without an address this long: the first attempt (then the backoff, Plan 10b)
 #define LTE_SILENT_MS 60000    // no frame from the modem this long, and AT silent: RECOVER
 
 typedef enum { LTE_UNKNOWN, LTE_ON, LTE_OFF } lte_power_t;
@@ -33,7 +33,19 @@ typedef struct {
  */
 lte_power_t lte_power_up(const lte_hw_t *hw, lte_power_t from);
 
-typedef enum { LTE_ACT_NONE, LTE_ACT_CFUN, LTE_ACT_RECOVER } lte_action_t;
+typedef enum { LTE_ACT_NONE, LTE_ACT_CFUN, LTE_ACT_RECOVER, LTE_ACT_POWER_CYCLE } lte_action_t;
 /** Supervision: no frame for LTE_SILENT_MS with AT silent is RECOVER, SIM or not; otherwise no SIM never acts;
- *  no address for LTE_NO_ADDR_MS is CFUN. */
-lte_action_t lte_supervise(uint32_t now_ms, uint32_t last_addr_ms, uint32_t last_frame_ms, bool at_alive, bool no_sim);
+ *  no address for no_addr_ms (lte_backoff_limit) is LTE_ACT_CFUN: "the limit is reached", the action itself
+ *  comes from lte_backoff_step. */
+lte_action_t lte_supervise(uint32_t now_ms, uint32_t last_addr_ms, uint32_t last_frame_ms, bool at_alive, bool no_sim,
+                           uint32_t no_addr_ms);
+
+/** The backoff for "no PPP address" (Plan 10b): the waits 2, 5, 10, then 30 minutes; CFUN for the first two
+ *  attempts in a row, the soft power cycle (QPOWD, POWERED DOWN, PWRKEY 2.5 s) from the third on. */
+typedef struct {
+    uint8_t fails;  // attempts in a row that brought no address
+} lte_backoff_t;
+#define LTE_BACKOFF_CAP 3
+uint32_t lte_backoff_limit(const lte_backoff_t *b);
+lte_action_t lte_backoff_step(lte_backoff_t *b);
+void lte_backoff_ok(lte_backoff_t *b);  // an address

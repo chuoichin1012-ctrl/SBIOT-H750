@@ -26,13 +26,30 @@ lte_power_t lte_power_up(const lte_hw_t *hw, lte_power_t from)
     return LTE_UNKNOWN;
 }
 
-lte_action_t lte_supervise(uint32_t now_ms, uint32_t last_addr_ms, uint32_t last_frame_ms, bool at_alive, bool no_sim)
+lte_action_t lte_supervise(uint32_t now_ms, uint32_t last_addr_ms, uint32_t last_frame_ms, bool at_alive, bool no_sim,
+                           uint32_t no_addr_ms)
 {
     if (now_ms - last_frame_ms >= LTE_SILENT_MS && !at_alive)
         return LTE_ACT_RECOVER;  // a silent module, SIM or not
     if (no_sim)
         return LTE_ACT_NONE;  // the module answers: no SIM is no reason to reset it
-    if (now_ms - last_addr_ms >= LTE_NO_ADDR_MS)
+    if (now_ms - last_addr_ms >= no_addr_ms)
         return LTE_ACT_CFUN;
     return LTE_ACT_NONE;
 }
+
+uint32_t lte_backoff_limit(const lte_backoff_t *b)
+{
+    static const uint32_t minutes[LTE_BACKOFF_CAP + 1] = {2, 5, 10, 30};
+    return minutes[b->fails < LTE_BACKOFF_CAP ? b->fails : LTE_BACKOFF_CAP] * 60000u;
+}
+
+lte_action_t lte_backoff_step(lte_backoff_t *b)
+{
+    lte_action_t a = b->fails < 2 ? LTE_ACT_CFUN : LTE_ACT_POWER_CYCLE;
+    if (b->fails < LTE_BACKOFF_CAP)
+        b->fails++;
+    return a;
+}
+
+void lte_backoff_ok(lte_backoff_t *b) { b->fails = 0; }

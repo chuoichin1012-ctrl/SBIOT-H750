@@ -123,18 +123,44 @@ static void test_pulses(void)
 static void test_supervise(void)
 {
     const uint32_t T = 1000000;
-    CHECK(lte_supervise(T, T - 1000, T - 1000, true, false) == LTE_ACT_NONE, "all well: nothing");
-    CHECK(lte_supervise(T, T - 120000, T - 1000, true, false) == LTE_ACT_CFUN, "2 minutes without an address: CFUN");
-    CHECK(lte_supervise(T, T - 119999, T - 1000, true, false) == LTE_ACT_NONE, "not yet 2 minutes");
-    CHECK(lte_supervise(T, T - 1000, T - 60000, false, false) == LTE_ACT_RECOVER, "60 s without a frame, AT silent: RECOVER");
-    CHECK(lte_supervise(T, T - 1000, T - 60000, true, false) == LTE_ACT_NONE, "60 s without a frame, AT answering: nothing");
-    CHECK(lte_supervise(T, T - 500000, T - 1000, true, true) == LTE_ACT_NONE, "no SIM, the module answering: no CFUN, no RECOVER");
-    CHECK(lte_supervise(T, T - 500000, T - 60000, false, true) == LTE_ACT_RECOVER, "no SIM, the module silent 60 s: RECOVER still (Codex code review)");
+    CHECK(lte_supervise(T, T - 1000, T - 1000, true, false, LTE_NO_ADDR_MS) == LTE_ACT_NONE, "all well: nothing");
+    CHECK(lte_supervise(T, T - 120000, T - 1000, true, false, LTE_NO_ADDR_MS) == LTE_ACT_CFUN, "2 minutes without an address: CFUN");
+    CHECK(lte_supervise(T, T - 119999, T - 1000, true, false, LTE_NO_ADDR_MS) == LTE_ACT_NONE, "not yet 2 minutes");
+    CHECK(lte_supervise(T, T - 1000, T - 60000, false, false, LTE_NO_ADDR_MS) == LTE_ACT_RECOVER, "60 s without a frame, AT silent: RECOVER");
+    CHECK(lte_supervise(T, T - 1000, T - 60000, true, false, LTE_NO_ADDR_MS) == LTE_ACT_NONE, "60 s without a frame, AT answering: nothing");
+    CHECK(lte_supervise(T, T - 500000, T - 1000, true, true, LTE_NO_ADDR_MS) == LTE_ACT_NONE, "no SIM, the module answering: no CFUN, no RECOVER");
+    CHECK(lte_supervise(T, T - 500000, T - 60000, false, true, LTE_NO_ADDR_MS) == LTE_ACT_RECOVER, "no SIM, the module silent 60 s: RECOVER still (Codex code review)");
+}
+
+static void test_backoff(void)
+{
+    lte_backoff_t b = {0};
+    const uint32_t min = 60000;
+    uint32_t limits[5];
+    lte_action_t acts[5];
+    for (int i = 0; i < 5; i++) {
+        limits[i] = lte_backoff_limit(&b);
+        acts[i] = lte_backoff_step(&b);
+    }
+    CHECK(limits[0] == 2 * min && limits[1] == 5 * min && limits[2] == 10 * min && limits[3] == 30 * min && limits[4] == 30 * min,
+          "the waits grow: 2, 5, 10, 30, 30 minutes (%u %u %u %u %u)", (unsigned)(limits[0] / min), (unsigned)(limits[1] / min),
+          (unsigned)(limits[2] / min), (unsigned)(limits[3] / min), (unsigned)(limits[4] / min));
+    CHECK(acts[0] == LTE_ACT_CFUN && acts[1] == LTE_ACT_CFUN && acts[2] == LTE_ACT_POWER_CYCLE && acts[3] == LTE_ACT_POWER_CYCLE &&
+              acts[4] == LTE_ACT_POWER_CYCLE,
+          "CFUN twice, then the soft power cycle");
+    lte_backoff_ok(&b);
+    CHECK(b.fails == 0 && lte_backoff_limit(&b) == 2 * min && lte_backoff_step(&b) == LTE_ACT_CFUN, "an address: back to 2 minutes and CFUN");
+    // lte_supervise with the backoff's limit
+    const uint32_t T = 10000000;
+    CHECK(lte_supervise(T, T - 5 * min, T - 1000, true, false, 10 * min) == LTE_ACT_NONE, "5 minutes without an address, a 10-minute limit: wait");
+    CHECK(lte_supervise(T, T - 10 * min, T - 1000, true, false, 10 * min) == LTE_ACT_CFUN, "10 minutes: the limit reached");
+    CHECK(lte_supervise(T, T - 1000, T - 60000, false, false, 30 * min) == LTE_ACT_RECOVER, "a silent module: RECOVER at once, whatever the limit");
 }
 
 int main(void)
 {
     test_paths();
+    test_backoff();
     test_pulses();
     test_supervise();
     printf("test_lte_power: %s\n", failures ? "FAILED" : "ok");

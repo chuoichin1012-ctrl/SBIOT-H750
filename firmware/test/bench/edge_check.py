@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan 08c bench check: the Edge runtime, the ESP32's test_edge.py without MQTT.
+"""Plan 08c bench check: the Edge runtime, the ESP32's test_edge.py; its MQTT part (channel 0) since Plan 09.
 
 UART1 is the Edge bus. Its devices are played by this PC through the RS485 loop: port2 is a TCP server,
 and BusSlave connects to it and answers what UART1's requests put on UART2 (Modbus RTU unit 5, a dead
@@ -8,8 +8,8 @@ and remote access use port1's socket (channel 1).
 
     python3 stm32/firmware/test/bench/edge_check.py [case ...]
 
-Cases: basic change schedule remote split gwrtu contention dead late shortreport partial bigreport memory di (di needs
-DO1 wired to DI1).
+Cases: basic change schedule remote split gwrtu contention dead late shortreport partial bigreport memory di mqtt (di needs
+DO1 wired to DI1; mqtt runs mosquitto in WSL, as mqtt_check.py).
 Prints one line per check and "bench: ok".
 """
 import datetime
@@ -741,6 +741,48 @@ def case_bigreport():
     check(s == 400 and b'too many values' in body and after == before, 'a template needing over 26 KB is refused, the stored one kept (%d)' % s)
 
 
+def case_mqtt():
+    """Plan 09: channel 0. Reports go into MQTT's outbox, rw_prot comes on the request topic and is answered on the reply
+    topic (mosquitto in WSL behind win_peer.py mqttrelay, as in mqtt_check.py)."""
+    import mqtt_check as mc
+    import tls_check as tc
+    tc.make_pki()
+    brk = mc.main_broker().start()
+    try:
+        r = mc.relay(60)
+        ok = mc.post('mqtt', mc.mqtt_cfg()) and mc.post('mqttPublish', []) and mc.post('mqttSubscribe', [])
+        # The largest report the 2048-character template allows: 70 slots of sys_sn, about 3.5 KB.
+        big = {'k_long_name_%03d' % i: 'sys_sn' for i in range(70)}
+        big['t'] = 't'
+        check(ok and setup([plc()], report={'channel': 0, 'reporting': 1, 'interval': 2, 'reportTopic': 'edge/report', 'reportQos': 1,
+                                             'remoteAccess': 1, 'remoteWrite': True, 'remoteFormat': 2, 'requestTopic': 'edge/req',
+                                             'requestQos': 1, 'replyTopic': 'edge/reply', 'replyQos': 1,
+                                             'template': json.dumps(big, separators=(',', ':'))}),
+              'set up: channel 0 (MQTT), a 3.5 KB report every 2 s, rw_prot on edge/req')
+        slave = BusSlave()
+        slave.start()
+        sub = mc.Sub('edge/#', qos=1)
+        time.sleep(8)
+        reps = [json.loads(p) for p in sub.payloads('edge/report')]
+        sizes = [len(p) for p in sub.payloads('edge/report')]
+        check(len(reps) >= 3 and all(len(o) == 71 and o.get('k_long_name_069') for o in reps) and reps[-1].get('t') == 25,
+              'reports reach the report topic whole (%d of %s bytes, t=%s)' % (len(reps), sizes[:1], reps[-1].get('t') if reps else None))
+        req = {'rw_prot': {'Ver': '1.0.1', 'dir': 'down', 'id': '7', 'r_data': [{'name': 't'}]}}
+        mc.pub('edge/req', json.dumps(req).encode(), qos=1)
+        check(wait(lambda: any(b'"name":"t","value":"25","err":"0"' in p for p in sub.payloads('edge/reply')), 5),
+              'rw_prot read over the request topic, the reply on the reply topic (%s)' % sub.payloads('edge/reply')[:1])
+        req = {'rw_prot': {'Ver': '1.0.1', 'dir': 'down', 'id': '8', 'w_data': [{'name': 'c2', 'value': '9'}]}}
+        mc.pub('edge/req', json.dumps(req).encode(), qos=1)
+        check(wait(lambda: slave.regs.get(11) == 9, 5), 'rw_prot write over MQTT reached the slave (%s)' % slave.regs.get(11))
+        check('Plan 09' not in status() and status().startswith('RUNNING'), 'status: %s' % status())
+        sub.stop()
+        slave.close()
+        bc.wait_peer(r, 1)
+    finally:
+        mc.post('mqtt', mc.mqtt_cfg(enabled=0, host=''))
+        brk.stop()
+
+
 def case_memory():
     nodes = lambda n, base, **kw: [dict({'name': '%s%d' % (base, i), 'reg': 20 + i, 'timeout': 300}, **kw) for i in range(n)]
     devs = [plc(nodes=nodes(40, 'p')), {'name': 'b2', 'addr': '9', 'uart': 2, 'poll': 2000, 'nodes': nodes(20, 'q')}]
@@ -748,11 +790,19 @@ def case_memory():
         devs.append(tcpdev(name='tcp%d' % k, nodes=nodes(6, 'e%d_' % k)))
     devs += [io(), virt(nodes=[{'name': 'v%d' % i, 'formula': '=%s+1,p0', 'dtype': 'float32_abcd'} for i in range(8)])]
     tmpl = {n['name']: n['name'] for d in devs for n in d['nodes'] if 'name' in n}
-    check(setup(devs, report={'reporting': 1, 'interval': 5, 'template': json.dumps(tmpl)}), 'set up the largest model: 100 points, both buses, 5 TCP devices')
+    # MQTT on too (Plan 09), its broker away: every task the gateway can run, but LTE's.
+    import mqtt_check as mc
+    mc.post('mqtt', mc.mqtt_cfg(host='192.0.2.1'))
+    check(setup(devs, report={'reporting': 1, 'interval': 5, 'template': json.dumps(tmpl)}),
+          'set up the largest model: 100 points, both buses, 5 TCP devices; MQTT on')
     slave, tcp = start_all(secs=45)
     time.sleep(40)
     slave.close()
     bc.wait_peer(tcp, 1)
+    _, st = w.get_json('/api/status')
+    sm = st['mem']['stackMin'] if st else {}
+    check(sm.get('words', 0) > 0 and sm.get('task'), '/api/status names the task with the least stack left (%s)' % sm)
+    mc.post('mqtt', mc.mqtt_cfg(enabled=0, host=''))
     log = log_text()
     m = re.search(r'edge: stack headroom: (.*) bytes', log)
     hp = re.search(r'edge: heap free (\d+), lowest (\d+)', log)
@@ -789,7 +839,7 @@ def case_di():
 
 CASES = {'basic': case_basic, 'change': case_change, 'schedule': case_schedule, 'remote': case_remote, 'split': case_split,
          'gwrtu': case_gwrtu, 'contention': case_contention, 'dead': case_dead, 'late': case_late, 'shortreport': case_shortreport,
-         'partial': case_partial, 'bigreport': case_bigreport, 'memory': case_memory, 'di': case_di}
+         'partial': case_partial, 'bigreport': case_bigreport, 'memory': case_memory, 'di': case_di, 'mqtt': case_mqtt}
 
 
 def main():

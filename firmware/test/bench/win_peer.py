@@ -17,8 +17,10 @@ MODE tcpserver  port, secs, delay_ms (listen only after), send_hex + send_ms (to
      https      port, secs, cert, key, reply: the http mode over TLS
      mqttrelay  port, secs, to (the broker's port on 127.0.0.1: mosquitto in WSL, through localhost forwarding),
                 cut=DIR:TYPE:N (on the first connection, close both sides instead of forwarding the Nth packet of TYPE
-                going DIR, up = board to broker, down = broker to board; e.g. up:PUBREL:1), hold=1 (after the cut,
-                refuse new connections for hold_ms, default 0); events pkt (dir, type, len, conn), cut, accept, close (Plan 09)
+                going DIR, up = board to broker, down = broker to board; e.g. up:PUBREL:1), hold_ms (after the cut,
+                refuse new connections that long), stall=DIR:TYPE:N:K (on the first connection, forward only the first
+                K bytes of that packet, then nothing more that way), refuse=1 (accept, then close at once), raw=1 (bytes
+                as they come, no parsing: TLS); events pkt (dir, type, len, conn), cut, stall, accept, refused (Plan 09)
 """
 import json
 import socket
@@ -258,7 +260,7 @@ def https(args):
 
 
 MQTT_TYPES = ['', 'CONNECT', 'CONNACK', 'PUBLISH', 'PUBACK', 'PUBREC', 'PUBREL', 'PUBCOMP', 'SUBSCRIBE', 'SUBACK',
-              'UNSUBSCRIBE', 'UNSUBACK', 'PINGREQ', 'PINGRESP', 'DISCONNECT']
+              'UNSUBSCRIBE', 'UNSUBACK', 'PINGREQ', 'PINGRESP', 'DISCONNECT', 'AUTH']
 
 
 def mqtt_split(buf):
@@ -282,7 +284,7 @@ def mqtt_split(buf):
 
 
 def mqtt_pipe(src, dst, way, conn, state):
-    buf, counts = b'', {}
+    buf, counts, stalled = b'', {}, False
     while not state['closed']:
         try:
             d = src.recv(65536)
@@ -292,6 +294,14 @@ def mqtt_pipe(src, dst, way, conn, state):
             break
         if not d:
             break
+        if stalled:
+            continue  # read and dropped: the board sees a packet that never ends
+        if state['raw']:
+            try:
+                dst.sendall(d)
+            except OSError:
+                break
+            continue
         pkts, buf = mqtt_split(buf + d)
         for p in pkts:
             kind = MQTT_TYPES[p[0] >> 4]
@@ -302,6 +312,14 @@ def mqtt_pipe(src, dst, way, conn, state):
                 out(ev='cut', **info)
                 state['closed'] = True
                 state['cut_at'] = time.time()
+                break
+            if conn == 0 and state['stall'] and state['stall'][:3] == (way, kind, counts[kind]):
+                out(ev='stall', **info)
+                try:
+                    dst.sendall(p[:state['stall'][3]])
+                except OSError:
+                    pass
+                stalled = True
                 break
             try:
                 dst.sendall(p)
@@ -320,6 +338,8 @@ def mqtt_pipe(src, dst, way, conn, state):
 def mqttrelay(args):
     cut = args.get('cut')
     cut = (cut.split(':')[0], cut.split(':')[1], int(cut.split(':')[2])) if cut else None
+    stall = args.get('stall')
+    stall = tuple(int(x) if i >= 2 else x for i, x in enumerate(stall.split(':'))) if stall else None
     s = socket.socket()
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(('0.0.0.0', int(args['port'])))
@@ -338,6 +358,11 @@ def mqttrelay(args):
             out(ev='refused', peer=a[0])
             c.close()
             continue
+        if args.get('refuse') == '1':
+            out(ev='accept', peer=a[0], conn=conn)
+            conn += 1
+            c.close()
+            continue
         try:
             b = socket.create_connection(('127.0.0.1', int(args['to'])), 3)
         except OSError as e:
@@ -347,7 +372,7 @@ def mqttrelay(args):
         for x in (c, b):
             x.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             x.settimeout(0.2)
-        st = {'closed': False, 'cut': cut}
+        st = {'closed': False, 'cut': cut, 'stall': stall, 'raw': args.get('raw') == '1'}
         states.append(st)
         out(ev='accept', peer=a[0], conn=conn)
         threading.Thread(target=mqtt_pipe, args=(c, b, 'up', conn, st), daemon=True).start()

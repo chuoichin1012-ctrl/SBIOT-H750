@@ -196,8 +196,9 @@ static void status_get(struct mg_connection *c)
     unsigned used = 0, size = 0;
     console_buffer_use(&used, &size);
     add_pool(pools, "console_log", used, size);
-    // The lowest stack left of any task, and whose.
-    TaskStatus_t ts[24];
+    // The lowest stack left of any task, and whose. Every task fits (about 30 with Edge's 9 and MQTT's 2, spec §6.1):
+    // uxTaskGetSystemState returns 0 for an array too small. Static, in AXI: only `web` runs this.
+    static TaskStatus_t ts[40] __attribute__((section(".axi_bss")));
     UBaseType_t n = uxTaskGetSystemState(ts, sizeof ts / sizeof ts[0], NULL);
     const char *worst = "";
     unsigned words = 0xFFFFFFFFu;

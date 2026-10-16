@@ -463,6 +463,9 @@ static bool dial(void)
     return true;
 }
 
+/** retryInterval, whatever is queued meanwhile: a notify must not shorten it (each frame queued offline notifies). */
+static void retry_wait(void) { vTaskDelay(pdMS_TO_TICKS((uint32_t)(C.retry_s > 0 ? C.retry_s : 3) * 1000u)); }
+
 static void mqtt_task(void *arg)
 {
     (void)arg;
@@ -470,7 +473,7 @@ static void mqtt_task(void *arg)
         if (!netmgr_online() || !dial()) {
             if (strcmp(s_state, "REFUSED") != 0)
                 set_state("CONNECTING");
-            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS((uint32_t)(C.retry_s > 0 ? C.retry_s : 3) * 1000u));
+            retry_wait();
             continue;
         }
         for (;;) {
@@ -489,7 +492,7 @@ static void mqtt_task(void *arg)
         }
         drop_connection();
         set_state("CONNECTING");
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS((uint32_t)(C.retry_s > 0 ? C.retry_s : 3) * 1000u));
+        retry_wait();
     }
 }
 

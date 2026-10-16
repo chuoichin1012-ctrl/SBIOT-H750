@@ -84,11 +84,19 @@ test('a data field follows its HEX/ASCII format switch, and back (the user, 2026
   assert.equal(convertData('5342494F54', false), 'SBIOT');
   assert.equal(convertData('53 42 49 4f 54', false), 'SBIOT');
   assert.equal(convertData('SBIOT', true), '5342494F54');
-  assert.equal(convertData(convertData('www.sbiot.vn', true), false), 'www.sbiot.vn');
+  assert.equal(convertData(convertData('www.sbiot.vn', true)!, false), 'www.sbiot.vn');
   assert.equal(convertData('', true), '');
 });
 
-test('data that is not the other format is left as typed', () => {
-  assert.equal(convertData('not hex', false), 'not hex');  // switched to ASCII, but it was never hex
-  assert.equal(convertData('7E01FF', false), '7E01FF');    // bytes that are not printable text stay hex
+test('data that was never hex is left as typed', () => {
+  assert.equal(convertData('not hex', false), 'not hex');  // switched to ASCII from an invalid HEX field
+});
+
+test('bytes that are not printable text cannot become ASCII: null, the switch is refused (Codex)', () => {
+  assert.equal(convertData('7E01FF', false), null);  // as ASCII it would send six characters, not three bytes
+  assert.equal(convertData('C328', false), null);    // not UTF-8
+});
+
+test('a round trip keeps every byte, a BOM too (Codex)', () => {
+  for (const hex of ['EFBBBF41', '5342494F54', 'E1BBA9']) assert.equal(convertData(convertData(hex, false)!, true), hex);
 });

@@ -9,6 +9,7 @@ import {
   HEX_ASCII, IDENTITY, ON_OFF, TLS, TLS_VERIFY, allowListError, convertData, isHex, isIpv4, type FieldDef, type Options,
 } from '../lib/validate';
 import { CertUpload } from '../components/CertUpload';
+import { toast } from '../components/feedback';
 import { PageHeader, Panel, Pending, SaveBar, Tabs } from '../components/ui';
 import { Fields } from '../components/form';
 
@@ -190,7 +191,14 @@ export function PortPage(props: { path?: string; n?: string; tab?: string }) {
   const onChange = (id: string, v: Val) => {
     // A HEX/ASCII switch converts its data field, so the same bytes are shown in the new format.
     const data = DATA_OF[id];
-    if (data && Number(v) !== Number(f.values[id])) f.set(data, convertData(String(f.values[data] ?? ''), Number(v) === 1));
+    if (data && Number(v) !== Number(f.values[id])) {
+      const next = convertData(String(f.values[data] ?? ''), Number(v) === 1);
+      if (next === null) {
+        f.set(id, f.values[id]);  // a render, so the radio shows HEX again
+        return void toast('These bytes are not printable text, so they stay in HEX.', 'err');
+      }
+      f.set(data, next);
+    }
     f.set(id, v);
     // Keep the extra mode valid when the working mode changes.
     if (id === 'workMode' && !(SOCK_MODES[Number(v)] ?? []).some(([m]) => m === sm(f.values))) f.set('socketMode', NONE);

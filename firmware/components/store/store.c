@@ -179,26 +179,37 @@ static bool body_ok(const char *name, const char *text, size_t len)
     return js_parse_root(text, len, &root) && js_type(root) == (cfg_is_list(&s_env, name) ? JS_ARRAY : JS_OBJECT);
 }
 
-/** An object config's text with each key of its default that it lacks added, as the default has it (malloc'd,
- *  its length in *n); NULL when nothing is missing, or for a list. So the UI never opens a field without a value:
- *  a copy from a firmware with fewer fields, or a body sent without some keys. Flash keeps the bytes as sent. */
-static char *with_defaults(const char *name, const char *text, size_t len, size_t *n)
+enum { FILL_NONE, FILL_DONE, FILL_NOMEM };
+
+/** An object config's text with each key of its default that it lacks added, as the default has it: FILL_DONE
+ *  (*out malloc'd, its length in *n), FILL_NONE (nothing missing, or a list) or FILL_NOMEM. So the UI never opens
+ *  a field without a value: a copy from a firmware with fewer fields, or a body sent without some keys. Flash
+ *  keeps the bytes as sent. The text is valid JSON of its kind (body_ok or body_check), so a parse fails only
+ *  for memory. */
+static int with_defaults(const char *name, const char *text, size_t len, char **out, size_t *n)
 {
+    *out = NULL;
     if (cfg_is_list(&s_env, name))
-        return NULL;
+        return FILL_NONE;
     cJSON *doc = cJSON_ParseWithLength(text, len), *def = cfg_default(&s_env, name);
-    bool added = false;
-    for (const cJSON *d = def ? def->child : NULL; doc && d; d = d->next)
+    int r = doc && def ? FILL_NONE : FILL_NOMEM;
+    for (const cJSON *d = def ? def->child : NULL; doc && r != FILL_NOMEM && d; d = d->next)
         if (!cJSON_GetObjectItemCaseSensitive(doc, d->string)) {
-            cJSON_AddItemToObject(doc, d->string, cJSON_Duplicate(d, true));
-            added = true;
+            cJSON *v = cJSON_Duplicate(d, true);
+            if (!v || !cJSON_AddItemToObject(doc, d->string, v)) {
+                cJSON_Delete(v);
+                r = FILL_NOMEM;
+            } else {
+                r = FILL_DONE;
+            }
         }
-    char *out = added ? cJSON_PrintUnformatted(doc) : NULL;
+    if (r == FILL_DONE && !(*out = cJSON_PrintUnformatted(doc)))
+        r = FILL_NOMEM;
     cJSON_Delete(doc);
     cJSON_Delete(def);
-    if (out)
-        *n = strlen(out);
-    return out;
+    if (*out)
+        *n = strlen(*out);
+    return r;
 }
 
 // The cache holds each config's stored bytes, as GET serves them (Plan 09b ruling 4), with the keys
@@ -213,7 +224,9 @@ static void load(const char *name)
         store_port_log("%s: the stored copy is not JSON of its kind; its default is served", name);
         text = NULL;
     }
-    char *full = text ? with_defaults(name, text, n, &n) : NULL;
+    char *full = NULL;
+    if (text && with_defaults(name, text, n, &full, &n) == FILL_NOMEM)
+        store_port_log("%s: no memory to add its missing keys; served as stored", name);
     if (full)
         text = full;
     if (!text) {
@@ -595,7 +608,11 @@ store_err_t store_set_text(const char *name, const char *text, size_t len, char 
     if (e != STORE_OK)
         return e;
     size_t clen = len;
-    char *full = with_defaults(name, text, len, &clen);  // what GET serves: the keys the body lacks added
+    char *full;  // what GET serves: the keys the body lacks added
+    if (with_defaults(name, text, len, &full, &clen) == FILL_NOMEM) {
+        snprintf(err, errlen, "The gateway does not have enough free memory to save these settings.");
+        return STORE_ENOMEM;  // before anything is written
+    }
     const char *ctext = full ? full : text;
     LOCK();
     if (read_only() || s_resetting) {

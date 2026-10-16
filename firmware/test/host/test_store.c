@@ -439,6 +439,39 @@ static void test_revalidate_at_boot(void)
     free(want);
 }
 
+// Codex (config-defaults review): with_defaults() out of memory at any of its allocations. A save either
+// succeeds and GET has every key, or answers STORE_ENOMEM before writing; nothing leaks (ASan).
+static void test_with_defaults_oom(void)
+{
+    flash_new(41);
+    reboot();
+    cJSON_Hooks hooks = {fail_malloc, free};
+    cJSON_InitHooks(&hooks);
+    const char *part = "{\"ipMode\":1,\"ip\":\"192.168.0.78\"}";
+    int ok = 0, oom = 0;
+    for (int n = 0; n < 2000; n++) {
+        char err[200] = "";
+        s_alloc_fail_at = n;
+        store_err_t e = store_set_text("network", part, strlen(part), err, sizeof err);
+        bool hit = s_alloc_fail_at < 0;
+        s_alloc_fail_at = -1;
+        char *got = store_get_json("network");
+        if (e == STORE_OK) {
+            ok++;
+            CHECK(got && strstr(got, "\"apnAuth\"") && strstr(got, "192.168.0.78"), "allocation %d failed, saved: every key (%s)", n, got);
+        } else {
+            oom++;
+            CHECK(e == STORE_ENOMEM, "allocation %d failed: STORE_ENOMEM, not %d (%s)", n, e, err);
+        }
+        free(got);
+        if (!hit)
+            break;  // no allocation numbered n: every one has failed once
+    }
+    cJSON_InitHooks(NULL);
+    CHECK(ok > 0 && oom > 0, "the sweep saw failures (%d) and a save (%d)", oom, ok);
+    BALANCED("with_defaults out of memory");
+}
+
 static int s_heard;
 static char s_last[32];
 
@@ -1927,6 +1960,7 @@ int main(void)
         test_first_boot();
         test_set_get();
         test_revalidate_at_boot();
+    test_with_defaults_oom();
         test_listeners_and_state();
         test_state_read_failures();
         test_certs_and_factory_reset();

@@ -215,7 +215,8 @@ def case_tcpserver():
     dur = after[-1][0] - after[0][0] if len(after) > 1 else 0
     got_after = after[-1][1] - after[0][1] if len(after) > 1 else 0
     # Codex code review r2: after the recovery the reader must go on at the stream's rate, to the end.
-    check(dropped and len(gaps) == 1 and 9 <= gaps[0][1] - gaps[0][0] <= 13 and dur >= 15 and got_after >= 0.9 * rate * dur,
+    check(m is not None and rate > 0 and dropped and len(gaps) == 1 and 9 <= gaps[0][1] - gaps[0][0] <= 13 and dur >= 15
+          and got_after >= 0.9 * rate * dur,  # the stream's own count is required (Codex code review r3)
           'a client that never reads: dropped (%s); the other waited %s s once, then got %d of %d bytes over %.1f s'
           % (dropped, round(gaps[0][1] - gaps[0][0], 1) if gaps else '-', got_after, rate * dur, dur))
 

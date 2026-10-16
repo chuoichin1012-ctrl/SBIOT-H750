@@ -31,3 +31,7 @@ void hb_reason_set(hb_reason_t *r, const char *name, uint32_t late_s);
 /** True with the name and seconds late when `r` holds a reason (magic and CRC right; random RAM fails). */
 bool hb_reason_get(const hb_reason_t *r, char name[HB_NAME_MAX], uint32_t *late_s);
 void hb_reason_clear(hb_reason_t *r);
+/** Whether a kept reason belongs to this reset (Codex plan r6: RCC_RSR's flags do not exclude each other; a
+ *  power-on sets PINRSTF too): never after a power-on or brown-out; else an IWDG1 or a pin reset (the SGM706
+ *  pulls NRST once R20 is fitted). */
+bool hb_restart_was_ours(bool por, bool bor, bool iwdg, bool pin);

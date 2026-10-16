@@ -124,6 +124,12 @@ static void test_hb(void)
     CHECK(!hb_reason_get(&bad, name, &late), "a changed reason is refused (CRC)");
     memset(&bad, 0xA5, sizeof bad);
     CHECK(!hb_reason_get(&bad, name, &late), "random RAM after a power-up is refused");
+    // Codex plan r6: the reset flags do not exclude each other (PINRSTF is also set by a power-on).
+    CHECK(hb_restart_was_ours(false, false, true, false) && hb_restart_was_ours(false, false, false, true) &&
+              hb_restart_was_ours(false, false, true, true), "IWDG1 or a pin reset (SGM706 with R20): ours");
+    CHECK(!hb_restart_was_ours(true, false, false, true) && !hb_restart_was_ours(false, true, false, true) &&
+              !hb_restart_was_ours(true, true, true, true), "a power-on or brown-out, PINRSTF too: not ours");
+    CHECK(!hb_restart_was_ours(false, false, false, false), "a software reset (our own restart): not ours");
     hb_reason_clear(&r);
     CHECK(!hb_reason_get(&r, name, &late), "cleared");
     int n = 3, last = 0;

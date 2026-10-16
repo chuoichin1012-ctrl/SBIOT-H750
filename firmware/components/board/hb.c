@@ -78,3 +78,8 @@ bool hb_reason_get(const hb_reason_t *r, char name[HB_NAME_MAX], uint32_t *late_
 }
 
 void hb_reason_clear(hb_reason_t *r) { memset(r, 0, sizeof *r); }
+
+bool hb_restart_was_ours(bool por, bool bor, bool iwdg, bool pin)
+{
+    return !por && !bor && (iwdg || pin);
+}

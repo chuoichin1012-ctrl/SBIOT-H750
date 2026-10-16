@@ -421,6 +421,12 @@ static void test_reserve(void)
     c.report_bytes = 0;
     CHECK(edge_reserve(&c, &m, counting_alloc, counting_free) && !m.report, "reports off: no report buffer");
     edge_unreserve(&m, counting_free);
+    // The largest configuration (bench memory case): two buses, 5 Modbus TCP devices, edge_ctl, edge_rpt.
+    edge_counts_t big = {.ndev = 9, .npts = 100, .nlinks = 8, .report_bytes = 26 * 1024, .ntasks = 9,
+                         .stack_bytes = {6144, 6144, 5120, 5120, 5120, 5120, 5120, 4096, 4096}, .tcb_bytes = 100, .nlocks = 6,
+                         .lock_bytes = 80};
+    CHECK(edge_reserve(&big, &m, counting_alloc, counting_free) && m.stacks[8] && m.locks[5], "9 tasks and 6 locks: reserved");
+    edge_unreserve(&m, counting_free);
 }
 
 int main(void)

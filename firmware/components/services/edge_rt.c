@@ -720,8 +720,8 @@ static void log_headroom(void)
     for (int i = 0; i < s_ntasks && n < sizeof line; i++)
         n += (size_t)snprintf(line + n, sizeof line - n, "%s%s %u", i ? ", " : "", pcTaskGetName(s_tasks[i]),
                               (unsigned)(uxTaskGetStackHighWaterMark(s_tasks[i]) * sizeof(StackType_t)));
-    SLOG_I("edge", "stack headroom: %s bytes; heap free %u, lowest %u", line, (unsigned)xPortGetFreeHeapSize(),
-           (unsigned)xPortGetMinimumEverFreeHeapSize());
+    SLOG_I("edge", "stack headroom: %s bytes", line);  // blog lines hold 192 bytes: the heap on its own line
+    SLOG_I("edge", "heap free %u, lowest %u", (unsigned)xPortGetFreeHeapSize(), (unsigned)xPortGetMinimumEverFreeHeapSize());
 }
 
 /** edge_ctl: IO and virtual points and linkage, every 10 ms; never waits on a device. */
@@ -779,7 +779,7 @@ static void rpt_task(void *arg)
 static void *heap_alloc(size_t n) { return calloc(1, n); }
 
 /** Everything Edge holds back to the heap, and Edge off with `why`. */
-static void give_up(const char *why)
+static void give_up(const char *why, const char *step)
 {
     for (int i = 0; i < s_ndev; i++)
         if (s_devs[i].link)
@@ -796,7 +796,7 @@ static void give_up(const char *why)
     s_devs = NULL;
     s_ndev = s_npts = s_nlinks = 0;
     s_note = why;
-    SLOG_E("edge", "Edge stays off: %s", why);
+    SLOG_E("edge", "Edge stays off: %s (%s)", why, step);
 }
 
 void edge_start(void)
@@ -818,7 +818,7 @@ void edge_start(void)
     if (!rep || !links) {
         cJSON_Delete(rep);
         cJSON_Delete(links);
-        give_up("NO MEMORY");
+        give_up("NO MEMORY", "edgeReport and edgeLinkage");
         return;
     }
     read_report(rep);
@@ -838,7 +838,7 @@ void edge_start(void)
     s_tcp = count.neth ? calloc((size_t)count.neth, sizeof *s_tcp) : NULL;
     if ((count.neth && !s_tcp) || !edge_reserve(&c, &M, heap_alloc, free)) {
         cJSON_Delete(links);
-        give_up("NO MEMORY");
+        give_up("NO MEMORY", "the model, stacks and locks");
         return;
     }
     s_devs = M.devs;
@@ -855,7 +855,7 @@ void edge_start(void)
     }
     cJSON_Delete(links);
     if (!ok) {
-        give_up("NO MEMORY");
+        give_up("NO MEMORY", "the model's load and index");
         return;
     }
 
@@ -874,7 +874,7 @@ void edge_start(void)
             s_tmpl = NULL;
             s_note = "TEMPLATE TOO LARGE";
         } else if (!(s_report = malloc(s_report_max))) {
-            give_up("NO MEMORY");
+            give_up("NO MEMORY", "the report buffer");
             return;
         }
     }

@@ -124,7 +124,7 @@ edge_kind_t edge_sys_value(int field, int64_t utc_ms, const char *sn, const char
 
 // ---- Memory: all or nothing (Plan 08c ruling 2) ------------------------------------------------------
 
-#define EDGE_MAX_TASKS 8   // edge_bus 1..2, edge_tcp 0..5, edge_ctl, edge_rpt
+#define EDGE_MAX_TASKS 9   // edge_bus 0..2, edge_tcp 0..5, edge_ctl, edge_rpt (bench: the largest model needs 9)
 #define EDGE_MAX_LOCKS 6   // the cache, one per Modbus TCP device
 typedef struct {
     int ndev, npts, nlinks;

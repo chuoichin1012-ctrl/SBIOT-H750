@@ -313,6 +313,13 @@ def start_all(**peer_args):
     return slave, tcp
 
 
+def cadence_ok(st, rs, every):
+    """Reports per second over the window: TCP may split one report or join two in a segment, so the count
+    over the span is what is checked, not the gaps between segments."""
+    span = st.pieces[-1][0] - st.pieces[0][0] if len(st.pieces) > 1 else 0
+    return span > 4 * every and abs((len(rs) - 1) - span / every) <= 1.5, (len(rs), round(span, 1))
+
+
 def reports(st):
     return [o for o, _ in st.objects()[0] if 'k' in o or 'rw_prot' not in o]
 
@@ -340,9 +347,8 @@ def case_basic():
     check(re.match(r'RUNNING (\d+)/\1$', status()), 'status: every point read (%s)' % status())
     fc3 = [(a, n) for _, u, fc, a, n in slave.log if u == 5 and fc == 3]
     check(fc3 and all(x == (10, 4) for x in fc3), 'batch reads: t, c2, f in one request, FC3 10..13 (%s)' % fc3[:3])
-    times = [t for t, _ in [(p[0], 0) for p in st.pieces]]
-    gaps = [b - a for a, b in zip(times, times[1:])]
-    check(len(rs) >= 4 and all(1.5 <= g <= 2.6 for g in gaps[1:]), 'periodic: every 2 s (%s)' % [round(g, 2) for g in gaps])
+    ok, seen = cadence_ok(st, rs, 2)
+    check(ok, 'periodic: every 2 s (%d reports over %s s)' % seen)
 
 
 def case_change():
@@ -383,13 +389,26 @@ def case_schedule():
     st = Stream()
     st.start()
     w.req('POST', '/api/time', body=json.dumps({'time': t.strftime('%Y-%m-%d %H:%M:%S')}).encode())
-    got = wait(lambda: reports(st), 20)
+    # The minute the clock was set in is due at once (the ESP32's schedule_due); the next comes at :00.
+    got = wait(lambda: [r for r in reports(st) if str(r.get('ts', '')).endswith(':00')], 25)
+    first = reports(st)[:1]
     st.close()
     slave.close()
     bc.wait_peer(tcp, 1)
     r = got[0] if got else {}
-    check(got and isinstance(r.get('ut'), (int, float)) and isinstance(r.get('ts'), str) and r['ts'].endswith(':00'),
-          'clock set: a report at the minute, sys_unix_time a number, sys_time UTC text (%s)' % r)
+    utc = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:')
+    check(got and isinstance(r.get('ut'), (int, float)) and r['ts'].startswith(utc[:11]),
+          'clock set: a report at the minute, sys_unix_time a number, sys_time UTC text (%s, first %s)' % (r, first))
+    check(got and abs(datetime.datetime.strptime(r['ts'], '%Y-%m-%d %H:%M:%S').replace(tzinfo=datetime.timezone.utc).timestamp() - r['ut']) < 1,
+          'sys_time and sys_unix_time agree')
+
+
+def connect(port=23):
+    """A client of port1. TCP_NODELAY: pieces go at once; with Nagle the PC holds a piece until lwIP's delayed
+    ACK, past the 200 ms after which a partial request goes on to RS485 (Plan 08c ruling 3)."""
+    s = socket.create_connection((GW, port), 5)
+    s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    return s
 
 
 def ask(sock, req, secs=2, want=1):
@@ -413,7 +432,7 @@ def case_remote():
     check(setup(devs, report={'remoteAccess': 1, 'remoteWrite': True, 'remoteFormat': 2}), 'set up: remote access, rw_prot JSON')
     slave, tcp = start_all(secs=60)
     time.sleep(4)
-    s = socket.create_connection((GW, 23), 5)
+    s = connect()
     req = {'rw_prot': {'Ver': '1.0.1', 'dir': 'down', 'id': '1', 'r_data': [{'name': 't'}]}}
     got = ask(s, json.dumps(req).encode(), 3, 20)
     check(b'"name":"t","value":"25","err":"0"' in got, 'rw_prot read (%s)' % got[:120])
@@ -441,7 +460,7 @@ def case_remote():
     set_do(0, True)
     set_do(1, False)
     time.sleep(5)
-    s = socket.create_connection((GW, 23), 5)
+    s = connect()
     r = ask(s, rtu_req(10, 3, 100, 1), 2, 7)
     check(r == bc.rtu(bytes([10, 3, 2, 0, 250])), 'mapped slave 10, t at register 100: its raw value (%s)' % r.hex())
     r = ask(s, rtu_req(10, 3, 11, 1), 2, 7)
@@ -464,8 +483,10 @@ def case_remote():
           'FC16 through the mapping writes the float32 point f to the device (%s)' % r.hex())
     r = ask(s, bc.rtu(struct.pack('>BBHH', 10, 6, 13, 1)), 2, 5)
     check(r[:3] == bytes([10, 0x86, 2]), 'FC6 on half of a float32 point is refused (%s)' % r.hex())
-    r = ask(s, bc.rtu(struct.pack('>BBHHBB', 10, 15, 3, 3, 1, 0b111)), 3, 5)
-    check(r[:3] == bytes([10, 0x8F, 2]) and slave.coils.get(3) == 0, 'FC15 across a missing coil: exception 2, nothing written (%s)' % r.hex())
+    before = slave.coils.get(3)
+    r = ask(s, bc.rtu(struct.pack('>BBHHBB', 10, 15, 3, 3, 1, 0b000)), 3, 5)  # coils 3..5, 4 missing: zeros would show
+    check(r[:3] == bytes([10, 0x8F, 2]) and slave.coils.get(3) == before == 1 and not [x for x in slave.log if x[2] == 15],
+          'FC15 across a missing coil: exception 2, nothing written (%s)' % r.hex())
     time.sleep(2.5)
     r = ask(s, rtu_req(6, 3, 0, 1), 2, 5)
     check(r[:3] == bytes([6, 0x83, 0x0B]), 'a point that never answered: exception 0x0B (%s)' % r.hex())
@@ -477,7 +498,7 @@ def case_remote():
     check(setup(devs, report={'remoteAccess': 1, 'remoteWrite': False, 'remoteFormat': 0}), 'set up: remote writes off')
     slave, tcp = start_all(secs=30)
     time.sleep(4)
-    s = socket.create_connection((GW, 23), 5)
+    s = connect()
     r = ask(s, bc.rtu(struct.pack('>BBHH', 10, 6, 11, 3)), 2, 5)
     check(r[:3] == bytes([10, 0x86, 1]) and slave.regs.get(11) == 7, 'remote writes off: illegal function (%s)' % r.hex())
     r = ask(s, bc.rtu(struct.pack('>BBHH', 120, 5, 0, 0)), 2, 5)
@@ -492,7 +513,7 @@ def case_split():
     check(setup(devs, report={'remoteAccess': 1, 'remoteFormat': 1}), 'set up: remote access, Modbus TCP framing')
     slave, tcp = start_all(secs=30)
     time.sleep(4)
-    s = socket.create_connection((GW, 23), 5)
+    s = connect()
     a = bc.mbap(1, bytes([10, 3, 0, 11, 0, 1]))
     s.sendall(a[:3])
     time.sleep(0.05)
@@ -510,7 +531,7 @@ def case_split():
     slave, _ = BusSlave(), None
     slave.start()
     time.sleep(3)
-    s = socket.create_connection((GW, 23), 5)
+    s = connect()
     q = rtu_req(10, 3, 11, 1)
     s.sendall(q[:3])
     time.sleep(0.05)
@@ -528,7 +549,7 @@ def case_contention():
                 port1={'socketMode': 1}), 'set up: port1 a Modbus gateway, Edge polling unit 5 every 200 ms')
     slave, tcp = start_all(secs=40)
     time.sleep(4)
-    s = socket.create_connection((GW, 23), 5)
+    s = connect()
     good, leaked = 0, b''
     for i in range(20):
         r = ask(s, bc.mbap(100 + i, bytes([5, 3, 0, 11, 0, 1])), 2, 11)
@@ -536,12 +557,13 @@ def case_contention():
         leaked += r[11:]
     time.sleep(1)
     extra = bc.recv_some(s, 1, 1)
+    state = status()  # while the slave still answers
     s.close()
     slave.close()
     bc.wait_peer(tcp, 1)
     check(good == 20, 'contention: every network request got its own reply (%d/20)' % good)
     check(not leaked and not extra, 'contention: no Edge poll reply leaked to the network client')
-    check(re.match(r'RUNNING (\d+)/\1', status()), 'contention: Edge kept every point (%s)' % status())
+    check(re.match(r'RUNNING (\d+)/\1', state), 'contention: Edge kept every point (%s)' % state)
 
 
 def case_dead():
@@ -562,13 +584,12 @@ def case_dead():
     follow = time.time() - t0
     time.sleep(25)
     rs = reports(st)
-    times = [t for t, d in st.pieces]
     st.close()
     ev = bc.wait_peer(tcp, 1)
     slave.close()
     check(on and follow <= 0.6, 'dead device: linkage still follows within 0.5 s (%.2f s)' % follow)
-    gaps = [round(b - a, 2) for a, b in zip(times, times[1:])]
-    check(len(gaps) > 8 and all(1.5 <= g <= 2.6 for g in gaps[1:]), 'dead device: periodic reports keep a 2 s cadence (%s)' % gaps)
+    ok, seen = cadence_ok(st, rs, 2)
+    check(ok, 'dead device: periodic reports keep a 2 s cadence (%d reports over %s s)' % seen)
     check(rs and rs[-1].get('d0', 1) is None and rs[-1].get('t') == 25, 'dead device: its nodes are the placeholder (%s)' % (rs[-1] if rs else '-'))
     reqs = [e for e in ev if e.get('ev') == 'req']
     check(len(reqs) >= 25, 'dead device: the Modbus TCP device keeps being polled (%d requests)' % len(reqs))
@@ -619,7 +640,7 @@ def case_partial():
     slave = BusSlave()
     slave.start()
     time.sleep(3)
-    s = socket.create_connection((GW, 23), 5)
+    s = connect()
     raw0 = len(slave.raw)
     s.sendall(bytes([10, 3, 0]))
     t0 = time.time()
@@ -631,10 +652,12 @@ def case_partial():
 
 
 def case_bigreport():
-    big = {'k%03d' % i: 'constant-value-%06d' % i for i in range(300)}
+    # The template is at most 2048 characters (the schema): 70 slots of sys_sn render about 3.5 KB, over twice the
+    # bridge's 1.5 KB frame.
+    big = {'k_long_name_%03d' % i: 'sys_sn' for i in range(70)}
     big['t'] = 't'
-    check(setup([plc()], report={'reporting': 1, 'interval': 1, 'remoteAccess': 1, 'remoteFormat': 2, 'template': json.dumps(big)}),
-          'set up: a report of about 10 KB every second, rw_prot on the same socket')
+    check(setup([plc()], report={'reporting': 1, 'interval': 1, 'remoteAccess': 1, 'remoteFormat': 2, 'template': json.dumps(big, separators=(',', ':'))}),
+          'set up: a report of about 3.5 KB every second, rw_prot on the same socket')
     slave = BusSlave()
     slave.start()
     time.sleep(3)
@@ -650,19 +673,19 @@ def case_bigreport():
     time.sleep(4)
     st.close()
     objs, rest = st.objects()
-    reps = [(o, n) for o, n in objs if 'k000' in o]
+    reps = [(o, n) for o, n in objs if 'k_long_name_000' in o]
     replies = [o for o, n in objs if 'rw_prot' in o]
-    check(len(reps) >= 5 and all(len(o) == 301 and n > 9000 for o, n in reps), 'TCP: whole reports of %d bytes, one byte stream each' % (reps[0][1] if reps else 0))
+    check(len(reps) >= 5 and all(len(o) == 71 and n > 3000 for o, n in reps), 'TCP: whole reports of %d bytes, one byte stream each' % (reps[0][1] if reps else 0))
     check(rest.replace(b' ', b'') == b''.join(b'SER%02d' % i for i in range(5)), 'serial frames between them arrive whole and in order (%r)' % rest[:60])
     check(len(replies) == 1, 'a remote request while a report is half sent: the report whole, then the reply')
     # UDP: one datagram
-    check(setup([plc()], report={'reporting': 1, 'interval': 1, 'template': json.dumps(big)},
+    check(setup([plc()], report={'reporting': 1, 'interval': 1, 'template': json.dumps(big, separators=(',', ':'))},
                 port1={'workMode': 0, 'remoteHost': WIN, 'remotePort': 9101, 'localPort': 9101}), 'set up: port1 a UDP client')
     p = bc.peer('udp', port=9101, secs=8)
     ev = bc.wait_peer(p, 1)
     slave.close()
     d = [bytes.fromhex(e['hex']) for e in ev if e.get('ev') == 'data']
-    check(d and all(len(x) > 9000 and json.loads(x).get('k299') for x in d), 'UDP: one datagram per report (%s)' % [len(x) for x in d][:4])
+    check(d and all(len(x) > 3000 and json.loads(x).get('k_long_name_069') for x in d), 'UDP: one datagram per report (%s)' % [len(x) for x in d][:4])
     # the 26 KB limit
     _, before = w.get_json('/api/config/edgeReport')
     over = dict(before, template=json.dumps({'a%03d' % i: 't' for i in range(120)}))
@@ -684,13 +707,15 @@ def case_memory():
     slave.close()
     bc.wait_peer(tcp, 1)
     log = log_text()
-    m = re.search(r'edge: stack headroom: (.*) bytes; heap free (\d+), lowest (\d+)', log)
+    m = re.search(r'edge: stack headroom: (.*) bytes', log)
+    hp = re.search(r'edge: heap free (\d+), lowest (\d+)', log)
     boot = re.search(r'edge: memory: .*', log)
     print('     %s' % (boot.group(0) if boot else '-'))
     print('     %s' % (m.group(0) if m else '-'))
+    print('     %s' % (hp.group(0) if hp else '-'))
     rooms = [int(x) for x in re.findall(r'edge_\w+ (\d+)', m.group(1))] if m else []
     check(rooms and min(rooms) >= 1024, 'every Edge task keeps at least 1 KB of stack (%s)' % rooms)
-    check(m and int(m.group(3)) > 60000, 'the heap keeps more than 60 KB at its lowest (%s)' % (m.group(3) if m else '-'))
+    check(hp and int(hp.group(2)) > 60000, 'the heap keeps more than 60 KB at its lowest (%s)' % (hp.group(2) if hp else '-'))
 
 
 CASES = {'basic': case_basic, 'change': case_change, 'schedule': case_schedule, 'remote': case_remote, 'split': case_split,

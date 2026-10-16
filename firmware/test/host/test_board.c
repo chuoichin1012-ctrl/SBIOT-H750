@@ -1,8 +1,10 @@
 // Host tests for the hardware-free parts of board and boot: make -C stm32/firmware/test/host
 #include <stdio.h>
+#include <string.h>
 #include "crc32.h"
 #include "tick64.h"
 #include "pace.h"
+#include "hb.h"
 
 static int failures;
 #define CHECK(cond, ...)                                \
@@ -91,8 +93,47 @@ static void test_pace(void)
           (unsigned)worst_close, (unsigned)worst_late);
 }
 
+// Plan 11a task 0b (the user): heartbeats of the supervised tasks; the wdog restarts on the first one late.
+static void test_hb(void)
+{
+    uint32_t t0 = 0xFFFFF000u;  // across the uint32_t wrap
+    int web = hb_add("web", 30000, t0), lte = hb_add("lte", 180000, t0);
+    CHECK(web >= 0 && lte >= 0 && web != lte, "two slots");
+    CHECK(hb_expired(t0 + 29999) < 0, "within the timeouts: none expired");
+    CHECK(hb_expired(t0 + 30000) == web, "web past its 30 s: expired (%d)", hb_expired(t0 + 30000));
+    hb_beat(web, t0 + 30000);
+    CHECK(hb_expired(t0 + 30001) < 0, "web beat again: none expired");
+    hb_beat(web, t0 + 180000);  // web keeps beating
+    CHECK(hb_expired(t0 + 180000) == lte, "lte past its 180 s");
+    hb_beat(lte, t0 + 180000);
+    CHECK(hb_expired(t0 + 180000 + 30000) == web, "the first late slot is reported");
+    CHECK(!strcmp(hb_name(web), "web") && hb_name(-1) == NULL, "names");
+    char built[16];
+    snprintf(built, sizeof built, "bridge%d", 1);  // a name built on a stack, as bridge.c does
+    int br = hb_add(built, 60000, t0);
+    memset(built, 'Z', sizeof built - 1);
+    CHECK(br >= 0 && !strcmp(hb_name(br), "bridge1"), "a name is copied (%s)", hb_name(br));
+    // The reason kept across the reset in .noinit: decoded only with its magic and CRC.
+    hb_reason_t r;
+    hb_reason_set(&r, "mqtt_io", 125);
+    char name[16];
+    uint32_t late = 0;
+    CHECK(hb_reason_get(&r, name, &late) && !strcmp(name, "mqtt_io") && late == 125, "the reason decodes (%s %u)", name, (unsigned)late);
+    hb_reason_t bad = r;
+    bad.late_s ^= 1;
+    CHECK(!hb_reason_get(&bad, name, &late), "a changed reason is refused (CRC)");
+    memset(&bad, 0xA5, sizeof bad);
+    CHECK(!hb_reason_get(&bad, name, &late), "random RAM after a power-up is refused");
+    hb_reason_clear(&r);
+    CHECK(!hb_reason_get(&r, name, &late), "cleared");
+    int n = 3, last = 0;
+    while ((last = hb_add("x", 1000, t0)) >= 0) n++;
+    CHECK(n == HB_MAX && hb_add("y", 1000, t0) == -1, "HB_MAX slots, then -1 (%d)", n);
+}
+
 int main(void)
 {
+    test_hb();
     test_pace();
     test_tick64();
     test_crc32();

@@ -174,6 +174,21 @@ int net_classify(int err)
     return err == EWOULDBLOCK || err == EAGAIN || err == ENOMEM || err == ENOBUFS ? NET_AGAIN : NET_FAIL;
 }
 
+int tx_finish(tx_conn_t *c, const uint8_t *frame, size_t len, tx_send_fn send, void *ctx, uint32_t (*now_ms)(void),
+              void (*wait)(void *ctx), uint32_t limit_ms)
+{
+    uint32_t t0 = now_ms();
+    while (c->busy) {
+        int r = tx_progress(c, frame, len, send, ctx, now_ms());
+        if (r != TX_PENDING)
+            return r;
+        if (now_ms() - t0 >= limit_ms)
+            return TX_LOST;
+        wait(ctx);
+    }
+    return TX_DONE;
+}
+
 int tx_progress(tx_conn_t *c, const uint8_t *frame, size_t len, tx_send_fn send, void *ctx, uint32_t now_ms)
 {
     if (!c->busy) {

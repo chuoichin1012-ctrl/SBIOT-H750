@@ -92,6 +92,13 @@ typedef int (*tx_send_fn)(void *ctx, const uint8_t *data, size_t len);
  * of a TLS connection (Plan 08b), so keep it if this changes. */
 int tx_progress(tx_conn_t *c, const uint8_t *frame, size_t len, tx_send_fn send, void *ctx, uint32_t now_ms);
 
+/** Before anything else goes on a connection whose frame is in flight (a Modbus or polling reply), the frame is
+ * finished: one byte stream must not interleave, and after NET_AGAIN mbedtls_ssl_write must get the same data
+ * again (Codex 08b code review). wait(ctx) runs between tries; limit_ms bounds it. TX_DONE (nothing was in
+ * flight, or it went through) or TX_LOST. */
+int tx_finish(tx_conn_t *c, const uint8_t *frame, size_t len, tx_send_fn send, void *ctx, uint32_t (*now_ms)(void),
+              void (*wait)(void *ctx), uint32_t limit_ms);
+
 /** idleRestart: true when `limit_us` passed since the last activity. The activity is read before
  * `now_us`, so an update in between (last > now) is no expiry (Codex code review r1). */
 bool idle_due(uint64_t now_us, uint64_t last_us, uint64_t limit_us);

@@ -130,9 +130,39 @@ static size_t heartbeat(bridge_t *b, uint8_t *out, size_t max)
 
 typedef void (*reply_fn)(void *ctx, const uint8_t *data, size_t len);
 
-static void reply_tcp(void *ctx, const uint8_t *data, size_t len)
+static int send_cl(void *ctx, const uint8_t *data, size_t len);
+
+typedef struct {
+    bridge_t *b;
+    client_t *cl;
+} tcp_reply_t;
+
+// Waits up to 10 ms for room on the client's socket (tx_finish's pace).
+static void wait_writable(void *ctx)
 {
     client_t *cl = ctx;
+    fd_set w;
+    FD_ZERO(&w);
+    FD_SET(cl->c.fd, &w);
+    struct timeval tv = {.tv_sec = 0, .tv_usec = 10000};
+    if (lwip_select(cl->c.fd + 1, NULL, &w, NULL, &tv) < 0)
+        vTaskDelay(1);
+}
+
+// A reply on a connection: a frame still in flight on it goes out whole first (tx_finish, Codex 08b code review).
+static void reply_tcp(void *ctx, const uint8_t *data, size_t len)
+{
+    tcp_reply_t *t = ctx;
+    client_t *cl = t->cl;
+    if (cl->pend && cl->tx.busy) {
+        if (tx_finish(&cl->tx, t->b->frame, t->b->frame_len, send_cl, cl, now_ms, wait_writable, REPLY_MS) != TX_DONE) {
+            conn_close(&cl->c);  // the caller drops it
+            return;
+        }
+        cl->pend = false;
+        svc_net_activity();
+        t->b->last_io_us = now_us();
+    }
     if (!conn_send_all(&cl->c, data, len, REPLY_MS))
         conn_close(&cl->c);  // the caller drops it
 }
@@ -347,8 +377,10 @@ static bool read_clients(bridge_t *b, fd_set *rd)
         int r = conn_recv(&cl->c, buf, NET_BUF);
         reads++;
         work = true;
-        if (r > 0)
-            from_network(b, cl, buf, (size_t)r, reply_tcp, cl);
+        if (r > 0) {
+            tcp_reply_t rc = {b, cl};
+            from_network(b, cl, buf, (size_t)r, reply_tcp, &rc);
+        }
         if (r == 0 || r == NET_FAIL || cl->c.fd < 0)
             gone[i] = true;
     }

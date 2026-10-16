@@ -221,9 +221,67 @@ static void test_wait_ready(void)
     CHECK(wait_ready(1, 1) == 2, "both");
 }
 
+// ---- a reply while a frame is in flight (Codex 08b code review r1) --------------------------------
+typedef struct {
+    uint8_t out[128];
+    size_t n;
+    int calls;
+    bool stuck;  // never takes a byte
+} sink_t;
+
+static int sink_send(void *ctx, const uint8_t *data, size_t len)
+{
+    sink_t *k = ctx;
+    if (k->stuck || k->calls++ % 2)
+        return NET_AGAIN;  // every other try: the socket (or mbedTLS) is full
+    size_t m = len < 3 ? len : 3;
+    memcpy(k->out + k->n, data, m);
+    k->n += m;
+    return (int)m;
+}
+
+static uint32_t s_fake_ms;
+static uint32_t fake_now(void) { return s_fake_ms; }
+static void fake_wait(void *ctx)
+{
+    (void)ctx;
+    s_fake_ms += 10;
+}
+
+static void test_tx_finish(void)
+{
+    const uint8_t frame[] = "FRAME-0123456789";
+    sink_t k = {0};
+    tx_conn_t tx = {0};
+    s_fake_ms = 0;
+    CHECK(tx_progress(&tx, frame, sizeof frame - 1, sink_send, &k, 0) == TX_PENDING && tx.busy, "a frame half sent");
+    CHECK(tx_finish(&tx, frame, sizeof frame - 1, sink_send, &k, fake_now, fake_wait, 2000) == TX_DONE && !tx.busy,
+          "the frame is finished before the reply");
+    const uint8_t reply[] = "REPLY";
+    for (size_t off = 0; off < sizeof reply - 1;) {
+        int r = sink_send(&k, reply + off, sizeof reply - 1 - off);
+        if (r > 0)
+            off += (size_t)r;
+    }
+    CHECK(k.n == 21 && !memcmp(k.out, "FRAME-0123456789REPLY", 21), "one stream: the frame whole, then the reply (%.*s)",
+          (int)k.n, (const char *)k.out);
+    sink_t idle = {0};
+    tx_conn_t none = {0};
+    CHECK(tx_finish(&none, frame, sizeof frame - 1, sink_send, &idle, fake_now, fake_wait, 2000) == TX_DONE && idle.calls == 0,
+          "no frame in flight: nothing to finish, nothing sent");
+    sink_t stuck = {.stuck = true};
+    tx_conn_t t2 = {0};
+    s_fake_ms = 0;
+    tx_progress(&t2, frame, sizeof frame - 1, sink_send, &stuck, 0);
+    CHECK(tx_finish(&t2, frame, sizeof frame - 1, sink_send, &stuck, fake_now, fake_wait, 2000) == TX_LOST && s_fake_ms >= 2000 &&
+              s_fake_ms <= 2020,
+          "a peer that takes nothing: lost after the reply's 2 s (%u ms)", (unsigned)s_fake_ms);
+}
+
 int main(void)
 {
     test_wait_ready();
+    test_tx_finish();
     test_cfg();
     test_mbtcp();
     test_http();

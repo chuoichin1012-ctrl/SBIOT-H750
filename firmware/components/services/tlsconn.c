@@ -150,7 +150,9 @@ tls_conn_t *tls_open(int fd, const char *scope, const char *host, int verify, ui
             r = MBEDTLS_ERR_X509_CERT_VERIFY_FAILED;
             goto fail;
         }
-        mbedtls_ssl_conf_own_cert(&t->conf, &t->cert, &t->key);
+        r = mbedtls_ssl_conf_own_cert(&t->conf, &t->cert, &t->key);  // it allocates: never go on without it
+        if (r)
+            goto fail;
     }
     // Always the dialled host (CVE-2025-27809): the name check, and SNI (an IP goes out too, spec §7.3).
     r = mbedtls_ssl_setup(&t->ssl, &t->conf);

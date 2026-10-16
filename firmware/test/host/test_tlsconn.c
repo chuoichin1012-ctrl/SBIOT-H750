@@ -31,6 +31,19 @@ static int failures;
 
 int g_tls_warnings;
 
+// Allocation faults in the client's thread only (the server thread allocates too): calloc number n fails.
+static __thread int t_fail_at = -1;
+static __thread bool t_failed;
+void *__real_calloc(size_t n, size_t size);
+void *__wrap_calloc(size_t n, size_t size)
+{
+    if (t_fail_at >= 0 && t_fail_at-- == 0) {
+        t_failed = true;
+        return NULL;
+    }
+    return __real_calloc(n, size);
+}
+
 // ---- the test's store and clock ----------------------------------------------------------------
 
 static const char *s_files[3];  // ca, cert, key fixtures for any scope; NULL: not uploaded
@@ -58,6 +71,7 @@ typedef struct {
     int mode;
     const char *cert, *key;
     bool want_client;    // require a client certificate signed by ca.pem
+    bool optional_client;  // ask for one, accept the session without it
     int lfd;             // listening socket
     int fd;              // the accepted connection
     size_t raw;          // bytes the client sent, before or during the handshake
@@ -137,9 +151,9 @@ static void *server(void *arg)
     mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &drbg);
     mbedtls_ssl_conf_own_cert(&conf, &crt, &pk);
     mbedtls_ssl_conf_sni(&conf, srv_sni, s);
-    if (s->want_client) {
+    if (s->want_client || s->optional_client) {
         mbedtls_ssl_conf_ca_chain(&conf, &ca, NULL);
-        mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+        mbedtls_ssl_conf_authmode(&conf, s->want_client ? MBEDTLS_SSL_VERIFY_REQUIRED : MBEDTLS_SSL_VERIFY_OPTIONAL);
     }
     mbedtls_ssl_setup(&ssl, &conf);
     mbedtls_ssl_set_bio(&ssl, s, srv_send, srv_recv, NULL);
@@ -343,6 +357,31 @@ static void test_mutual(void)
     g_test_utc_s = 0;
 }
 
+// tlsVerify 2 with memory running out at each allocation in turn (Codex 08b code review r1): a session
+// never goes up without our certificate, even to a server that would accept one without it.
+static void test_mutual_oom(void)
+{
+    g_test_utc_s = utc("2026-01-02 00:00:00");
+    set_files(PKI "ca.pem", PKI "client.pem", PKI "client.key");
+    int bad = 0, n = 0;
+    for (;; n++) {
+        srv_t s = {.mode = SRV_HOLD, .cert = PKI "server.pem", .key = PKI "server.key", .optional_client = true};
+        int port = start(&s, 0), fd = dial(port, 0);
+        t_failed = false;
+        t_fail_at = n;
+        tls_conn_t *t = tls_open(fd, "port1", "localhost", 2, 3000, NULL);
+        bool reached = t_failed;
+        t_fail_at = -1;
+        if (t && !strstr(s.peer_cn, "CN=gateway"))
+            bad++;
+        end(&s, t, fd);
+        if (!reached)
+            break;  // the whole handshake ran without hitting allocation n
+    }
+    CHECK(bad == 0, "out of memory at any of %d allocations: never a session without our certificate (%d)", n, bad);
+    g_test_utc_s = 0;
+}
+
 static double cpu_ms(void)
 {
     struct timespec ts;
@@ -478,6 +517,7 @@ int main(void)
     test_expired();
     test_verify_none();
     test_mutual();
+    test_mutual_oom();
     test_deadline();
     test_slow_reader();
     test_pending();

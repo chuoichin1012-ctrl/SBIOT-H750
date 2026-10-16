@@ -207,4 +207,4 @@ $(BUILD)/test_tls_core: test_tls_core.c tls_test_port.c ../../components/service
 	$(CC) $(CFLAGS) -D_DEFAULT_SOURCE $(MBED_INC) -I../../components/services/include -I../../components/sysmgr/include $(filter %.c %.a,$^) -o $@
 
 $(BUILD)/test_tlsconn: test_tlsconn.c tls_test_port.c ../../components/services/tlsconn.c ../../components/services/tls_core.c ../../components/services/bridge_core.c ../../components/sysmgr/clock.c ../../components/proto/ipacl.c ../../components/proto/modbus.c $(CJSON)/cJSON.c $(BUILD)/libmbedtls_host.a $(BUILD)/pki/ca.pem
-	$(CC) $(CFLAGS) -D_DEFAULT_SOURCE $(MBED_INC) -I../../components/sysmgr/include $(filter %.c %.a,$^) -lpthread -o $@
+	$(CC) $(CFLAGS) -D_DEFAULT_SOURCE $(MBED_INC) -I../../components/sysmgr/include $(filter %.c %.a,$^) -lpthread -Wl,--wrap=calloc -o $@

@@ -71,7 +71,9 @@ def listen(seconds, sends=(), during=None, during_timeout=120):
 
 
 # The bench OTA upload (app console 'u', app/bench_ota.h): the image goes in 4 KB blocks, each one
-# only after the app acknowledged the one before, then the port stays open to see the reboot.
+# only after the app acknowledged the one before, then the port stays open to see the reboot, until the new
+# app's web line (or a failure). With 500 KB images that is about a minute: 50 s of transfer at 115200 baud
+# (4 KB blocks, each written to the SPI flash and acknowledged), then the bootloader's install.
 _PS_UPLOAD = r"""
 $img = [IO.File]::ReadAllBytes('%(file)s')
 $p = New-Object System.IO.Ports.SerialPort '%(port)s', 115200
@@ -86,6 +88,9 @@ while ($w.ElapsedMilliseconds -lt $end) {
     $go = ($state -eq 'wait-ready' -and $line -match '^ota: ready \d+ 0$') -or ($state -eq 'sending' -and $line -match '^ota: \d+$')
     if ($line -match '^ota: (done|timeout|no length)' -or ($line -match '^ota: ready' -and -not $go)) { $state = 'after' }
     if (%(stop)s -and $line -match '^ota: done') { $end = $w.ElapsedMilliseconds }
+    # Done once the new app is up (or the upload failed): `seconds` is only the ceiling.
+    if ($state -eq 'after' -and $line -match '^web: UI and API') { $end = [Math]::Min($end, $w.ElapsedMilliseconds + 500) }
+    if ($line -match '^ota: (timeout|no length)' -or $line -match '^ota: done -?[1-9]') { $end = [Math]::Min($end, $w.ElapsedMilliseconds + 1000) }
     if ($go -and $sent -lt $img.Length -and $sent -lt %(limit)d) {
       $k = [Math]::Min(4096, $img.Length - $sent); $p.Write($img, $sent, $k); $sent += $k; $state = 'sending'
     }

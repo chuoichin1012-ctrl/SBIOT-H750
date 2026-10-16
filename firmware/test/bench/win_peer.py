@@ -5,7 +5,8 @@ bridge_check.py with Windows' Python; prints one JSON line per event, with ms si
 
 MODE tcpserver  port, secs, delay_ms (listen only after), send_hex + send_ms (to each new connection,
                 ms after its accept), drop_ms (close the first connection that long after its accept),
-                modbus=1 (answer each Modbus TCP read with the registers 0x1234...), silent=1 (read, never answer)
+                modbus=1 (answer each Modbus TCP read with the registers 0x1234 + i, or + the address with addr=1; echo writes; an event per
+                request), late=1 (one reply late_ms, default 1500, after its request), silent=1 (read, never answer)
      udp        port, secs, send_hex + send_ms + to=host:port
      http       port, secs, reply (the body)
      mcast      group, port, iface, send_hex, send_ms
@@ -25,6 +26,8 @@ import time
 
 T0 = time.time()
 LOCK = threading.Lock()
+WRITES = {}  # Modbus TCP registers written with FC6
+LATE = []
 
 
 def out(**k):
@@ -65,9 +68,22 @@ def tcp_conn(c, a, args, first):
                 if len(buf) < n:
                     break
                 adu, buf = buf[:n], buf[n:]
-                tid, unit, fc, count = adu[0:2], adu[6], adu[7], struct.unpack('>H', adu[10:12])[0]
-                regs = b''.join(struct.pack('>H', 0x1234 + i) for i in range(count))
-                pdu = bytes([unit, fc, len(regs)]) + regs
+                tid, unit, fc = adu[0:2], adu[6], adu[7]
+                start, count = struct.unpack('>HH', adu[8:12])
+                out(ev='req', fc=fc, start=start, count=count, tid=struct.unpack('>H', tid)[0])
+                if fc in (5, 6, 15, 16):  # writes: the echo (unit, fc, address and value or count)
+                    pdu = adu[6:12]
+                    if fc == 6:
+                        WRITES[start] = count
+                elif fc in (1, 2):
+                    pdu = bytes([unit, fc, (count + 7) // 8]) + bytes((count + 7) // 8)
+                else:  # registers 0x1234 + i (with addr=1: + the address), or what a write left there
+                    base = start if args.get('addr') == '1' else 0
+                    regs = b''.join(struct.pack('>H', WRITES.get(start + i, 0x1234 + base + i)) for i in range(count))
+                    pdu = bytes([unit, fc, len(regs)]) + regs
+                if args.get('late') == '1' and not LATE:  # once: past the poller's timeout
+                    LATE.append(1)
+                    time.sleep(float(args.get('late_ms', 1500)) / 1000)
                 c.sendall(tid + b'\0\0' + struct.pack('>H', len(pdu)) + pdu)
     out(ev='close')
     c.close()
@@ -104,7 +120,7 @@ def udp(args):
             s.sendto(bytes.fromhex(args['send_hex']), (host, int(port)))
             sent = True
         try:
-            d, a = s.recvfrom(4096)
+            d, a = s.recvfrom(65535)
         except socket.timeout:
             continue
         out(ev='data', hex=d.hex(), peer=a[0], port=a[1])

@@ -83,6 +83,8 @@ static TaskHandle_t s_rpt_task;
 static volatile bool s_running;
 static const char *s_note = "NOT RUNNING";  // why Edge does not run, or a note on how it runs
 static char s_mac[18];
+static TaskHandle_t s_tasks[EDGE_MAX_TASKS];  // for the headroom line (bench)
+static int s_ntasks;
 
 static int64_t now_ms(void) { return (int64_t)(now_us() / 1000u); }
 
@@ -710,11 +712,28 @@ static void run_linkage(void)
     }
 }
 
+// Once, 30 s in: every Edge task's free stack, for the bench (spec §6.1 sizes, Plan 08c).
+static void log_headroom(void)
+{
+    char line[160];
+    size_t n = 0;
+    for (int i = 0; i < s_ntasks && n < sizeof line; i++)
+        n += (size_t)snprintf(line + n, sizeof line - n, "%s%s %u", i ? ", " : "", pcTaskGetName(s_tasks[i]),
+                              (unsigned)(uxTaskGetStackHighWaterMark(s_tasks[i]) * sizeof(StackType_t)));
+    SLOG_I("edge", "stack headroom: %s bytes; heap free %u, lowest %u", line, (unsigned)xPortGetFreeHeapSize(),
+           (unsigned)xPortGetMinimumEverFreeHeapSize());
+}
+
 /** edge_ctl: IO and virtual points and linkage, every 10 ms; never waits on a device. */
 static void ctl_task(void *arg)
 {
     dev_list_t *l = arg;
+    int64_t headroom_at = now_ms() + 30000;
     for (;;) {
+        if (headroom_at && now_ms() >= headroom_at) {
+            headroom_at = 0;
+            log_headroom();
+        }
         int64_t now = now_ms();
         for (int i = 0; i < l->n; i++) {
             edge_dev_t *d = l->devs[i];
@@ -890,7 +909,7 @@ void edge_start(void)
                 l->devs[l->n++] = &s_devs[i];
         nbus += l->n;
         snprintf(name, sizeof name, "edge_bus%d", p);
-        xTaskCreateStatic(poll_task, name, c.stack_bytes[task] / sizeof(StackType_t), l, PRIO_POLL, M.stacks[task], M.tcbs[task]);
+        s_tasks[s_ntasks++] = xTaskCreateStatic(poll_task, name, c.stack_bytes[task] / sizeof(StackType_t), l, PRIO_POLL, M.stacks[task], M.tcbs[task]);
         task++;
     }
     for (int i = 0; i < s_ndev; i++) {
@@ -902,7 +921,7 @@ void edge_start(void)
         l->devs = &s_tcp_dev[task];
         l->n = 1;
         snprintf(name, sizeof name, "edge_tcp%d", ntcp++);
-        xTaskCreateStatic(poll_task, name, c.stack_bytes[task] / sizeof(StackType_t), l, PRIO_POLL, M.stacks[task], M.tcbs[task]);
+        s_tasks[s_ntasks++] = xTaskCreateStatic(poll_task, name, c.stack_bytes[task] / sizeof(StackType_t), l, PRIO_POLL, M.stacks[task], M.tcbs[task]);
         task++;
     }
     static edge_dev_t *s_local[64];
@@ -912,10 +931,10 @@ void edge_start(void)
         if (s_devs[i].source == EDGE_SRC_IO || s_devs[i].source == EDGE_SRC_VIRTUAL)
             ctl->devs[ctl->n++] = &s_devs[i];
     nlocal = ctl->n;
-    xTaskCreateStatic(ctl_task, "edge_ctl", c.stack_bytes[task] / sizeof(StackType_t), ctl, PRIO_CTL, M.stacks[task], M.tcbs[task]);
+    s_tasks[s_ntasks++] = xTaskCreateStatic(ctl_task, "edge_ctl", c.stack_bytes[task] / sizeof(StackType_t), ctl, PRIO_CTL, M.stacks[task], M.tcbs[task]);
     task++;
     if (R.reporting && s_tmpl)
-        s_rpt_task = xTaskCreateStatic(rpt_task, "edge_rpt", c.stack_bytes[task] / sizeof(StackType_t), NULL, PRIO_RPT, M.stacks[task],
+        s_tasks[s_ntasks++] = s_rpt_task = xTaskCreateStatic(rpt_task, "edge_rpt", c.stack_bytes[task] / sizeof(StackType_t), NULL, PRIO_RPT, M.stacks[task],
                                        M.tcbs[task]);
     if (R.channel == 0 && (R.reporting || R.remote)) {
         s_note = "MQTT: Plan 09";

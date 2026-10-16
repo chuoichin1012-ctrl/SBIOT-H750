@@ -151,6 +151,9 @@ set_source_files_properties(${APP_OWN} TARGET_DIRECTORY app PROPERTIES COMPILE_O
 set_property(SOURCE app/startup_app.c TARGET_DIRECTORY app APPEND PROPERTY COMPILE_OPTIONS -fno-tree-loop-distribute-patterns)
 target_compile_options(app PRIVATE -O2)
 target_link_libraries(app PRIVATE m)  # edgecore's llround (Plan 08c); --gc-sections keeps only what is called
+# newlib-nano's printf has no %f/%g unless asked: Edge's values (edge_format), cJSON's non-integer numbers and
+# cfgmodel's range messages print them (Plan 08c bench: every report rendered empty numbers).
+target_link_options(app PRIVATE -u _printf_float)
 target_link_options(app PRIVATE -T${CMAKE_SOURCE_DIR}/app/app.ld -Wl,-Map=${CMAKE_BINARY_DIR}/app.map)
 set_target_properties(app PROPERTIES LINK_DEPENDS ${CMAKE_SOURCE_DIR}/app/app.ld)
 bin_from_elf(app)

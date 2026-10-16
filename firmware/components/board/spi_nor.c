@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include "spi_nor.h"
 #include "main.h"  // SPI4_NSS pin label
 
@@ -45,15 +46,18 @@ static int wait_ready(spi_nor_t *s, uint32_t ms)
 {
     uint32_t t0 = HAL_GetTick();
     for (;;) {
+        // The clock is read before the status, so a timeout means still busy after the deadline. Read after it, a
+        // task that lost the CPU between the two (to TLS handshakes, Plan 09d) took an old busy status for a timeout.
+        bool late = HAL_GetTick() - t0 > ms;
         uint8_t c = 0x05, sr1;
         if (xfer(s, &c, 1, 0, &sr1, 1))
             return NOR_EIO;
         if (!(sr1 & 0x01))
             return NOR_OK;
+        if (late)
+            return NOR_ETIMEOUT;
         if (s->kick)
             s->kick();
-        if (HAL_GetTick() - t0 > ms)
-            return NOR_ETIMEOUT;
         if (s->port && s->port->busy_wait)
             s->port->busy_wait();  // the app sleeps a tick instead of spinning
     }

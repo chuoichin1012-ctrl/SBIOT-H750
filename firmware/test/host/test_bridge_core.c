@@ -1,3 +1,4 @@
+#include <limits.h>
 // Host tests for the bridge logic (spec §6.4, §5.6, Plan 08a): make -C stm32/firmware/test/host
 #include <errno.h>
 #include <stdint.h>
@@ -372,8 +373,19 @@ static void test_report_accept(void)
           "the report goes when offered and nothing is in flight, once");
 }
 
+// Plan 10c task 3 (Codex review, Important 3): a workMode outside 0..4, as a hand-made config may carry,
+// names "unknown" instead of reading before or past the table.
+static void test_mode_name(void)
+{
+    static const char *const want[] = {"UDP client", "TCP client", "UDP server", "TCP server", "HTTP client"};
+    for (int i = 0; i < 5; i++) CHECK(!strcmp(bridge_mode_name(i), want[i]), "mode %d: %s", i, bridge_mode_name(i));
+    const int bad[] = {-1, 5, INT_MIN, INT_MAX};
+    for (int i = 0; i < 4; i++) CHECK(!strcmp(bridge_mode_name(bad[i]), "unknown"), "mode %d: unknown", bad[i]);
+}
+
 int main(void)
 {
+    test_mode_name();
     test_frame_push();
     test_acc_stale();
     test_report_accept();

@@ -138,3 +138,6 @@ bool report_accept(const bridge_cfg_t *c, bool running, bool online);
 enum { RPT_NONE, RPT_OFFERED, RPT_SENDING };
 /** The report slot is taken when offered and no frame is in flight, once. */
 static inline bool report_take(int state, bool have) { return state == RPT_OFFERED && !have; }
+
+/** The working mode's name for the log; "unknown" outside 0..4 (a hand-made config, Plan 10c task 3). */
+const char *bridge_mode_name(int work);

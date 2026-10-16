@@ -257,3 +257,9 @@ bool report_accept(const bridge_cfg_t *c, bool running, bool online)
         return false;
     return online || c->work == BR_HTTP_CLIENT || c->short_conn;
 }
+
+const char *bridge_mode_name(int work)
+{
+    static const char *const MODES[] = {"UDP client", "TCP client", "UDP server", "TCP server", "HTTP client"};
+    return work >= 0 && work < (int)(sizeof MODES / sizeof MODES[0]) ? MODES[work] : "unknown";
+}

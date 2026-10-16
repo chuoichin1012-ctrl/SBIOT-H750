@@ -667,7 +667,8 @@ def case_shortreport():
     acc = [e for e in ev if e.get('ev') == 'accept']
     closes = [e for e in ev if e.get('ev') == 'close']
     check(acc and b'"t":' in data and data.strip().startswith(b'{'), 'a pending report dials the short connection, no serial data at all (%r)' % data[:60])
-    check(closes and 2000 <= closes[0]['t'] - acc[-1]['t'] <= 7000, 'and it closes after the idle time')
+    life = [c['t'] - a['t'] for a, c in zip(acc, closes)]  # each dial with its own close
+    check(life and len(closes) == len(acc) and all(2000 <= x <= 7000 for x in life), 'and each connection closes after the idle time (%s ms)' % life)
 
 
 def case_partial():

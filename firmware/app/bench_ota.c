@@ -65,7 +65,9 @@ void bench_ota_upload(bool reset)
         return;
     }
     memcpy(&total, buf, 4);
-    int r = s_spi_err ? OTA_EFLASH : ota_stage_begin(&st, flash_spi4(), total);
+    int r = s_spi_err ? OTA_EFLASH : ota_stage_claim(&st);  // one owner of staging, with the web (Plan 10c)
+    if (!r && (r = ota_stage_begin(&st, flash_spi4(), total)))
+        ota_stage_release(&st);
     blog("ota: ready %lu %d\r\n", (unsigned long)total, r);
     if (r)
         return;
@@ -73,17 +75,21 @@ void bench_ota_upload(bool reset)
         uint32_t n = total - got < BLOCK ? total - got : BLOCK;
         if (!rx(buf, n, 5000)) {
             blog("ota: timeout at %lu\r\n", (unsigned long)got);
+            ota_stage_release(&st);
             return;
         }
         r = ota_stage_write(&st, buf, n);
         got += n;
         if (r) {
             blog("ota: done %d\r\n", r);
+            ota_stage_release(&st);
             return;
         }
         blog("ota: %lu\r\n", (unsigned long)got);
     }
     r = ota_stage_finish(&st);
+    if (r)
+        ota_stage_release(&st);  // a success keeps it: the image waits for the reset
     blog("ota: done %d\r\n", r);
     if (!r && reset) {
         vTaskDelay(pdMS_TO_TICKS(50));

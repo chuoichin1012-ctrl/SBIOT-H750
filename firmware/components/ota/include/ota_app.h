@@ -14,7 +14,15 @@ enum {
     OTA_EIMAGE = -3,   // 400: not an image for this board, or its SHA-256 does not match
     OTA_ESHORT = -4,   // 400: the body ended before the size the header announced
     OTA_EFLASH = -5,   // 500: staging could not be erased, programmed or read back
+    OTA_EBUSY = -6,    // 409: another upload owns staging, or a staged image waits for the restart
 };
+
+// One owner of the staging slot at a time, web or UART7 (Plan 10c task 6, Codex review Important 6). `who` is
+// the caller's session (a web connection's slot, the UART7 call), never the shared ota_stage_t. Claim before
+// begin, so a refused caller touches neither the context nor staging. A successful ota_stage_finish under an
+// owner keeps the slot until the reboot; release gives it back otherwise, and does nothing for a non-owner.
+int ota_stage_claim(const void *who);
+void ota_stage_release(const void *who);
 
 typedef struct {
     nor_t *spi;

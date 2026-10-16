@@ -662,6 +662,29 @@ static void test_spot_cuts(void)
     }
 }
 
+// Plan 10c task 6 (Codex review, Important 6): one owner of the staging slot, web or UART7. The owner is the
+// caller's session (a web connection's slot, the UART7 call), not the ota_stage_t: the web shares one context.
+// Last in main: a successful finish under an owner holds the slot until the reboot, as on the board.
+static void test_stage_owner(void)
+{
+    bench_t b;
+    bench_v1(&b, 61);
+    int a, bb, c;  // three callers' identities
+    CHECK(ota_stage_claim(&a) == OTA_OK, "A claims the slot");
+    CHECK(ota_stage_claim(&bb) == OTA_EBUSY, "B is refused while A uploads");
+    ota_stage_release(&bb);  // B's cleanup
+    CHECK(ota_stage_claim(&c) == OTA_EBUSY, "B's cleanup leaves A's claim");
+    ota_stage_release(&a);  // A ends without success (a cut upload, a failed finish)
+    CHECK(ota_stage_claim(&bb) == OTA_OK, "after A gives up, B claims it");
+    ota_stage_release(&bb);
+    CHECK(ota_stage_claim(&a) == OTA_OK, "A claims again");
+    CHECK(upload(&b, 2, BODY_V2) == OTA_OK, "A's upload succeeds");
+    ota_stage_release(&a);  // A's connection closes after the 200
+    CHECK(ota_stage_claim(&bb) == OTA_EBUSY, "an image waits for the restart: B is refused, A's cleanup kept it");
+    CHECK(ota_stage_claim(&a) == OTA_EBUSY, "and A itself cannot start another");
+    bench_free(&b);
+}
+
 int main(void)
 {
     test_first_boot();
@@ -679,5 +702,6 @@ int main(void)
         for (int k = RUN_INSTALL; k <= RUN_SEED; k++)
             test_power_cuts(k);
     printf("test_install: %s\n", failures ? "FAILED" : "ok");
+    test_stage_owner();
     return failures ? 1 : 0;
 }

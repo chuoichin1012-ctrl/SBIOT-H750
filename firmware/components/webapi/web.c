@@ -228,8 +228,10 @@ static void upload_end(struct mg_connection *c, slot_t *s)
         store_edge_abort();
         s->edge_owner = false;
     }
-    if (s->ep == WEB_EP_OTA)
+    if (s->ep == WEB_EP_OTA) {
+        ota_stage_release(s);  // nothing after a success: the image waits for the restart
         s_ota_busy = false;
+    }
     else
         s_body_busy = false;
     s->st = ST_IDLE;
@@ -413,8 +415,13 @@ static bool upload_start(struct mg_connection *c, slot_t *s, struct mg_http_mess
         s->edge_owner = true;
     }
     if (ep == WEB_EP_OTA) {
+        if (ota_stage_claim(s) != OTA_OK) {  // a UART7 upload, or an image waiting for the restart (Plan 10c)
+            reject(c, s, hm, 409, "A firmware image is waiting for the restart, or another upload is in progress.");
+            return true;
+        }
         int r = ota_stage_begin(&s_ota, flash_spi4(), (uint32_t)hm->body.len);
         if (r != OTA_OK) {
+            ota_stage_release(s);
             reject(c, s, hm, r == OTA_ETOOBIG ? 413 : 500, r == OTA_ETOOBIG ? "The file is larger than the firmware slot." : "The update could not start.");
             return true;
         }

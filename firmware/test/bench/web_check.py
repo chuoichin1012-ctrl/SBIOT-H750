@@ -212,12 +212,51 @@ def case_configs():
     check(s == 404, 'an unknown config: 404')
     _, dev = get_json('/api/device')
     running = dev['hostname']
-    s, _, _ = req('POST', '/api/config/system', body=json.dumps({'hostname': 'saved-name'}).encode())
+    sysc = dict(d, hostname='saved-name')  # the whole config, as the UI sends it: a body replaces it (Plan 09b)
+    s, _, _ = req('POST', '/api/config/system', body=json.dumps(sysc, separators=(',', ':')).encode())
     _, sysc = get_json('/api/config/system')
     _, dev2 = get_json('/api/device')
     check(s == 200 and sysc['hostname'] == 'saved-name' and dev2['hostname'] == running,
           'hostname saved, /api/device keeps the running "%s" until a restart' % running)
     return running
+
+
+def log_since_start():
+    s, _, d = req('GET', '/api/log')
+    return d.decode(errors='replace').split('# Since the last start', 1)[-1] if s == 200 else ''
+
+
+def case_plain():
+    """Plan 09b: a save stores the bytes as sent; the device runs with them, a wrong field taking its default."""
+    _, p2 = get_json('/api/config/port2')
+    keep = json.dumps(p2, separators=(',', ':')).encode()
+    odd = json.dumps(dict(p2, workMode=3, listenPort=70000, maxClients=5), separators=(',', ':')).encode()
+    s, _, _ = req('POST', '/api/config/port2', body=odd)
+    s2, _, raw = req('GET', '/api/config/port2')
+    check(s == 200 and s2 == 200 and raw == odd, 'a business-invalid port2 (listenPort 70000) is stored, GET returns its bytes')
+    s, _, _ = req('POST', '/api/config/port2', body=b'{"workMode":')
+    s2, _, _ = req('POST', '/api/config/port2', body=b'[]')
+    s3, _, raw = req('GET', '/api/config/port2')
+    check(s == 400 and s2 == 400 and raw == odd, 'bad JSON and a wrong root type: 400, the stored copy kept (%d, %d)' % (s, s2))
+    check(restart(), 'restart')
+    log = log_since_start()
+    _, st = get_json('/api/status')
+    check('port2: defaults used for listenPort' in log and st and st['ports'][1]['state'] == 'LISTEN',
+          'after the restart port2 runs: listenPort takes its default (logged), the rest as stored')
+    req('POST', '/api/config/port2', body=keep)
+
+
+def case_factory():
+    """Plan 09b: a factory reset restarts the gateway by itself into the defaults; the certificates are gone."""
+    _, sysc = get_json('/api/config/system')
+    req('POST', '/api/config/system', body=json.dumps(dict(sysc, hostname='before-reset'), separators=(',', ':')).encode())
+    s, _, _ = req('POST', '/api/cert?scope=mqtt&kind=ca', body=real_ca(), headers={'Content-Type': 'application/octet-stream'})
+    check(s == 200, 'an mqtt CA uploaded')
+    s, _, _ = req('POST', '/api/factory-reset', body=b'')
+    time.sleep(4)
+    up = wait_up(40)
+    _, sysc = get_json('/api/config/system')
+    check(s == 200 and up and sysc and sysc.get('hostname') == 'sbiot-gw', 'factory reset: 200, the gateway restarts by itself into the defaults')
 
 
 def edge_model(devs, per):
@@ -470,10 +509,16 @@ def main():
     if not wait_up(5):
         print('the board does not answer on %s' % HOST)
         return 1
+    if len(sys.argv) > 2:  # only the named cases: web_check.py BUILD plain factory
+        for name in sys.argv[2:]:
+            globals()['case_' + name]()
+        print('bench: %s' % ('ok' if not failures else 'FAILED (%d)' % len(failures)))
+        return 1 if failures else 0
     case_auth()
     case_limits()
     running = case_configs()
     case_edge()
+    case_plain()
     case_misc()
     case_clock()
     ws, ws_port = case_console(running)

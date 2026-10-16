@@ -353,8 +353,9 @@ static cJSON *object(const cfg_env_t *env, const char *cfg, const field_t *field
         }
         char why[160] = "";
         const cJSON *v = lenient ? cJSON_GetObjectItemCaseSensitive(in, fields[i].key) : NULL;
-        if (v && !type_ok(&fields[i], v)) {
-            note(err, errlen, cfg, fields[i].key);
+        if (v) {  // the loader: the value as the UI sent it, if it is of its field's JSON type (the user, 2026-10-16)
+            if (type_ok(&fields[i], v)) put_field(out, fields[i].key, cJSON_Duplicate(v, false));
+            else note(err, errlen, cfg, fields[i].key);
             continue;
         }
         if (!take(env, cfg, &fields[i], in, out, lenient ? why : err, lenient ? sizeof why : errlen)) {
@@ -367,14 +368,6 @@ static cJSON *object(const cfg_env_t *env, const char *cfg, const field_t *field
         }
     }
     return out;
-}
-
-/** Puts field `key` of `out` back to its value in the defaults text `defaults` (the loader's cross fixes). */
-static void reset_field(cJSON *out, const char *defaults, const char *key)
-{
-    cJSON *d = cJSON_Parse(defaults), *v = cJSON_DetachItemFromObjectCaseSensitive(d, key);
-    if (v && !cJSON_ReplaceItemInObjectCaseSensitive(out, key, v)) cJSON_Delete(v);
-    cJSON_Delete(d);
 }
 
 static bool name_ok(const char *s)
@@ -678,14 +671,7 @@ static cJSON *validate_kind(const cfg_env_t *env, const cfgdef_t *def, const cha
         cJSON *defaults = cJSON_Parse(def->defaults);
         cJSON *out = object(env, name, def->fields, def->nfields, in, current ? current : defaults, lenient, err, errlen);
         cJSON_Delete(defaults);
-        if (out && lenient) {  // only what would misbehave: no CTS line on RS485, a fixed client table
-            ipacl_t acl;
-            if (strncmp(name, "port", 4) == 0 && cJSON_GetNumberValue(cJSON_GetObjectItem(out, "flowControl")) == 1)
-                reset_field(out, def->defaults, "flowControl"), note(err, errlen, name, "flowControl");
-            if (strncmp(name, "port", 4) == 0 && !ipacl_parse(cJSON_GetStringValue(cJSON_GetObjectItem(out, "allowedClients")), &acl))
-                reset_field(out, def->defaults, "allowedClients"), note(err, errlen, name, "allowedClients");
-            return out;
-        }
+        if (lenient) return out;  // no cross rules: the UI's
         if (out && strncmp(name, "port", 4) == 0 && cJSON_GetNumberValue(cJSON_GetObjectItem(out, "flowControl")) == 1) {
             // RS485 half duplex: RTS drives DE and there is no CTS line.
             fail(err, errlen, "RTS/CTS flow control is not available on RS485.", NULL, NULL);

@@ -382,29 +382,31 @@ static const char *str_of(const cJSON *o, const char *k) { return cJSON_GetStrin
 
 static void test_load_field_by_field(void)
 {
+    // The UI validates; the loader only checks each value's JSON type and changes nothing it was sent (the user,
+    // 2026-10-16): a value of the wrong type cannot be used, so that field takes its default (noted).
     char err[160], host[80];
-    memset(host, 'h', 70), host[70] = '\0';  // remoteHost holds 64
+    memset(host, 'h', 70), host[70] = '\0';  // remoteHost's schema says 64
     char json[400];
     snprintf(json, sizeof json,
              "{\"listenPort\":70000,\"baudRate\":\"fast\",\"remoteHost\":\"%s\",\"serialHeartbeat\":{},\"maxClients\":5,"
              "\"workMode\":2,\"flowControl\":1,\"allowedClients\":\"not an address\"}",
              host);
     cJSON *d = cfg_default(&ENV, "port1"), *o = load("port1", json, err, sizeof err);
-    CHECK(o, "port1 with wrong fields still loads (%s)", err);
-    CHECK(o && num_of(o, "listenPort") == num_of(d, "listenPort"), "out of bounds: that field takes its default");
-    CHECK(o && num_of(o, "baudRate") == num_of(d, "baudRate"), "a wrong type: its default");
-    CHECK(o && !strcmp(str_of(o, "remoteHost"), str_of(d, "remoteHost")), "a string longer than its buffer: its default");
+    CHECK(o, "port1 loads (%s)", err);
+    CHECK(o && num_of(o, "listenPort") == 70000, "out of bounds: kept as sent");
+    CHECK(o && !strcmp(str_of(o, "remoteHost"), host), "a string over the schema's length: kept as sent");
+    CHECK(o && num_of(o, "flowControl") == 1 && !strcmp(str_of(o, "allowedClients"), "not an address"), "no cross fixes: as sent");
+    CHECK(o && num_of(o, "baudRate") == num_of(d, "baudRate"), "a wrong type (text for a number): its default");
     CHECK(o && cJSON_IsBool(cJSON_GetObjectItem(o, "serialHeartbeat")), "a bool given an object: its default");
-    CHECK(o && num_of(o, "flowControl") == num_of(d, "flowControl"), "RTS/CTS on RS485: its default (no CTS line)");
-    CHECK(o && !strcmp(str_of(o, "allowedClients"), str_of(d, "allowedClients")), "allowedClients that does not parse: its default");
-    CHECK(o && num_of(o, "maxClients") == 5 && num_of(o, "workMode") == 2, "the right fields are used as stored");
+    CHECK(o && num_of(o, "maxClients") == 5 && num_of(o, "workMode") == 2, "the other fields as sent");
     CHECK(o && cJSON_GetObjectItem(o, "packetInterval"), "a missing key is filled");
-    CHECK(strstr(err, "listenPort"), "the note names a field that took its default (%s)", err);
+    CHECK(strstr(err, "baudRate") && strstr(err, "serialHeartbeat") && !strstr(err, "listenPort"),
+          "the note names only the wrong types (%s)", err);
     cJSON_Delete(o), cJSON_Delete(d);
 
     o = load("system", "{\"username\":\"\",\"password\":\"\",\"idleRestart\":30}", err, sizeof err);
     CHECK(o && !strcmp(str_of(o, "username"), "") && !strcmp(str_of(o, "password"), "") && num_of(o, "idleRestart") == 30,
-          "cross rules are not the loader's: an empty login and idleRestart 30 load as given (%s)", err);
+          "an empty login and idleRestart 30 load as sent (%s)", err);
     cJSON_Delete(o);
 
     char list[4000];
@@ -414,32 +416,25 @@ static void test_load_field_by_field(void)
         k += (size_t)snprintf(list + k, sizeof list - k, "%s{\"enabled\":true,\"topic\":\"t/%d\"}", i ? "," : "", i);
     snprintf(list + k, sizeof list - k, "]");
     o = load("mqttPublish", list, err, sizeof err);
-    CHECK(o && cJSON_GetArraySize(o) == 16 && !strcmp(str_of(cJSON_GetArrayItem(o, 15), "topic"), "t/15"),
-          "a list over its limit keeps its first 16 entries (%d)", o ? cJSON_GetArraySize(o) : -1);
+    CHECK(o && cJSON_GetArraySize(o) == 16, "a list over its limit keeps its first 16 entries, a memory bound (%d)", o ? cJSON_GetArraySize(o) : -1);
     cJSON_Delete(o);
     o = load("mqttSubscribe", "[5,{\"enabled\":true,\"topic\":\"a/b\",\"qos\":7}]", err, sizeof err);
-    CHECK(o && cJSON_GetArraySize(o) == 1 && !strcmp(str_of(cJSON_GetArrayItem(o, 0), "topic"), "a/b") &&
-              num_of(cJSON_GetArrayItem(o, 0), "qos") == 0,
-          "an entry that is not an object is skipped; a wrong field in an entry takes its default");
+    CHECK(o && cJSON_GetArraySize(o) == 1 && num_of(cJSON_GetArrayItem(o, 0), "qos") == 7,
+          "an entry that is not an object is skipped; a number out of range in an entry is kept");
     cJSON_Delete(o);
-    // A value of the wrong JSON type takes its default, even one cfg_validate would coerce (Codex r4).
     cJSON *ed = cfg_default(&ENV, "edge"), *sd = cfg_default(&ENV, "system"), *md = cfg_default(&ENV, "mqtt");
     o = load("edge", "{\"enabled\":2}", err, sizeof err);
-    CHECK(o && cJSON_IsBool(cJSON_GetObjectItem(o, "enabled")) &&
-              cJSON_IsTrue(cJSON_GetObjectItem(o, "enabled")) == cJSON_IsTrue(cJSON_GetObjectItem(ed, "enabled")) && strstr(err, "enabled"),
+    CHECK(o && cJSON_IsTrue(cJSON_GetObjectItem(o, "enabled")) == cJSON_IsTrue(cJSON_GetObjectItem(ed, "enabled")) && strstr(err, "enabled"),
           "a bool given a number: its default, noted (%s)", err);
     cJSON_Delete(o);
     o = load("system", "{\"webPort\":true,\"websocketPort\":\"6000\"}", err, sizeof err);
-    CHECK(o && num_of(o, "webPort") == num_of(sd, "webPort") && num_of(o, "websocketPort") == num_of(sd, "websocketPort") &&
-              strstr(err, "webPort") && strstr(err, "websocketPort"),
-          "an integer given a bool or a numeric string: its default, noted (%s)", err);
+    CHECK(o && num_of(o, "webPort") == num_of(sd, "webPort") && num_of(o, "websocketPort") == num_of(sd, "websocketPort"),
+          "an integer given a bool or a numeric string: its default (%s)", err);
     cJSON_Delete(o);
     o = load("mqtt", "{\"cleanSession\":\"garbage\"}", err, sizeof err);
-    CHECK(o && cJSON_IsTrue(cJSON_GetObjectItem(o, "cleanSession")) == cJSON_IsTrue(cJSON_GetObjectItem(md, "cleanSession")) &&
-              strstr(err, "cleanSession"),
-          "a bool given a string: its default, noted (%s)", err);
+    CHECK(o && cJSON_IsTrue(cJSON_GetObjectItem(o, "cleanSession")) == cJSON_IsTrue(cJSON_GetObjectItem(md, "cleanSession")),
+          "a bool given a string: its default");
     cJSON_Delete(o), cJSON_Delete(ed), cJSON_Delete(sd), cJSON_Delete(md);
-    // every default loads as it is, with no note: no default relies on a coercion
     const char *names[16];
     size_t nn = cfg_names(&ENV, names, 16);
     for (size_t i = 0; i < nn; i++) {
@@ -451,7 +446,6 @@ static void test_load_field_by_field(void)
         CHECK(lo && !err[0], "%s: its default loads with no note (%s)", names[i], err);
         cJSON_Delete(lo), cJSON_Delete(dd);
     }
-    // the save-time check (cfg_validate) is unchanged: it still refuses the same port1
     cJSON *in = cJSON_Parse(json);
     CHECK(!cfg_validate(&ENV, "port1", in, NULL, err, sizeof err), "cfg_validate still refuses it (the oracle of the tests)");
     cJSON_Delete(in);

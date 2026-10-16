@@ -9,6 +9,8 @@ production PC.
     provision.py pubkey KEY PUB        its 32-byte public key, for -DSBIOT_BIND_PUBKEY_FILE=PUB
     provision.py record KEY UID SN OUT the 104-byte record of a UID given as 24 hex digits, with its SN
     provision.py uid CLI_OUTPUT        the UID (hex) in the output of STM32_Programmer_CLI -r32 0x1FF1E800 12
+    provision.py next-sn COUNTER       the next serial number, SB + YYMM + 6 digits; the counter file is written
+                                       (locked, fsynced) before the SN is printed, so an SN is never handed out twice
 
 KEY may be "dev": the development key, derived from a public string. A board bound with it runs
 only firmware built without SBIOT_BIND_PUBKEY_FILE; never ship it.
@@ -67,6 +69,33 @@ def record_v1(seed, uid):
     return body + struct.pack('<I', zlib.crc32(body))
 
 
+def next_sn(counter):
+    """The next SN from the counter file (Plan 11a, Codex plan r1): under an exclusive lock on counter.lock for the
+    whole read-increment-write, the incremented counter is written to a temporary file, fsynced, renamed over the
+    counter and the directory fsynced, all before the SN is returned. Any failure raises: no SN."""
+    import datetime
+    import fcntl
+    d = os.path.dirname(os.path.abspath(counter))
+    os.makedirs(d, exist_ok=True)
+    with open(counter + '.lock', 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        n = int(open(counter).read().strip() or '1') if os.path.exists(counter) else 1
+        if not 1 <= n <= 999999:
+            raise ValueError('the SN counter is at %d: past 999999, or broken' % n)
+        tmp = counter + '.tmp'
+        with open(tmp, 'w') as f:
+            f.write('%d\n' % (n + 1))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, counter)
+        fd = os.open(d, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    return 'SB%s%06d' % (datetime.date.today().strftime('%y%m'), n)
+
+
 def uid_from_cli(text):
     m = re.search(r'0x1FF1E800\s*:\s*([0-9A-F]{8})\s+([0-9A-F]{8})\s+([0-9A-F]{8})', text, re.I)
     if not m:
@@ -107,6 +136,9 @@ def main(argv):
         return write_out(argv[2], public_key(load_key(argv[1])), argv[1])
     if len(argv) == 5 and argv[0] == 'record':
         return write_out(argv[4], record(load_key(argv[1]), bytes.fromhex(argv[2]), argv[3]), argv[1])
+    if len(argv) == 2 and argv[0] == 'next-sn':
+        print(next_sn(argv[1]))
+        return 0
     if len(argv) == 2 and argv[0] == 'uid':
         print(uid_from_cli(open(argv[1]).read()).hex())
         return 0

@@ -114,6 +114,38 @@ def test_genkey():
         check(open(recp, 'rb').read() == provision.record(first, UID_A, SN_A), 'record writes the record of a hex UID and an SN')
 
 
+def test_next_sn():
+    import datetime
+    import multiprocessing
+    with tempfile.TemporaryDirectory() as d:
+        ctr = os.path.join(d, 'sn_counter')
+        yymm = datetime.date.today().strftime('%y%m')
+        a, b = provision.next_sn(ctr), provision.next_sn(ctr)
+        check(a == 'SB' + yymm + '000001' and b == 'SB' + yymm + '000002', 'consecutive SNs from a new counter (%s %s)' % (a, b))
+        with multiprocessing.Pool(8) as pool:
+            got = pool.map(provision.next_sn, [ctr] * 8)
+        check(len(set(got)) == 8 and all(provision.SN_RE.match(x) for x in got), '8 processes at once: 8 different SNs')
+        before = open(ctr).read()
+        real = os.replace
+        def fail(*a):
+            raise OSError('disk full')
+        os.replace = fail
+        try:
+            provision.next_sn(ctr)
+            check(False, 'a failed write gives no SN')
+        except OSError:
+            check(open(ctr).read() == before, 'a failed write gives no SN and leaves the counter as it was')
+        finally:
+            os.replace = real
+        open(ctr, 'w').write('999999')
+        check(provision.next_sn(ctr).endswith('999999'), 'the last number, 999999, is handed out')
+        try:
+            provision.next_sn(ctr)
+            check(False, 'past 999999: refused')
+        except ValueError:
+            check(True, 'past 999999: refused')
+
+
 def write_sample(path):
     seed = provision.dev_seed()
     other = bytes(range(32))
@@ -124,6 +156,7 @@ def write_sample(path):
 
 
 test_record()
+test_next_sn()
 test_uid_from_cli()
 test_genkey()
 if len(sys.argv) > 1 and not failures:

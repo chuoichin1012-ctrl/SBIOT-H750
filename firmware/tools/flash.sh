@@ -12,6 +12,8 @@
 # bind, flash both, and wipe SPI4 from the console ("Z" then "WIPE"; the app formats FlashDB afresh).
 # "bind" reads the chip's UID and writes its anti-clone record, signed with the private KEY
 # (tools/provision.py), at QSPI 0x903F0000 (spec §11.5). Do it before RDP Level 1 is set.
+# "bind" also writes the board's MAC and SN into the record (Plan 11a): SBIOT_SN=<SB + 10 digits> sets the SN, else
+# the next number of the counter SBIOT_SN_COUNTER (default ~/.sbiot/sn_counter) on this production PC.
 # Bench only: SBIOT_BIND_UID=<24 hex digits> signs for that UID instead, which makes the board look
 # like it carries a record copied from another chip (test/bench/ota_check.py, the clone case).
 set -euo pipefail
@@ -69,9 +71,12 @@ if [ "$what" = bind ]; then
     "$CLI" -c port=SWD mode=UR -r32 0x1FF1E800 12 > "$build/uid.txt" 2>&1 || true
     uid=$(python3 "$tools/provision.py" uid "$build/uid.txt") || { tail -5 "$build/uid.txt"; echo "flash: cannot read the UID"; exit 1; }
     uid=${SBIOT_BIND_UID:-$uid}
-    python3 "$tools/provision.py" record "$key" "$uid" "$build/bind.bin"
+    # The SN (Plan 11a): SBIOT_SN, or the next of the production counter (written before it is handed out).
+    sn=${SBIOT_SN:-$(python3 "$tools/provision.py" next-sn "${SBIOT_SN_COUNTER:-$HOME/.sbiot/sn_counter}")} || { echo "flash: no SN"; exit 1; }
+    python3 "$tools/provision.py" record "$key" "$uid" "$sn" "$build/bind.bin"
     qspi "$build/bind.bin" 0x903F0000
-    echo "flash: bound to UID $uid"
+    mac=$(python3 -c "import sys; sys.path.insert(0, '$tools'); import provision; print(':'.join('%02x' % b for b in provision.mac_of(bytes.fromhex('$uid'))))")
+    echo "flash: bound to UID $uid, MAC $mac, SN $sn"
 fi
 if [ "$what" = blank ]; then
     head -c 4096 /dev/zero | tr '\0' '\377' > "$build/blank4k.bin"

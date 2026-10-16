@@ -9,6 +9,7 @@ MODE tcpserver  port, secs, delay_ms (listen only after), send_hex + send_ms (to
      udp        port, secs, send_hex + send_ms + to=host:port
      http       port, secs, reply (the body)
      mcast      group, port, iface, send_hex, send_ms
+     stuckpair  host, port, secs: two clients of a TCP server, one never reading, one logging what it got
 """
 import json
 import socket
@@ -143,7 +144,29 @@ def mcast(args):
     out(ev='sent')
 
 
+def stuckpair(args):
+    """Two clients of the board's TCP server: one never reads (a tiny window), one reads and logs."""
+    stuck = socket.socket()
+    stuck.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    stuck.connect((args['host'], int(args['port'])))
+    ok = socket.create_connection((args['host'], int(args['port'])), 5)
+    out(ev='connected')
+    ok.settimeout(0.5)
+    n = 0
+    while time.time() - T0 < float(args.get('secs', 30)):
+        try:
+            d = ok.recv(65536)
+        except socket.timeout:
+            continue
+        if not d:
+            break
+        n += len(d)
+        out(ev='got', n=n)
+    stuck.close()
+    ok.close()
+
+
 if __name__ == '__main__':
     mode = sys.argv[1]
     a = dict(x.split('=', 1) for x in sys.argv[2:])
-    {'tcpserver': tcpserver, 'udp': udp, 'http': http, 'mcast': mcast}[mode](a)
+    {'tcpserver': tcpserver, 'udp': udp, 'http': http, 'mcast': mcast, 'stuckpair': stuckpair}[mode](a)

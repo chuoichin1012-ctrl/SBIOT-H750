@@ -31,6 +31,7 @@
 #define PRIO 8
 #define PASS_FRAMES 8
 #define PASS_READS 8
+#define PASS_ACCEPTS 8
 #define REPLY_MS 2000u  // a reply to a request (Modbus, polling) has this long to go out
 
 typedef struct {
@@ -242,6 +243,15 @@ static void drop_client(bridge_t *b, int i)
     b->cli[i] = b->cli[--b->ncli];
 }
 
+// A lost connection (10 s without progress) is reset, so lwIP frees its queued data at once.
+static void abort_client(bridge_t *b, int i)
+{
+    struct linger lg = {.l_onoff = 1, .l_linger = 0};
+    lwip_setsockopt(b->cli[i].c.fd, SOL_SOCKET, SO_LINGER, &lg, sizeof lg);
+    conn_close(&b->cli[i].c);
+    b->cli[i] = b->cli[--b->ncli];
+}
+
 // Up to PASS_FRAMES frames to every connection; true when it tried anything. Lost connections are dropped.
 static bool send_frames(bridge_t *b, bool reg_prefix)
 {
@@ -271,7 +281,7 @@ static bool send_frames(bridge_t *b, bool reg_prefix)
                 b->last_io_us = now_us();
             } else if (r == TX_LOST) {
                 SLOG_W("bridge", "UART%d: a peer took nothing for 10 s or failed: dropped", b->n);
-                drop_client(b, i);
+                abort_client(b, i);
             } else {
                 all = false;
             }
@@ -346,7 +356,7 @@ static void tcp_server(bridge_t *b)
     int lfd = lwip_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP), one = 1;
     lwip_setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
     struct sockaddr_in me = {.sin_family = AF_INET, .sin_port = lwip_htons(b->C.listen_port)};
-    if (lfd < 0 || lwip_bind(lfd, (struct sockaddr *)&me, sizeof me) != 0 || lwip_listen(lfd, 4) != 0) {
+    if (lfd < 0 || lwip_bind(lfd, (struct sockaddr *)&me, sizeof me) != 0 || lwip_listen(lfd, DEFAULT_ACCEPTMBOX_SIZE) != 0) {
         SLOG_E("bridge", "UART%d: cannot listen on port %u", b->n, b->C.listen_port);
         set_state(b, "ERROR");
         return;
@@ -362,11 +372,13 @@ static void tcp_server(bridge_t *b)
         fd_set rd;
         bool gate = accept_allowed(netmgr_netconn_free(), s_reserve);
         int n = wait(b, gate ? lfd : -1, &rd, work ? 0 : 10);
-        if (n > 0 && gate && FD_ISSET(lfd, &rd)) {
-            work = true;
+        for (int k = 0; n > 0 && gate && FD_ISSET(lfd, &rd) && k < PASS_ACCEPTS; k++) {  // every pending one (Codex r1)
             struct sockaddr_in from;
             socklen_t fl = sizeof from;
             int fd = lwip_accept(lfd, (struct sockaddr *)&from, &fl);
+            if (fd < 0)
+                break;
+            work = true;
             uint32_t ip = lwip_ntohl(from.sin_addr.s_addr);
             if (fd >= 0 && !ipacl_allows(&b->C.acl, ip)) {
                 SLOG_W("bridge", "UART%d: client %s not in allowedClients: refused", b->n, inet_ntoa(from.sin_addr));

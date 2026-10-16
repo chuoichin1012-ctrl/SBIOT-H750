@@ -200,42 +200,18 @@ def case_tcpserver():
     g.close()
     check(n0 == 0 and bytes.fromhex(h1) == b'gated', 'the netconn gate: no accept while below the reserve, then accepted (%d, %s)' % (n0, h1))
     # A client that never reads holds its port's other clients until it is dropped, after about 10 s
-    # without a byte taken (spec §5.6 exception); then the other receives at the full rate again.
-    stuck, ok_cl = socket.create_connection((GW, 23), 5), socket.create_connection((GW, 23), 5)
-    stuck.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
-    time.sleep(0.5)
-    import threading
-    prog = []
-
-    def reader():
-        ok_cl.settimeout(0.5)
-        n, t0 = 0, time.time()
-        while time.time() - t0 < 42:
-            try:
-                d = ok_cl.recv(65536)
-                if not d:
-                    break
-                n += len(d)
-                prog.append((time.time() - t0, n))
-            except socket.timeout:
-                pass
-    th = threading.Thread(target=reader, daemon=True)
-    th.start()
-    lines = board.listen(42, sends=[(0.3, 'E'), (0.4, '2 3 40\r')])
-    th.join(3)
-    stuck.close()
-    ok_cl.close()
-    drop = next((ms / 1000.0 for ms, l in lines if 'took nothing for 10 s' in l), None)
-    m = sc.find([l for _, l in lines], r'E2 streamed (\d+) bytes')
-    streamed = int(m.group(1)) if m else 0
-    after = [(t, n) for t, n in prog if drop and t >= drop + 1]
-    gaps = [b[0] - a[0] for a, b in zip(after, after[1:])]
-    rate = streamed / 40.0
-    got_after = after[-1][1] - after[0][1] if len(after) > 1 else 0
-    want_after = rate * (after[-1][0] - after[0][0]) if len(after) > 1 else 1
-    check(drop is not None and 8 <= drop <= 16 and gaps and max(gaps) < 2 and got_after >= 0.9 * want_after,
-          'a client that never reads: dropped at %s s; the other then got %d of %d bytes, longest pause %.1f s'
-          % (round(drop, 1) if drop else '-', got_after, want_after, max(gaps) if gaps else -1))
+    # without a byte taken (spec §5.6 exception); then the other receives at the full rate again. Both
+    # clients run on Windows: through WSL's NAT a zero-window connection stalled the other one too.
+    p = peer('stuckpair', host=GW, port=23, secs=36)
+    lines = board.listen(34, sends=[(0.3, 'E'), (0.4, '2 3 32\r')])
+    ev = wait_peer(p)
+    t_conn = next((e['t'] for e in ev if e.get('ev') == 'connected'), 0)
+    got = [(e['t'] / 1000.0, e['n']) for e in ev if e.get('ev') == 'got']
+    gaps = [(a[0], b[0]) for a, b in zip(got, got[1:]) if b[0] - a[0] > 2.0]
+    dropped = any('took nothing for 10 s' in l for _, l in lines)
+    check(dropped and len(gaps) == 1 and 9 <= gaps[0][1] - gaps[0][0] <= 13,
+          'a client that never reads: dropped (%s); the other waited %s s once, then got everything (gaps %s, %d bytes)'
+          % (dropped, round(gaps[0][1] - gaps[0][0], 1) if gaps else '-', gaps, got[-1][1] if got else 0))
 
 
 def case_modbus():

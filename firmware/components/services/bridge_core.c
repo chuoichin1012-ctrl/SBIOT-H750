@@ -213,3 +213,47 @@ int tx_progress(tx_conn_t *c, const uint8_t *frame, size_t len, tx_send_fn send,
 }
 
 bool idle_due(uint64_t now_us, uint64_t last_us, uint64_t limit_us) { return now_us >= last_us && now_us - last_us >= limit_us; }
+
+// ---- Edge remote access and reports (Plan 08c) --------------------------------------------------
+
+static int rtu_len(const uint8_t *buf, size_t len)
+{
+    size_t need = mb_rtu_request_len(buf, len);
+    if (!need)
+        return -1;
+    return len < need ? 0 : (int)need;
+}
+
+void frame_push(mbtcp_acc_t *a, const uint8_t *data, size_t len, bool mbap, frame_req_fn req, frame_pass_fn pass, void *ctx)
+{
+    while (len) {
+        size_t take = sizeof a->buf - a->len;
+        if (take > len)
+            take = len;
+        memcpy(a->buf + a->len, data, take);
+        a->len += take;
+        data += take;
+        len -= take;
+        while (a->len) {  // what is whole goes now, the rest waits for the next segment
+            int fl = mbap ? mb_tcp_frame_len(a->buf, a->len) : rtu_len(a->buf, a->len);
+            if (fl == 0 && a->len < sizeof a->buf)
+                break;
+            if (fl <= 0) {  // not a request Edge frames: all of it goes on
+                pass(ctx, a->buf, a->len);
+                a->len = 0;
+                break;
+            }
+            if (!req(ctx, a->buf, (size_t)fl))
+                pass(ctx, a->buf, (size_t)fl);
+            memmove(a->buf, a->buf + fl, a->len - (size_t)fl);
+            a->len -= (size_t)fl;
+        }
+    }
+}
+
+bool report_accept(const bridge_cfg_t *c, bool running, bool online)
+{
+    if (!running || c->modbus_client)
+        return false;
+    return online || c->work == BR_HTTP_CLIENT || c->short_conn;
+}

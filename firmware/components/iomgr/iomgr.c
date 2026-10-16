@@ -125,9 +125,8 @@ static void reload_task(void *arg)
         if (s_factory) {
             s_factory = false;
             SLOG_W("io", "Reload button: restoring the factory settings");
-            if (store_factory_reset() != STORE_OK)
+            if (store_factory_reset() != STORE_OK)  // the store restarts the gateway either way
                 SLOG_E("io", "some settings could not be erased");
-            sysmgr_restart_later(1500);
         }
         uint8_t mask;
         lock();

@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "FreeRTOS.h"
+#include "arena.h"
 #include "task.h"
 #include "blog.h"
 #include "board.h"
@@ -192,6 +193,9 @@ static void init_task(void *arg)
     bench_ota_init();
     // The configs are read once, here; a saved config applies after a restart (spec §9.1).
     static const cfg_env_t env = {.uart_count = 2, .do_count = 2, .di_count = 2, .ai_count = 2};
+    // cJSON's counting allocator before any config is parsed: the loader tells "out of memory" from a wrong
+    // field by its count, and must never hand a config with keys missing to the runtime (Codex 09b review).
+    json_alloc_install();
     uint64_t t0 = now_us();
     store_err_t se = store_init(&env, flash_spi4());
     blog("app: store %s in %lu ms, boot %lu, heap free %lu\r\n", se == STORE_OK ? "mounted" : "FAILED",

@@ -39,7 +39,7 @@ static void stop_if_failfast(void)
 
 static int s_alloc_fail_at = -1;  // cJSON's allocation number n fails (0 the first); -1 none
 static unsigned s_alloc_failures;
-static void *fail_malloc(size_t n)
+__attribute__((unused)) static void *fail_malloc(size_t n)
 {
     if (s_alloc_fail_at >= 0 && s_alloc_fail_at-- == 0) {
         s_alloc_failures++;
@@ -62,6 +62,8 @@ static bool s_quiet;
 void store_port_lock(void) { s_depth++; }
 void store_port_unlock(void) { s_depth--; }
 int64_t store_port_wall_ms(void) { return s_wall; }
+static int s_restarts;
+void store_port_restart(void) { s_restarts++; }
 uint32_t store_port_uptime_ms(void) { return s_uptime; }
 void store_port_log(const char *fmt, ...)
 {
@@ -163,32 +165,14 @@ static void reboot(void)
 
 // ---- helpers -------------------------------------------------------------------------------
 
-typedef struct {
-    char *p;
-    size_t n, cap;
-} sbuf_t;
 
-static bool sink(void *ctx, const char *s, size_t n)
-{
-    sbuf_t *b = ctx;
-    if (b->n + n + 1 > b->cap) {
-        b->cap = (b->n + n + 1) * 2;
-        b->p = realloc(b->p, b->cap);
-    }
-    memcpy(b->p + b->n, s, n);
-    b->n += n;
-    b->p[b->n] = '\0';
-    return true;
-}
-
-/** What store_edge_save must store for `json`: cfg_edge_text's own output. */
+/** What store_edge_save must store for `json`: the body as sent (Plan 09b ruling 3). */
 static char *edge_oracle(const char *json)
 {
-    sbuf_t out = {0};
-    char err[200];
-    cfg_result_t r = cfg_edge_text(&ENV, json, strlen(json), true, CFG_EDGE_MAX, sink, &out, err, sizeof err);
-    CHECK(r == CFG_OK, "oracle rejects the model: %s", err);
-    return out.p;
+    size_t n = strlen(json);
+    char *c = malloc(n + 1);
+    memcpy(c, json, n + 1);
+    return c;
 }
 
 /** A valid model of `devs` Modbus RTU devices with `per` points each; `tag` makes the names differ. */
@@ -256,6 +240,29 @@ static void raw_put(const char *part, const char *key, const char *value)
     reboot();
 }
 
+/** `key` in partition `part` as FlashDB holds it, with no default table (NULL when absent); then a reboot. */
+static char *raw_get(const char *part, const char *key)
+{
+    store_deinit();
+    struct fdb_kvdb db = {0};
+    uint32_t sec = 16 * 1024;
+    fdb_kvdb_control(&db, FDB_KVDB_CTRL_SET_SEC_SIZE, &sec);
+    char *out = NULL;
+    if (fdb_kvdb_init(&db, part, part, NULL, NULL) == FDB_NO_ERR) {
+        struct fdb_blob blob;
+        static char buf[12288];
+        size_t n = fdb_kv_get_blob(&db, key, fdb_blob_make(&blob, buf, sizeof buf - 1));
+        if (n && blob.saved.len) {
+            buf[n] = '\0';
+            out = malloc(n + 1);
+            memcpy(out, buf, n + 1);
+        }
+        fdb_kvdb_deinit(&db);
+    }
+    reboot();
+    return out;
+}
+
 static char *default_text(const char *name)
 {
     cJSON *d = cfg_default(&ENV, name);
@@ -293,10 +300,7 @@ static void test_set_get(void)
     flash_new(2);
     reboot();
     const char *in = "{\"hostname\":\"plant-7\"}";
-    char want[CFG_SMALL_BUF], err[200], err2[200];
-    cJSON *cur = store_get("system");
-    CHECK(cfg_validate_text(&ENV, "system", in, strlen(in), cur, want, sizeof want, err, sizeof err) == CFG_OK, "oracle");
-    cJSON_Delete(cur);
+    char err[200];
     const char *names[32];
     size_t nn = cfg_names(&ENV, names, 32);
     char *before[32] = {0};
@@ -312,58 +316,59 @@ static void test_set_get(void)
         free(before[i]);
     }
     char *got = store_get_json("system");
-    CHECK(got && !strcmp(got, want), "system reads back as cfg_validate_text made it");
+    CHECK(got && !strcmp(got, in), "system reads back byte for byte as sent (Plan 09b ruling 3)");
     free(got);
     reboot();
     got = store_get_json("system");
-    CHECK(got && !strcmp(got, want), "and after a reboot");
+    CHECK(got && !strcmp(got, in), "and after a reboot");
     free(got);
 
-    const char *bad = "{\"hostname\":5}";
-    cur = store_get("system");
-    cfg_validate_text(&ENV, "system", bad, strlen(bad), cur, want, sizeof want, err2, sizeof err2);
-    cJSON_Delete(cur);
-    // Plan 08b T0: two TCP servers may not share a listen port, nor take the web's.
-    {
-        const char *p1 = "{\"workMode\":3,\"listenPort\":4000}", *p2 = "{\"workMode\":3,\"listenPort\":4000}";
-        const char *p2ok = "{\"workMode\":3,\"listenPort\":4001}";
-        CHECK(store_set_text("port1", p1, strlen(p1), err, sizeof err) == STORE_OK, "port1 on 4000: %s", err);
-        CHECK(store_set_text("port2", p2, strlen(p2), err, sizeof err) == STORE_EINVALID && strstr(err, "4000"),
-              "port2 on 4000 too: refused (%s)", err);
-        CHECK(store_set_text("port2", p2ok, strlen(p2ok), err, sizeof err) == STORE_OK, "port2 on 4001: %s", err);
-        char *s2 = store_get_json("port2");
-        CHECK(s2 && strstr(s2, "\"listenPort\":4001"), "the refused save changed nothing");
-        free(s2);
-        // Out of memory while reading the three configs: never saved as if there were no clash (Codex 08b r1).
-        bool saved = false;
-        for (int n = 0;; n++) {  // fails each allocation in turn, until the call makes fewer than n + 1
-            s_alloc_fail_at = n;
-            cJSON_Hooks h = {fail_malloc, free};
-            cJSON_InitHooks(&h);
-            store_err_t e = store_set_text("port2", p2, strlen(p2), err, sizeof err);
-            cJSON_InitHooks(NULL);
-            bool reached = s_alloc_fail_at < 0;
-            s_alloc_fail_at = -1;
-            saved |= e == STORE_OK;
-            if (!reached)
-                break;
-        }
-        s2 = store_get_json("port2");
-        CHECK(!saved && s2 && strstr(s2, "\"listenPort\":4001"), "a clash is never saved when memory runs out");
-        free(s2);
+    // Business rules are the UI's and the loader's now: valid JSON that breaks them is stored as sent.
+    const char *odd[][2] = {{"port1", "{\"workMode\":3,\"listenPort\":70000}"},
+                            {"system", "{\"username\":\"\",\"password\":\"\"}"},
+                            {"port2", "{ \"workMode\" : 3 ,\n \"listenPort\" : 4000 }"}};
+    for (size_t i = 0; i < 3; i++) {
+        CHECK(store_set_text(odd[i][0], odd[i][1], strlen(odd[i][1]), err, sizeof err) == STORE_OK, "%s: business-invalid accepted (%s)",
+              odd[i][0], err);
+        got = store_get_json(odd[i][0]);
+        CHECK(got && !strcmp(got, odd[i][1]), "%s: stored byte for byte", odd[i][0]);
+        free(got);
     }
-    CHECK(store_set_text("system", bad, strlen(bad), err, sizeof err) == STORE_EINVALID && !strcmp(err, err2),
-          "invalid: 400 with cfg_validate_text's message (%s)", err);
-    CHECK(store_set_text("system", "{", 1, err, sizeof err) == STORE_EINVALID, "not JSON: 400");
-    got = store_get_json("system");
-    CHECK(got && strstr(got, "plant-7"), "the stored copy is unchanged");
+    reboot();
+    got = store_get_json("port1");
+    CHECK(got && !strcmp(got, odd[0][1]), "a business-invalid config reads back after a reboot too");
     free(got);
+
+    // What a save still checks: the name, the syntax, the root type, the size; each keeps the stored copy.
+    char *kept = store_get_json("system");
+    CHECK(store_set_text("system", "{", 1, err, sizeof err) == STORE_EINVALID && !strcmp(err, "The request body is not valid JSON."),
+          "not JSON: 400 (%s)", err);
+    CHECK(store_set_text("system", "{} x", 4, err, sizeof err) == STORE_EINVALID, "trailing bytes: 400");
+    CHECK(store_set_text("system", "[]", 2, err, sizeof err) == STORE_EINVALID && !strcmp(err, "The settings must be a JSON object."),
+          "an array for system: 400 (%s)", err);
+    CHECK(store_set_text("mqttPublish", "{}", 2, err, sizeof err) == STORE_EINVALID && !strcmp(err, "The settings must be a JSON array."),
+          "an object for mqttPublish: 400 (%s)", err);
+    CHECK(store_set_text("mqttPublish", "[]", 2, err, sizeof err) == STORE_OK, "an array for mqttPublish (%s)", err);
+    char *big = malloc(CFG_SMALL_MAX + 2);
+    memset(big, ' ', CFG_SMALL_MAX + 1);
+    big[0] = '{', big[CFG_SMALL_MAX] = '}', big[CFG_SMALL_MAX + 1] = '\0';
+    CHECK(store_set_text("system", big, CFG_SMALL_MAX + 1, err, sizeof err) == STORE_ETOOLARGE, "10 241 bytes: 413");
+    free(big);
+    got = store_get_json("system");
+    CHECK(got && kept && !strcmp(got, kept), "the stored copy is unchanged");
+    free(got), free(kept);
     CHECK(store_set_text("nonsense", "{}", 2, err, sizeof err) == STORE_ENOTFOUND, "unknown name: 404");
     CHECK(store_set_text("edgeDevices", "[]", 2, err, sizeof err) == STORE_ENOTFOUND, "edgeDevices has its own entry point");
     BALANCED("rejected sets");
 
     cJSON *tree = store_get("system");
-    CHECK(tree && cJSON_IsString(cJSON_GetObjectItem(tree, "hostname")), "store_get parses the cached text");
+    const char *pw = tree ? cJSON_GetStringValue(cJSON_GetObjectItem(tree, "password")) : NULL;
+    CHECK(pw && !*pw, "store_get runs the stored system as given, an empty password too (Plan 09b T3)");
+    cJSON_Delete(tree);
+    CHECK(store_set_text("system", in, strlen(in), err, sizeof err) == STORE_OK, "a valid system again (%s)", err);
+    tree = store_get("system");
+    CHECK(tree && cJSON_IsString(cJSON_GetObjectItem(tree, "hostname")) && cJSON_GetObjectItem(tree, "username"),
+          "store_get parses the cached text and fills the missing keys");
     cJSON_Delete(tree);
 }
 
@@ -373,12 +378,15 @@ static void test_revalidate_at_boot(void)
     reboot();
     raw_put("cfg", "system", "{\"hostname\":\"old-fw\"}");  // written by an older firmware: keys missing
     char *got = store_get_json("system");
-    CHECK(got && strstr(got, "old-fw") && strstr(got, "\"username\""), "missing keys filled at boot (%s)", got);
+    CHECK(got && !strcmp(got, "{\"hostname\":\"old-fw\"}"), "GET serves the stored bytes, missing keys not added (%s)", got);
     free(got);
+    cJSON *doc = store_get("system");
+    CHECK(doc && cJSON_GetObjectItem(doc, "username"), "store_get fills the missing keys for the runtime");
+    cJSON_Delete(doc);
     raw_put("cfg", "network", "not json at all");
     char *want = default_text("network");
     got = store_get_json("network");
-    CHECK(got && !strcmp(got, want), "an unusable stored copy falls back to the default");
+    CHECK(got && !strcmp(got, want), "a stored copy that is not JSON is served as the default, so the UI can open it");
     free(got);
     free(want);
 }
@@ -432,8 +440,8 @@ static void test_listeners_and_state(void)
     s_heard = 0;
     store_set_text("system", "{\"hostname\":\"x\"}", 16, err, sizeof err);
     CHECK(s_heard == 1 && !strcmp(s_last, "system"), "set notifies once (%d %s)", s_heard, s_last);
-    store_set_text("system", "{\"hostname\":5}", 14, err, sizeof err);
-    CHECK(s_heard == 1, "a rejected set does not notify");
+    store_set_text("system", "{\"hostname\":", 12, err, sizeof err);
+    CHECK(s_heard == 1, "a rejected set (not JSON) does not notify");
 
     uint8_t do_state[2] = {1, 0}, back[2] = {9, 9};
     CHECK(store_state_set("do", do_state, 2) == STORE_OK, "state set");
@@ -497,19 +505,186 @@ static void test_certs_and_factory_reset(void)
     CHECK(edge_keys("ed.") == 0, "no edge records left");  // the log is checked in test_log
 }
 
+// ---- Plan 09b T3: configs saved by the previous firmware ------------------------------------------
+
+static bool count_dev(void *ctx, const cJSON *dev, int index) { (void)dev, (void)index; ((int *)ctx)[0]++; return true; }
+static bool count_node(void *ctx, const cJSON *node, int dev) { (void)node, (void)dev; ((int *)ctx)[1]++; return true; }
+static bool grow(void *ctx, const char *t, size_t n)
+{
+    char **b = ctx;
+    size_t k = *b ? strlen(*b) : 0;
+    *b = realloc(*b, k + n + 1);
+    memcpy(*b + k, t, n);
+    (*b)[k + n] = '\0';
+    return true;
+}
+
+static void test_previous_firmware(void)
+{
+    flash_new(37);
+    reboot();
+    // What the previous save path stored: cfg_validate_text's normalised text, every field filled.
+    char old[CFG_SMALL_BUF], err[200];
+    cJSON *cur = cfg_default(&ENV, "mqtt");
+    const char *body = "{\"enabled\":1,\"host\":\"broker.example\",\"port\":1884,\"keepAlive\":45}";
+    CHECK(cfg_validate_text(&ENV, "mqtt", body, strlen(body), cur, old, sizeof old, err, sizeof err) == CFG_OK, "oracle: %s", err);
+    cJSON_Delete(cur);
+    raw_put("cfg", "mqtt", old);
+    char *got = store_get_json("mqtt");
+    CHECK(got && !strcmp(got, old), "GET returns the previous firmware's bytes");
+    free(got);
+    cJSON *doc = store_get("mqtt");
+    char *printed = doc ? cJSON_PrintUnformatted(doc) : NULL;
+    CHECK(printed && !strcmp(printed, old), "and the runtime gets every value as stored");
+    free(printed), cJSON_Delete(doc);
+    // Its Edge model: cfg_edge_text's normalised output, cut by byte into 8 KB records.
+    char *m = edge_model(20, 5, 7), *norm = NULL;
+    CHECK(cfg_edge_text(&ENV, m, strlen(m), true, CFG_EDGE_MAX, grow, &norm, err, sizeof err) == CFG_OK, "oracle: %s", err);
+    CHECK(norm && store_edge_save(norm, strlen(norm), err, sizeof err) == STORE_OK, "stored (%s)", err);
+    reboot();
+    char *e = edge_now();
+    CHECK(e && norm && !strcmp(e, norm), "GET of the model returns its bytes");
+    int counts[2] = {0, 0};
+    CHECK(e && cfg_edge_load(&ENV, e, strlen(e), count_dev, count_node, counts, err, sizeof err) == CFG_OK && counts[0] == 20 &&
+              counts[1] == 100,
+          "the boot loads it as before: %d devices, %d points (%s)", counts[0], counts[1], err);
+    free(e), free(norm), free(m);
+    BALANCED("previous firmware");
+}
+
+// ---- Plan 09b T1: the defaults in FlashDB, the factory reset ----------------------------------
+
+static void test_defaults_stored(void)
+{
+    flash_new(31);
+    reboot();
+    const char *names[32];
+    size_t n = cfg_names(&ENV, names, 32);
+    for (size_t i = 0; i < n; i++) {
+        if (!strcmp(names[i], "edgeDevices"))
+            continue;
+        char *raw = raw_get("cfg", names[i]);
+        const char *want = cfg_default_text(&ENV, names[i]);
+        CHECK(raw && want && !strcmp(raw, want), "%s: a blank flash is created with its default stored", names[i]);
+        free(raw);
+    }
+    // An older DB that lacks a config (a newer firmware added it): read from the table, never written.
+    flash_new(32);
+    store_deinit();
+    {
+        struct fdb_kvdb db = {0};
+        uint32_t sec = 16 * 1024;
+        fdb_kvdb_control(&db, FDB_KVDB_CTRL_SET_SEC_SIZE, &sec);
+        fdb_kvdb_init(&db, "cfg", "cfg", NULL, NULL);
+        struct fdb_blob blob;
+        const char *sys = "{\"hostname\":\"old\"}";
+        fdb_kv_set_blob(&db, "system", fdb_blob_make(&blob, sys, strlen(sys)));
+        fdb_kvdb_deinit(&db);
+    }
+    reboot();
+    char *got = store_get_json("mqtt"), *want = default_text("mqtt");
+    CHECK(got && want && !strcmp(got, want), "a config missing from an older DB loads its default");
+    free(got), free(want);
+    char *raw = raw_get("cfg", "mqtt");
+    CHECK(!raw, "and the default is not written to it");
+    free(raw);
+    BALANCED("defaults");
+}
+
+static long s_programs;
+static int counting_program(nor_t *n, uint32_t off, const void *buf, uint32_t len)
+{
+    s_programs++;
+    return tracing_program(n, off, buf, len);
+}
+
+static void test_reset_blocks_and_restarts(void)
+{
+    flash_new(33);
+    reboot();
+    char err[200];
+    store_set_text("system", "{\"hostname\":\"before\"}", 21, err, sizeof err);
+    s_restarts = 0;
+    CHECK(store_factory_reset() == STORE_OK && s_restarts == 1, "a factory reset restarts the gateway once (%d)", s_restarts);
+    s_spi.nor.program = counting_program;
+    long e0 = s_erases;
+    s_programs = 0;
+    const char *pem = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+    uint8_t mask = 1;
+    CHECK(store_set_text("system", "{\"hostname\":\"after\"}", 20, err, sizeof err) != STORE_OK &&
+              store_edge_save("[]", 2, err, sizeof err) != STORE_OK && store_cert_set("mqtt", "ca", pem, strlen(pem)) != STORE_OK &&
+              store_state_set("do", &mask, 1) != STORE_OK,
+          "after the reset began, every write is refused until the restart");
+    CHECK(s_programs == 0 && s_erases == e0, "and nothing reaches the flash (%ld programs, %ld erases)", s_programs, s_erases - e0);
+    s_spi.nor.program = tracing_program;
+    reboot();
+    char *got = store_get_json("system"), *want = default_text("system");
+    CHECK(got && want && !strcmp(got, want), "after the restart: the defaults, writable again");
+    free(got), free(want);
+    CHECK(store_set_text("system", "{\"hostname\":\"after\"}", 20, err, sizeof err) == STORE_OK, "saves work again (%s)", err);
+    BALANCED("reset blocks");
+}
+
+static void test_reset_read_back(void)
+{
+    flash_new(34);
+    reboot();
+    char err[200];
+    store_set_text("system", "{\"hostname\":\"before\"}", 21, err, sizeof err);
+    s_restarts = 0;
+    sim_fail(&s_w, 0, 2, 0x00000, 0x40000, SIM_SILENT);  // the defaults are "written" and land nowhere
+    s_quiet = true;
+    store_err_t e = store_factory_reset();
+    s_quiet = false;
+    sim_fail(&s_w, 0, 0, 0, 0, 0);
+    CHECK(e != STORE_OK && s_restarts == 1, "defaults that did not land: the read-back reports the reset incomplete, and it restarts");
+    BALANCED("reset read-back");
+}
+
+static void test_reset_unmounted(void)
+{
+    flash_new(35);
+    reboot();
+    store_deinit();
+    sim_fail(&s_w, 0, 2, 0x00000, 0x40000, SIM_READ_EIO);  // cfg cannot be read: the FAL locks the flash read-only
+    s_quiet = true;
+    store_init(&ENV, &s_spi.nor);
+    s_spi.nor.program = counting_program;
+    long e0 = s_erases;
+    s_programs = 0;
+    s_restarts = 0;
+    store_err_t e = store_factory_reset();
+    s_quiet = false;
+    sim_fail(&s_w, 0, 0, 0, 0, 0);
+    s_spi.nor.program = tracing_program;
+    CHECK(e != STORE_OK && s_restarts == 1, "cfg not mounted: the reset is incomplete, and it restarts");
+    CHECK(s_programs == 0 && s_erases == e0, "nothing written or erased while the FAL is locked (%ld, %ld)", s_programs, s_erases - e0);
+    BALANCED("reset unmounted");
+}
+
 #if STORE_CACHE_SIZE < 5000
-// Built with a 3800-byte cache (test_store_small): the defaults take 3707, so 93 bytes are free.
+// Built with a 3800-byte cache (test_store_small): the defaults take most of it. A body replaces its
+// config's text, so what has to fit is the free room plus that config's own stored text.
 static void test_cache_full(void)
 {
     flash_new(6);
     reboot();
-    char in[300], err[200], a[200];
-    memset(a, 'a', sizeof a);
-    snprintf(in, sizeof in, "{\"host\":\"%.*s\"}", 120, a);
-    char *was = store_get_json("mqtt");
+    char *was = store_get_json("mqtt"), err[200];
+    size_t own = strlen(was), used = 0;
+    const char *names[32];
+    size_t nn = cfg_names(&ENV, names, 32);
+    for (size_t i = 0; i < nn; i++) {
+        char *t = store_get_json(names[i]);
+        used += t ? strlen(t) : 0;
+        free(t);
+    }
+    size_t room = STORE_CACHE_SIZE - used;  // free bytes besides mqtt's own text
+    char *in = malloc(own + room + 100), *a = malloc(own + room + 100);
+    memset(a, 'a', own + room + 100);
+    snprintf(in, own + room + 100, "{\"host\":\"%.*s\"}", (int)(own + room + 1 - 11), a);  // one byte over
     CHECK(store_set_text("mqtt", in, strlen(in), err, sizeof err) == STORE_ETOOLARGE &&
               !strcmp(err, "The settings do not fit in the gateway's memory."),
-          "120 more bytes than fit: 413 (%s)", err);
+          "more than the room left: 413 (%s)", err);
     char *now = store_get_json("mqtt");
     CHECK(now && !strcmp(now, was), "the cached copy unchanged");
     free(now);
@@ -517,12 +692,10 @@ static void test_cache_full(void)
     now = store_get_json("mqtt");
     CHECK(now && !strcmp(now, was), "and nothing was written to flash");
     free(now);
-    free(was);
-    snprintf(in, sizeof in, "{\"host\":\"%.*s\"}", 60, a);
-    CHECK(store_set_text("mqtt", in, strlen(in), err, sizeof err) == STORE_OK, "60 bytes more: fits (%s)", err);
-    snprintf(in, sizeof in, "{\"host\":\"%.*s\"}", 90, a);
-    CHECK(store_set_text("mqtt", in, strlen(in), err, sizeof err) == STORE_OK, "30 more over its own old text: fits (%s)", err);
+    snprintf(in, own + room + 100, "{\"host\":\"%.*s\"}", (int)(own + room - 11), a);  // exactly the room
+    CHECK(store_set_text("mqtt", in, strlen(in), err, sizeof err) == STORE_OK, "exactly the room left: fits (%s)", err);
     BALANCED("cache full");
+    free(in), free(a), free(was);
 }
 #endif
 
@@ -553,7 +726,8 @@ static void test_factory_reset_fails(void)
     before = edge_now();
     reboot();
     after = edge_now();
-    CHECK(before && after && !strcmp(before, after), "the Edge model served is the one the next boot finds (%.12s / %.12s)",
+    // The failed erase locked the flash (Plan 09b T2): the store serves no model rather than a wrong one.
+    CHECK(after && (!before || !strcmp(before, after)), "the Edge model served, if any, is the one the next boot finds (%.12s / %.12s)",
           before ? before : "-", after ? after : "-");
     free(before), free(after), free(m), free(w);
 }
@@ -579,7 +753,7 @@ static void test_edge_save_and_read(void)
     CHECK(store_edge_save(model, strlen(model), err, sizeof err) == STORE_OK, "save: %s", err);
     BALANCED("store_edge_save");
     e = edge_now();
-    CHECK(e && !strcmp(e, want), "the stored text is cfg_edge_text's output (%zu bytes)", strlen(want));
+    CHECK(e && !strcmp(e, want), "the stored text is the body as sent (%zu bytes)", strlen(want));
     free(e);
     store_edge_pin(&p);
     size_t total = 0;
@@ -606,12 +780,14 @@ static void test_edge_save_and_read(void)
     store_edge_unpin(&p);
     CHECK(edge_keys("ed.1.") == 0 && edge_keys("ed.2.") == (int)p.count, "generation 1's records deleted");
 
-    // rejected models leave the committed one alone
-    const char *bad = "[{\"name\":\"x\",\"source\":\"uart\",\"uart\":1,\"protocol\":\"modbus\",\"addr\":\"0\"}]";
-    CHECK(store_edge_save(bad, strlen(bad), err, sizeof err) == STORE_EINVALID, "invalid model: 400 (%s)", err);
+    // rejected bodies leave the committed model alone; the rules are the loader's (Plan 09b ruling 3)
     CHECK(store_edge_save("[", 1, err, sizeof err) == STORE_EINVALID, "not JSON: 400");
-    char *huge = edge_model(64, 2, 3);  // 128 points: over the limit
-    store_edge_save(huge, strlen(huge), err, sizeof err);
+    CHECK(store_edge_save("{}", 2, err, sizeof err) == STORE_EINVALID && !strcmp(err, "The settings must be a JSON array."),
+          "not an array: 400 (%s)", err);
+    char *huge = malloc(CFG_EDGE_MAX + 2);
+    memset(huge, ' ', CFG_EDGE_MAX + 1);
+    huge[0] = '[', huge[CFG_EDGE_MAX] = ']', huge[CFG_EDGE_MAX + 1] = '\0';
+    CHECK(store_edge_save(huge, CFG_EDGE_MAX + 1, err, sizeof err) == STORE_ETOOLARGE, "49 153 bytes: 413");
     free(huge);
     store_edge_pin(&p);
     e = edge_now();
@@ -620,6 +796,12 @@ static void test_edge_save_and_read(void)
     store_edge_unpin(&p);
     CHECK(edge_keys("ed.") == (int)p.count, "and no records of the failed saves left");
     BALANCED("rejected edge saves");
+    // a business-invalid model (slave id 0) is stored as sent: the loader decides at boot
+    const char *odd = "[{\"name\":\"x\",\"source\":\"uart\",\"uart\":1,\"protocol\":\"modbus\",\"addr\":\"0\"}]";
+    CHECK(store_edge_save(odd, strlen(odd), err, sizeof err) == STORE_OK, "a business-invalid model is saved (%s)", err);
+    e = edge_now();
+    CHECK(e && !strcmp(e, odd), "and reads back as sent");
+    free(e);
     free(model);
     free(want);
     free(rec);
@@ -627,17 +809,31 @@ static void test_edge_save_and_read(void)
 
 static void test_edge_too_large(void)
 {
+    // Exactly 49 152 bytes, a 2-byte UTF-8 letter cut by every record boundary: stored and read back as sent.
     flash_new(11);
     reboot();
-    char *huge = edge_model(64, 2, 3), err[200];
-    sbuf_t out = {0};
-    cfg_result_t r = cfg_edge_text(&ENV, huge, strlen(huge), true, CFG_EDGE_MAX, sink, &out, err, sizeof err);
-    store_err_t s = store_edge_save(huge, strlen(huge), err, sizeof err);
-    // 128 points: over the 100-point limit, so cfg_edge_text rejects it; the store answers the same way.
-    store_err_t want = r == CFG_OK ? STORE_OK : r == CFG_INVALID ? STORE_EINVALID : r == CFG_TOO_LARGE ? STORE_ETOOLARGE : STORE_ENOMEM;
-    CHECK(s == want, "the store maps cfg_edge_text's result (%d -> %d, want %d)", r, s, want);
-    free(out.p);
-    free(huge);
+    char *m = malloc(CFG_EDGE_MAX + 1), err[200];
+    size_t o = 0;
+    o += (size_t)sprintf(m, "[{\"name\":\"");
+    while (o < CFG_EDGE_MAX - 3) {
+        if (o % STORE_EDGE_RECORD == STORE_EDGE_RECORD - 1)
+            m[o++] = (char)0xC3, m[o++] = (char)0xA9;  // "é" across the boundary
+        else
+            m[o++] = 'a';
+    }
+    while (o < CFG_EDGE_MAX - 3)
+        m[o++] = 'a';
+    memcpy(m + o, "\"}]", 3), o += 3;
+    m[o] = '\0';
+    CHECK(o == CFG_EDGE_MAX, "the body is 49 152 bytes (%zu)", o);
+    CHECK(store_edge_save(m, o, err, sizeof err) == STORE_OK, "a 48 KB body: saved (%s)", err);
+    char *e = edge_now();
+    CHECK(e && !strcmp(e, m), "read back byte for byte, UTF-8 cut across records");
+    free(e);
+    reboot();
+    e = edge_now();
+    CHECK(e && !strcmp(e, m), "and after a reboot");
+    free(e), free(m);
 }
 
 static void test_pinning(void)
@@ -1378,6 +1574,55 @@ static void test_small_power_cuts(void)
     free(s_snap);
 }
 
+static void test_reset_power_cuts(void)
+{
+    s_snap = malloc(0x100000);
+    flash_new(36);
+    reboot();
+    char err[200], *m = edge_model(3, 2, 1);
+    store_set_text("system", "{\"hostname\":\"before\"}", 21, err, sizeof err);
+    store_set_text("mqtt", "{\"host\":\"old.example\"}", 24, err, sizeof err);
+    store_edge_save(m, strlen(m), err, sizeof err);
+    const char *pem = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+    store_cert_set("mqtt", "ca", pem, strlen(pem));
+    char *old_sys = store_get_json("system"), *old_mq = store_get_json("mqtt"), *old_edge = edge_now();
+    char *def_sys = default_text("system"), *def_mq = default_text("mqtt"), *def_edge = default_text("edgeDevices");
+    store_deinit();
+    snapshot();
+    restore();
+    reboot();
+    s_w.ops = 0;
+    store_factory_reset();
+    long total = s_w.ops;
+    s_quiet = true;
+    int bad = 0;
+    for (long cut = 0; cut < total; cut++) {
+        store_deinit();
+        restore();
+        reboot();
+        s_w.ops = 0;
+        s_w.cut_at = cut;
+        if (!setjmp(s_jb))
+            store_factory_reset();
+        s_w.cut_at = -1;
+        reboot();
+        char *gs = store_get_json("system"), *gm = store_get_json("mqtt"), *ge = edge_now();
+        bool ok = gs && gm && ge && (!strcmp(gs, old_sys) || !strcmp(gs, def_sys)) && (!strcmp(gm, old_mq) || !strcmp(gm, def_mq)) &&
+                  (!strcmp(ge, old_edge) || !strcmp(ge, def_edge));
+        store_factory_reset();  // the user presses Reload again
+        reboot();
+        char *s2 = store_get_json("system"), *e2 = edge_now(), *c2 = store_cert_get("mqtt", "ca");
+        ok = ok && s2 && !strcmp(s2, def_sys) && e2 && !strcmp(e2, def_edge) && !c2;
+        if (!ok && (stop_if_failfast(), bad++ < 3))
+            printf("  reset cut at %ld: system %.40s mqtt %.40s edge %.20s\n", cut, gs ? gs : "-", gm ? gm : "-", ge ? ge : "-");
+        free(gs), free(gm), free(ge), free(s2), free(e2), free(c2);
+    }
+    CHECK(bad == 0, "factory reset: %d of %ld cut points (writes and erases) end torn, or not clean after a second reset", bad, total);
+    s_quiet = false;
+    free(old_sys), free(old_mq), free(old_edge), free(def_sys), free(def_mq), free(def_edge), free(m);
+    free(s_snap);
+}
+
 // ---- log -------------------------------------------------------------------------------------
 
 typedef struct {
@@ -1450,6 +1695,7 @@ int main(void)
     // so the Makefile runs them in a second pass, STORE_CUTS=1, without leak detection.
     if (getenv("STORE_CUTS")) {
         test_small_power_cuts();
+        test_reset_power_cuts();
         test_power_cuts();
         test_write_failures();
         test_gc_write_failures();
@@ -1463,6 +1709,11 @@ int main(void)
         test_state_read_failures();
         test_certs_and_factory_reset();
         test_factory_reset_fails();
+        test_previous_firmware();
+        test_defaults_stored();
+        test_reset_blocks_and_restarts();
+        test_reset_read_back();
+        test_reset_unmounted();
         test_edge_save_and_read();
         test_edge_too_large();
         test_pinning();

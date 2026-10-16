@@ -1,5 +1,6 @@
 import { range } from '../../lib/device';
 import { templateError } from '../../lib/edge';
+import { templateError26k } from '../../lib/rules';
 import type { DeviceInfo, Values } from '../../lib/types';
 import { EN_DIS, QOS, topicError, type FieldDef } from '../../lib/validate';
 
@@ -47,7 +48,7 @@ export function reportDefs(dev: DeviceInfo, nodeNames: string[]): FieldDef[] {
     {
       id: 'template', label: 'JSON template', kind: 'textarea', maxLength: 2048, show: report,
       help: 'Keys are your field names. A value naming a point, or sys_sn, sys_mac, sys_ver, sys_time (GMT), sys_unix_time, is replaced; any other text is sent as written.',
-      check: (t) => templateError(String(t), nodeNames),
+      check: (t) => templateError(String(t), nodeNames) ?? templateError26k(String(t), nodeNames),
     },
   ];
 }

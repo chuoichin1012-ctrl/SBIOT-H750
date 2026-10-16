@@ -10,7 +10,7 @@ unsigned sf_char_bits(const sf_line_t *l)
 
 static uint32_t div_up(uint64_t a, uint64_t b)
 {
-    return (uint32_t)((a + b - 1) / b);
+    return b ? (uint32_t)((a + b - 1) / b) : 0;  // b 0: a baud of 0, which no UI sends (Plan 09b): no division by zero
 }
 
 uint32_t sf_char_us(const sf_line_t *l)
@@ -33,6 +33,8 @@ uint32_t sf_gap_ms(const sf_line_t *l, uint32_t packet_interval_ms)
 {
     if (packet_interval_ms)
         return packet_interval_ms;
+    if (!l->baud)
+        return 2;  // a config no UI sends; the loader passes it as it is (Plan 09b): never a division by zero
     uint32_t ms = div_up((uint64_t)sf_char_bits(l) * 3500u, l->baud);
     return ms < 2 ? 2 : ms;
 }
@@ -45,7 +47,7 @@ uint32_t sf_rto_bits(const sf_line_t *l, uint32_t us)
 
 uint32_t sf_rto_us(const sf_line_t *l, uint32_t bits)
 {
-    return (uint32_t)(((uint64_t)bits * 1000000u + l->baud / 2) / l->baud);
+    return l->baud ? (uint32_t)(((uint64_t)bits * 1000000u + l->baud / 2) / l->baud) : 0;
 }
 
 uint32_t sf_t35_oneshot_us(const sf_line_t *l)

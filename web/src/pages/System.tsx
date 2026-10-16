@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'preact/hooks';
 import * as api from '../lib/api';
 import { range, useDevice } from '../lib/device';
-import { useForm, useInterval } from '../lib/hooks';
+import { useAsync, useForm, useInterval } from '../lib/hooks';
+import { systemPortClash } from '../lib/rules';
 import { useSaver } from '../lib/save';
 import type { DeviceInfo } from '../lib/types';
 import { ON_OFF, type FieldDef } from '../lib/validate';
@@ -65,10 +66,15 @@ export function SystemPage(_: { path?: string }) {
   const d = useDevice();
   const g = useMemo(() => defs(d), [d]);
   const f = useForm(() => api.getValues('system'), g.all);
+  const ports = useAsync(() => Promise.all([api.getValues('port1'), d.portmax > 1 ? api.getValues('port2') : Promise.resolve(null)]), []);
   const save = useSaver();
 
   if (!f.ready) return <Pending error={f.error} retry={f.reload} />;
-  const p = { values: f.values, errors: f.errors, onChange: f.set };
+  // A port a UART listens on, shown on the web or WebSocket port field as it is edited (Plan 09b).
+  const checked = !ports.loading && !ports.error && !!ports.data;
+  const clash = checked ? systemPortClash(f.values, ports.data![0], ports.data![1]) : {};
+  const errors = { ...f.errors, ...clash };
+  const p = { values: f.values, errors, onChange: f.set };
 
   return (
     <>
@@ -86,7 +92,8 @@ export function SystemPage(_: { path?: string }) {
       </Panel>
       <SaveBar
         busy={save.busy}
-        invalid={!f.valid}
+        invalid={Object.keys(errors).length > 0 || !checked}
+        note={ports.error ? 'The UART settings could not be read to check the ports: reload the page.' : undefined}
         onSave={() => save.run(() => api.saveValues('system', f.values), { restart: true, after: f.reload })}
       />
     </>

@@ -1003,11 +1003,3 @@ void edge_status(char *state, size_t len)
     bool note = strcmp(s_note, "NOT RUNNING") != 0;
     snprintf(state, len, "RUNNING %d/%d%s%s%s", ok, s_npts, note ? " (" : "", note ? s_note : "", note ? ")" : "");
 }
-
-int edge_template_check(const char *tmpl, bool quote, const char *placeholder)
-{
-    if (!s_running)
-        return EDGE_TMPL_OK;  // the boot decides
-    int st = edge_tmpl_check(tmpl, resolve, &s_index, quote, placeholder, REPORT_MAX, NULL);
-    return st == EDGE_TMPL_NOT_OBJECT ? EDGE_TMPL_OK : st;  // not a template the boot compiles: reports off then, as on the ESP32
-}

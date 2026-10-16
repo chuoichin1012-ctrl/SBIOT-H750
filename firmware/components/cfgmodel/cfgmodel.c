@@ -222,6 +222,18 @@ cJSON *cfg_default(const cfg_env_t *env, const char *name)
     return def ? cJSON_Parse(def->defaults) : NULL;
 }
 
+bool cfg_is_list(const cfg_env_t *env, const char *name)
+{
+    const cfgdef_t *def = find(env, name);
+    return def && def->kind != K_OBJECT;
+}
+
+const char *cfg_default_text(const cfg_env_t *env, const char *name)
+{
+    const cfgdef_t *def = find(env, name);
+    return def ? def->defaults : NULL;
+}
+
 // ---- Validation -------------------------------------------------------------------------
 
 static void fail(char *err, size_t len, const char *fmt, const char *a, const char *b)
@@ -301,9 +313,35 @@ static bool take(const cfg_env_t *env, const char *cfg, const field_t *f, const 
     return false;
 }
 
-/** Copies `base` keeping only schema keys, then overlays validated fields from `in`. */
+/** cJSON's failed allocations so far: the board's allocator counts them (heap_wrap), host tests too. */
+__attribute__((weak)) unsigned json_alloc_failures(void) { return 0; }
+
+/** The loader's note (Plan 09b T3): "<cfg>: defaults used for a, b, ..." in err, as long as it fits. */
+static void note(char *err, size_t len, const char *cfg, const char *key)
+{
+    if (!err || !len) return;
+    size_t k = strlen(err);
+    if (!k) snprintf(err, len, "%s: defaults used for %s", cfg, key);
+    else if (k + 2 + strlen(key) < len) snprintf(err + k, len - k, ", %s", key);
+}
+
+/** The loader takes a value only of its field's own JSON type: no "1" for a bool, no true for a port (Codex r4). */
+static bool type_ok(const field_t *f, const cJSON *v)
+{
+    switch (f->type) {
+    case F_BOOL: return cJSON_IsBool(v);
+    case F_INT:
+    case F_NUM: return cJSON_IsNumber(v);
+    case F_STR:
+    case F_ENUM: return cJSON_IsString(v);
+    }
+    return false;
+}
+
+/** Copies `base` keeping only schema keys, then overlays validated fields from `in`. `lenient` (the loader,
+ * Plan 09b T3): a field that fails keeps its base value and is noted, the others are used; never refused. */
 static cJSON *object(const cfg_env_t *env, const char *cfg, const field_t *fields, size_t n, const cJSON *in,
-                     const cJSON *base, char *err, size_t errlen)
+                     const cJSON *base, bool lenient, char *err, size_t errlen)
 {
     if (!cJSON_IsObject(in)) return fail(err, errlen, "Expected an object for %s.", cfg, NULL), NULL;
     cJSON *out = cJSON_CreateObject();
@@ -313,7 +351,18 @@ static cJSON *object(const cfg_env_t *env, const char *cfg, const field_t *field
             cJSON *copy = cJSON_Duplicate(b, true);
             if (!cJSON_AddItemToObject(out, fields[i].key, copy)) cJSON_Delete(copy);  // the key copy failed
         }
-        if (!take(env, cfg, &fields[i], in, out, err, errlen)) {
+        char why[160] = "";
+        const cJSON *v = lenient ? cJSON_GetObjectItemCaseSensitive(in, fields[i].key) : NULL;
+        if (v) {  // the loader: the value as the UI sent it, if it is of its field's JSON type (the user, 2026-10-16)
+            if (type_ok(&fields[i], v)) put_field(out, fields[i].key, cJSON_Duplicate(v, false));
+            else note(err, errlen, cfg, fields[i].key);
+            continue;
+        }
+        if (!take(env, cfg, &fields[i], in, out, lenient ? why : err, lenient ? sizeof why : errlen)) {
+            if (lenient) {
+                note(err, errlen, cfg, fields[i].key);
+                continue;
+            }
             cJSON_Delete(out);
             return NULL;
         }
@@ -335,16 +384,22 @@ static bool name_ok(const char *s)
 
 /** Validates an array whose items share one schema; `item_base` supplies defaults per item. */
 static cJSON *list(const cfg_env_t *env, const char *cfg, const field_t *fields, size_t n, const cJSON *in,
-                   int max_items, const char *item_base, char *err, size_t errlen)
+                   int max_items, const char *item_base, bool lenient, char *err, size_t errlen)
 {
     if (!cJSON_IsArray(in)) return fail(err, errlen, "Expected a list for %s.", cfg, NULL), NULL;
-    if (cJSON_GetArraySize(in) > max_items) return fail(err, errlen, "Too many entries in %s.", cfg, NULL), NULL;
+    if (!lenient && cJSON_GetArraySize(in) > max_items) return fail(err, errlen, "Too many entries in %s.", cfg, NULL), NULL;
     cJSON *base = cJSON_Parse(item_base);
     cJSON *out = cJSON_CreateArray();
     const cJSON *it;
+    int taken = 0;
     cJSON_ArrayForEach(it, in)
     {
-        cJSON *o = out ? object(env, cfg, fields, n, it, base, err, errlen) : NULL;  // out is NULL only without memory
+        if (lenient && (taken >= max_items || !cJSON_IsObject(it))) {  // the loader: the first ones up to the limit
+            note(err, errlen, cfg, taken >= max_items ? "the entries over the limit" : "an entry that is not an object");
+            continue;
+        }
+        taken++;
+        cJSON *o = out ? object(env, cfg, fields, n, it, base, lenient, err, errlen) : NULL;  // out is NULL only without memory
         if (!o) {
             cJSON_Delete(out);
             out = NULL;
@@ -490,7 +545,7 @@ static bool slaves_strict(const cJSON *out, char *err, size_t errlen)
 /** Edge model: slave fields, nested nodes, unique names, global limits; `strict` adds the save-time rules. */
 static cJSON *slaves(const cfg_env_t *env, const cJSON *in, bool strict, char *err, size_t errlen)
 {
-    cJSON *out = list(env, "edgeDevices", device_fields, N(device_fields), in, 64, ITEM_SLAVE, err, errlen);
+    cJSON *out = list(env, "edgeDevices", device_fields, N(device_fields), in, 64, ITEM_SLAVE, false, err, errlen);
     if (!out) return NULL;
     cJSON *node_base = cJSON_Parse(ITEM_NODE);
     int total = 0, eth = 0, io = 0, virt = 0;
@@ -536,7 +591,7 @@ static cJSON *slaves(const cfg_env_t *env, const cJSON *in, bool strict, char *e
                 fail(err, errlen, "At most 100 points across all devices.", NULL, NULL);
                 goto bad;
             }
-            cJSON *o = object(env, "edgeDevices", node_fields, N(node_fields), n, node_base, err, errlen);
+            cJSON *o = object(env, "edgeDevices", node_fields, N(node_fields), n, node_base, false, err, errlen);
             if (!o) goto bad;
             cJSON_AddItemToArray(nodes, o);
             if (is_io) {
@@ -583,17 +638,40 @@ bad:
     return NULL;
 }
 
+static cJSON *validate_kind(const cfg_env_t *env, const cfgdef_t *def, const char *name, const cJSON *in, const cJSON *current,
+                            bool lenient, bool strict, char *err, size_t errlen);
+
 static cJSON *validate(const cfg_env_t *env, const char *name, const cJSON *in, const cJSON *current, bool strict,
                        char *err, size_t errlen)
 {
     const cfgdef_t *def = find(env, name);
     if (!def) return fail(err, errlen, "Unknown settings \"%s\".", name, NULL), NULL;
 
+    // The loader (cfg_load) on the small configs goes field by field and never refuses one (Plan 09b T3):
+    // the device runs with the config it is given. Edge's model keeps its own rules.
+    bool lenient = !strict && def->kind != K_SLAVES;
+    if (lenient) {  // out of memory is not a wrong field: NULL, never a config with keys missing (Codex r3)
+        unsigned failures = json_alloc_failures();
+        cJSON *out = validate_kind(env, def, name, in, current, lenient, strict, err, errlen);
+        if (out && json_alloc_failures() != failures) {
+            cJSON_Delete(out);
+            fail(err, errlen, "Out of memory.", NULL, NULL);
+            return NULL;
+        }
+        return out;
+    }
+    return validate_kind(env, def, name, in, current, lenient, strict, err, errlen);
+}
+
+static cJSON *validate_kind(const cfg_env_t *env, const cfgdef_t *def, const char *name, const cJSON *in, const cJSON *current,
+                            bool lenient, bool strict, char *err, size_t errlen)
+{
     switch (def->kind) {
     case K_OBJECT: {
         cJSON *defaults = cJSON_Parse(def->defaults);
-        cJSON *out = object(env, name, def->fields, def->nfields, in, current ? current : defaults, err, errlen);
+        cJSON *out = object(env, name, def->fields, def->nfields, in, current ? current : defaults, lenient, err, errlen);
         cJSON_Delete(defaults);
+        if (lenient) return out;  // no cross rules: the UI's
         if (out && strncmp(name, "port", 4) == 0 && cJSON_GetNumberValue(cJSON_GetObjectItem(out, "flowControl")) == 1) {
             // RS485 half duplex: RTS drives DE and there is no CTS line.
             fail(err, errlen, "RTS/CTS flow control is not available on RS485.", NULL, NULL);
@@ -624,9 +702,9 @@ static cJSON *validate(const cfg_env_t *env, const char *name, const cJSON *in, 
         return out;
     }
     case K_TOPICS:
-        return list(env, name, def->fields, def->nfields, in, MAX_TOPICS, ITEM_TOPIC, err, errlen);
+        return list(env, name, def->fields, def->nfields, in, MAX_TOPICS, ITEM_TOPIC, lenient, err, errlen);
     case K_EVENTS:
-        return list(env, name, def->fields, def->nfields, in, MAX_EVENTS, ITEM_EVENT, err, errlen);
+        return list(env, name, def->fields, def->nfields, in, MAX_EVENTS, ITEM_EVENT, lenient, err, errlen);
     case K_SLAVES:
         return slaves(env, in, strict, err, errlen);
     }
@@ -653,7 +731,6 @@ cJSON *cfg_load(const cfg_env_t *env, const char *name, const cJSON *in, char *e
 
 static const char NOT_JSON[] = "The request body is not valid JSON.";
 
-__attribute__((weak)) unsigned json_alloc_failures(void) { return 0; }
 
 cfg_result_t cfg_validate_text(const cfg_env_t *env, const char *name, const char *text, size_t len,
                                const cJSON *current, char *out, size_t out_size, char *err, size_t errlen)
@@ -755,7 +832,7 @@ static cJSON *edge_header(const cfg_env_t *env, js_span_t dev, const cJSON *base
     if (js_type(dev) != JS_OBJECT) return fail(err, errlen, "Expected an object for %s.", "edgeDevices", NULL), NULL;
     cJSON *in = pick(dev, device_fields, N(device_fields));
     if (!in) return NULL;
-    cJSON *s = object(env, "edgeDevices", device_fields, N(device_fields), in, base, err, errlen);
+    cJSON *s = object(env, "edgeDevices", device_fields, N(device_fields), in, base, false, err, errlen);
     cJSON_Delete(in);
     return s;
 }
@@ -943,7 +1020,7 @@ static cfg_result_t edge_walk(const cfg_env_t *env, const char *text, size_t len
             }
             cJSON *in = pick(node, node_fields, N(node_fields));
             if (!in) goto done;
-            o = object(env, "edgeDevices", node_fields, N(node_fields), in, node_base, err, errlen);
+            o = object(env, "edgeDevices", node_fields, N(node_fields), in, node_base, false, err, errlen);
             cJSON_Delete(in);
             if (!NO_MEMORY_YET()) goto done;
             if (!o) goto bad;

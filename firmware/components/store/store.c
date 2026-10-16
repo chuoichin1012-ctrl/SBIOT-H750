@@ -4,6 +4,7 @@
 #include <string.h>
 #include "fal_nor.h"
 #include "flashdb.h"
+#include "jsonscan.h"
 #include "store_port.h"
 
 #define MAX_CONFIGS 16
@@ -20,6 +21,7 @@
 static struct fdb_kvdb s_cfg_db, s_edge_db, s_cert_db;
 static struct fdb_tsdb s_log_db;
 static bool s_mounted, s_log_ok;
+static bool s_resetting;  // a factory reset began: no write until the restart (Plan 09b ruling 2)
 // edge: mounted, and its committed generation known. False after a mount that failed, a manifest
 // that does not read back, or a save whose commit is not known: no model is served and no record
 // deleted until the next boot decides.
@@ -74,10 +76,31 @@ static size_t s_nlisteners;
 
 // ---- FlashDB helpers -------------------------------------------------------------------------
 
-static bool kvdb_open(fdb_kvdb_t db, const char *part, uint32_t sector)
+// The cfg DB's default KV (Plan 09b ruling 1): cfgmodel's defaults, the one source. FlashDB keeps the
+// pointer, so the table and its strings live for the whole run. A new DB is created with them, and a
+// factory reset writes them again; a key an older DB lacks is read from cfgmodel at boot, not written.
+static struct fdb_default_kv_node s_def_nodes[MAX_CONFIGS];
+static struct fdb_default_kv s_defs;
+
+static void defaults_build(void)
+{
+    const char *names[MAX_CONFIGS];
+    size_t n = cfg_names(&s_env, names, MAX_CONFIGS);
+    s_defs.num = 0;
+    for (size_t i = 0; i < n; i++) {
+        const char *text = cfg_default_text(&s_env, names[i]);
+        if (!strcmp(names[i], EDGE) || !text)
+            continue;  // edgeDevices: no manifest means its default, "[]" (spec §9.4)
+        s_def_nodes[s_defs.num] = (struct fdb_default_kv_node){(char *)names[i], (void *)text, strlen(text)};
+        s_defs.num++;
+    }
+    s_defs.kvs = s_def_nodes;
+}
+
+static bool kvdb_open(fdb_kvdb_t db, const char *part, uint32_t sector, struct fdb_default_kv *defs)
 {
     fdb_kvdb_control(db, FDB_KVDB_CTRL_SET_SEC_SIZE, &sector);
-    fdb_err_t e = fdb_kvdb_init(db, part, part, NULL, NULL);
+    fdb_err_t e = fdb_kvdb_init(db, part, part, defs, NULL);
     if (e != FDB_NO_ERR)
         store_port_log("KVDB %s init failed (%d)", part, e);
     return e == FDB_NO_ERR;
@@ -147,30 +170,34 @@ static void cache_put(const char *name, const char *text, size_t len)
 }
 
 /** Loads one small config from flash, re-validated, or its default. */
+/** A stored body that a save would take: valid JSON (RFC 8259, jsonscan) of the config's root type. */
+static bool body_ok(const char *name, const char *text, size_t len)
+{
+    js_span_t root;
+    return js_parse_root(text, len, &root) && js_type(root) == (cfg_is_list(&s_env, name) ? JS_ARRAY : JS_OBJECT);
+}
+
+// The cache holds each config's stored bytes, as GET serves them (Plan 09b ruling 4): a key this DB
+// lacks is its default, from cfgmodel; a stored copy that no save could have made (not JSON, from
+// outside this firmware) is served as the default, so the UI can still open it.
 static void load(const char *name)
 {
-    char err[96] = "";
-    cJSON *doc = NULL;
-    char *raw = kv_read(&s_cfg_db, name, NULL);
-    if (raw) {
-        cJSON *parsed = cJSON_Parse(raw);
-        // Re-validating fills keys added by newer firmware and drops removed ones.
-        if (parsed)
-            doc = cfg_load(&s_env, name, parsed, err, sizeof err);
-        if (!doc)
-            store_port_log("%s: stored copy unusable (%s), using defaults", name, err);
-        cJSON_Delete(parsed);
-        free(raw);
+    size_t n = 0;
+    char *raw = kv_read(&s_cfg_db, name, &n);
+    const char *text = raw;
+    if (raw && !body_ok(name, raw, n)) {
+        store_port_log("%s: the stored copy is not JSON of its kind; its default is served", name);
+        text = NULL;
     }
-    if (!doc)
-        doc = cfg_default(&s_env, name);
-    char *text = doc ? cJSON_PrintUnformatted(doc) : NULL;
-    cJSON_Delete(doc);
-    if (text && cache_fits(name, strlen(text)))
-        cache_put(name, text, strlen(text));
+    if (!text) {
+        text = cfg_default_text(&s_env, name);
+        n = text ? strlen(text) : 0;
+    }
+    if (text && cache_fits(name, n))
+        cache_put(name, text, n);
     else
         store_port_log("%s: no memory for its text", name);
-    cJSON_free(text);
+    free(raw);
 }
 
 static void load_all(void)
@@ -279,7 +306,7 @@ static bool edge_mount(manifest_t *state)
 {
     s_gen = s_count = 0;
     *state = MANIFEST_BAD;
-    if (!kvdb_open(&s_edge_db, "edge", EDGE_SECTOR))
+    if (!kvdb_open(&s_edge_db, "edge", EDGE_SECTOR, NULL))
         return false;
     *state = manifest_read(&s_gen, &s_count);
     return *state != MANIFEST_BAD;
@@ -359,12 +386,14 @@ store_err_t store_init(const cfg_env_t *env, nor_t *flash)
     fal_nor_set(flash);
     fal_nor_rearm();  // a new boot: the flash is writable until a read fails
     LOCK();
-    if (!kvdb_open(&s_cfg_db, "cfg", CFG_SECTOR)) {
+    s_resetting = false;
+    defaults_build();
+    if (!kvdb_open(&s_cfg_db, "cfg", CFG_SECTOR, &s_defs)) {
         UNLOCK();
         return STORE_EFLASH;  // no configs, no boot counter: the caller runs on defaults
     }
     s_mounted = true;
-    s_cert_ok = kvdb_open(&s_cert_db, "cert", CERT_SECTOR);
+    s_cert_ok = kvdb_open(&s_cert_db, "cert", CERT_SECTOR, NULL);
     uint32_t sec = LOG_SECTOR;
     fdb_tsdb_control(&s_log_db, FDB_TSDB_CTRL_SET_SEC_SIZE, &sec);
     s_log_seq = 0;
@@ -454,8 +483,14 @@ cJSON *store_get(const char *name)
         return NULL;
     LOCK();
     int i = cache_find(name);
-    cJSON *doc = i >= 0 ? cJSON_ParseWithLength(s_pool + s_cache[i].off, s_cache[i].len) : NULL;
+    cJSON *in = i >= 0 ? cJSON_ParseWithLength(s_pool + s_cache[i].off, s_cache[i].len) : NULL;
     UNLOCK();
+    char err[160] = "";
+    // The loader (Plan 09b T3): field by field, a wrong field takes its default; the note names them.
+    cJSON *doc = in ? cfg_load(&s_env, name, in, err, sizeof err) : NULL;
+    if (in && err[0])
+        store_port_log("%s", err);
+    cJSON_Delete(in);
     return doc;
 }
 
@@ -492,29 +527,24 @@ static store_err_t from_cfg(cfg_result_t r, char *err, size_t errlen)
     }
 }
 
-// The listen ports with `name` as it would be saved (`text`) and the others as stored. Under LOCK.
-static store_err_t listen_check(const char *name, const char *text, char *err, size_t errlen)
+/** What a save checks (Plan 09b ruling 3): the size, the JSON syntax and the root type; nothing else. */
+static store_err_t body_check(const char *name, const char *text, size_t len, size_t max, char *err, size_t errlen)
 {
-    static const char *const NAMES[] = {"port1", "port2", "system"};
-    cJSON *c[3] = {NULL, NULL, NULL};
-    bool missing = false;  // a config that is there but did not parse: out of memory (Codex 08b r1)
-    for (int k = 0; k < 3; k++) {
-        if (!strcmp(name, NAMES[k])) {
-            c[k] = cJSON_Parse(text);
-            missing |= !c[k];
-        } else {
-            int i = cache_find(NAMES[k]);
-            if (i >= 0) {
-                c[k] = cJSON_ParseWithLength(s_pool + s_cache[i].off, s_cache[i].len);
-                missing |= !c[k];
-            }
-        }
+    js_span_t root;
+    if (len > max) {
+        snprintf(err, errlen, "%s", max == CFG_EDGE_MAX ? "The Edge model is too large." : "These settings are too large.");
+        return STORE_ETOOLARGE;
     }
-    store_err_t r = missing ? from_cfg(CFG_NO_MEMORY, err, errlen)
-                    : cfg_listen_ok(c[0], c[1], c[2], err, errlen) ? STORE_OK : STORE_EINVALID;
-    for (int k = 0; k < 3; k++)
-        cJSON_Delete(c[k]);
-    return r;
+    if (!js_parse_root(text, len, &root)) {
+        snprintf(err, errlen, "The request body is not valid JSON.");
+        return STORE_EINVALID;
+    }
+    bool list = cfg_is_list(&s_env, name);
+    if (js_type(root) != (list ? JS_ARRAY : JS_OBJECT)) {
+        snprintf(err, errlen, "%s", list ? "The settings must be a JSON array." : "The settings must be a JSON object.");
+        return STORE_EINVALID;
+    }
+    return STORE_OK;
 }
 
 store_err_t store_set_text(const char *name, const char *text, size_t len, char *err, size_t errlen)
@@ -524,36 +554,26 @@ store_err_t store_set_text(const char *name, const char *text, size_t len, char 
         snprintf(err, errlen, "Unknown settings \"%s\".", name ? name : "");
         return STORE_ENOTFOUND;
     }
-    char *out = cJSON_malloc(CFG_SMALL_BUF);  // the caller's allocator: its arena scope, or the heap
-    if (!out)
-        return from_cfg(CFG_NO_MEMORY, err, errlen);
+    store_err_t e = body_check(name, text, len, CFG_SMALL_MAX, err, errlen);
+    if (e != STORE_OK)
+        return e;
     LOCK();
-    if (read_only()) {
+    if (read_only() || s_resetting) {
         UNLOCK();
-        cJSON_free(out);
-        snprintf(err, errlen, "The settings storage is read-only after a flash error; restart the gateway.");
+        snprintf(err, errlen, s_resetting ? "A factory reset is in progress; the gateway restarts."
+                                          : "The settings storage is read-only after a flash error; restart the gateway.");
         return STORE_EFLASH;
     }
-    int i = cache_find(name);
-    cJSON *cur = i >= 0 ? cJSON_ParseWithLength(s_pool + s_cache[i].off, s_cache[i].len) : NULL;
-    store_err_t e = cur ? from_cfg(cfg_validate_text(&s_env, name, text, len, cur, out, CFG_SMALL_BUF, err, errlen), err, errlen)
-                        : from_cfg(CFG_NO_MEMORY, err, errlen);
-    cJSON_Delete(cur);
-    if (e == STORE_OK && (!strcmp(name, "port1") || !strcmp(name, "port2") || !strcmp(name, "system")))
-        e = listen_check(name, out, err, errlen);  // Plan 08b T0: across the configs
-    size_t n = e == STORE_OK ? strlen(out) : 0;
-    if (e == STORE_OK && !cache_fits(name, n)) {
+    if (!cache_fits(name, len)) {
         snprintf(err, errlen, "The settings do not fit in the gateway's memory.");
         e = STORE_ETOOLARGE;
-    }
-    if (e == STORE_OK && !kv_write(&s_cfg_db, name, out, n)) {
+    } else if (!kv_write(&s_cfg_db, name, text, len)) {
         snprintf(err, errlen, "The settings could not be written to flash.");
         e = STORE_EFLASH;
+    } else {
+        cache_put(name, text, len);  // the bytes as sent: GET serves them (Plan 09b ruling 4)
     }
-    if (e == STORE_OK)
-        cache_put(name, out, n);
     UNLOCK();
-    cJSON_free(out);
     if (e == STORE_OK) {
         store_port_log("%s saved", name);
         notify(name);
@@ -567,18 +587,27 @@ store_err_t store_edge_save(const char *text, size_t len, char *err, size_t errl
 {
     err[0] = '\0';
     LOCK();
-    if (!edge_usable()) {
+    if (!edge_usable() || s_resetting) {
         UNLOCK();
-        snprintf(err, errlen, "The Edge model storage is unavailable; restart the gateway.");
+        snprintf(err, errlen, s_resetting ? "A factory reset is in progress; the gateway restarts."
+                                          : "The Edge model storage is unavailable; restart the gateway.");
         return STORE_EFLASH;
     }
     // Above the committed generation and above every record in flash, so this save never has to
     // delete anything before it is validated (records of a lost or unreadable manifest survive it).
     uint32_t top = highest_record_gen();
     edge_writer_t w = {.gen = (top > s_gen ? top : s_gen) + 1};
-    cfg_result_t r = cfg_edge_text(&s_env, text, len, true, CFG_EDGE_MAX, emit, &w, err, errlen);
-    if (r == CFG_OK && w.fill && !flush(&w))
+    // The body as sent, cut into 8 KB records by byte (Plan 09b ruling 3); the rules are the loader's.
+    store_err_t chk = body_check(EDGE, text, len, CFG_EDGE_MAX, err, errlen);
+    cfg_result_t r = chk == STORE_OK ? CFG_OK : chk == STORE_ETOOLARGE ? CFG_TOO_LARGE : CFG_INVALID;
+    if (r == CFG_OK && (!emit(&w, text, len) || (w.fill && !flush(&w))))
         r = CFG_ABORTED;
+    // A flash write FlashDB did not report (a garbage collection's sector status) locked the FAL: never
+    // commit after it; the remount below decides, and writes nothing more this boot.
+    if (r == CFG_OK && fal_nor_read_failed()) {
+        store_port_log("edgeDevices: a flash write failed during the save; not committed");
+        r = CFG_ABORTED;
+    }
     char manifest[32];
     snprintf(manifest, sizeof manifest, "@%lu,%lu", (unsigned long)w.gen, (unsigned long)w.idx);
     uint32_t old = s_gen;
@@ -725,38 +754,54 @@ size_t store_edge_text(char *buf, size_t cap)
 
 // ---- factory reset, state, certificates ---------------------------------------------------------
 
+/** Every default of the cfg DB reads back as the table says: FlashDB 2.2.0's fdb_kv_set_default ignores
+ * create_kv_blob's result (fdb_kvdb.c:1435), so only this proves the reset (Plan 09b ruling 2). */
+static bool defaults_read_back(void)
+{
+    for (size_t i = 0; i < s_defs.num; i++) {
+        size_t n = 0;
+        char *v = kv_read(&s_cfg_db, s_def_nodes[i].key, &n);
+        bool same = v && n == s_def_nodes[i].value_len && !memcmp(v, s_def_nodes[i].value, n);
+        free(v);
+        if (!same)
+            return false;
+    }
+    return true;
+}
+
 store_err_t store_factory_reset(void)
 {
     LOCK();
-    if (read_only()) {
-        UNLOCK();
-        return STORE_EFLASH;
+    s_resetting = true;  // from here on nothing else is written, until the restart
+    // Only a mounted DB is reset, and nothing at all while the FAL holds the flash read-only after a
+    // read error: the reset is then incomplete, and the next boot tries again (Plan 09b rulings 2, 10).
+    bool ok = s_mounted && !read_only();
+    if (ok) {
+        // Each database on its own; they are not atomic together: after a power cut the user
+        // presses Reload again. The configs are reloaded below from the flash as it now is.
+        bool cfg = fdb_kv_set_default(&s_cfg_db) == FDB_NO_ERR && defaults_read_back();
+        bool edge = s_edge_ok && fdb_kv_set_default(&s_edge_db) == FDB_NO_ERR;
+        bool cert = s_cert_ok && fdb_kv_set_default(&s_cert_db) == FDB_NO_ERR;
+        if (edge) {
+            s_gen = s_count = 0;
+            memset(s_pins, 0, sizeof s_pins);
+        } else if (s_edge_ok) {
+            fdb_kvdb_deinit(&s_edge_db);
+            memset(&s_edge_db, 0, sizeof s_edge_db);
+            manifest_t m;
+            memset(s_pins, 0, sizeof s_pins);
+            if (!edge_mount(&m))
+                edge_unknown("a factory reset failed");
+        }
+        if (!read_only())  // the boot numbering of the log goes on
+            kv_write(&s_cfg_db, "st.boot", &s_boot, sizeof s_boot);
+        load_all();  // from the flash as it now is
+        ok = cfg && edge && cert && !read_only();
     }
-    // Each database on its own. The configs are reloaded below from the flash as it now is, and
-    // certificates are always read from it; only edge keeps its generation in RAM, so a failed
-    // edge reset is mounted again: what this boot serves is what the next boot finds.
-    bool cfg = fdb_kv_set_default(&s_cfg_db) == FDB_NO_ERR;
-    bool edge = s_edge_ok && fdb_kv_set_default(&s_edge_db) == FDB_NO_ERR;
-    bool cert = s_cert_ok && fdb_kv_set_default(&s_cert_db) == FDB_NO_ERR;
-    if (edge) {
-        s_gen = s_count = 0;
-        memset(s_pins, 0, sizeof s_pins);
-    } else if (s_edge_ok) {
-        fdb_kvdb_deinit(&s_edge_db);
-        memset(&s_edge_db, 0, sizeof s_edge_db);
-        manifest_t m;
-        memset(s_pins, 0, sizeof s_pins);
-        if (!edge_mount(&m))
-            edge_unknown("a factory reset failed");
-    }
-    if (!s_ro)
-        store_state_set("boot", &s_boot, sizeof s_boot);  // the boot numbering of the log goes on
-    load_all();  // from the flash as it now is
-    read_only();
     UNLOCK();
-    store_err_t e = cfg && edge && cert ? STORE_OK : STORE_EFLASH;
-    store_port_log(e == STORE_OK ? "factory settings restored" : "factory reset incomplete");
-    return e;
+    store_port_log(ok ? "factory settings restored" : "factory reset incomplete");
+    store_port_restart();
+    return ok ? STORE_OK : STORE_EFLASH;
 }
 
 store_err_t store_state_set(const char *key, const void *data, size_t len)
@@ -764,7 +809,7 @@ store_err_t store_state_set(const char *key, const void *data, size_t len)
     char k[FDB_KV_NAME_MAX];
     snprintf(k, sizeof k, "st.%s", key);
     LOCK();
-    bool ok = !read_only() && kv_write(&s_cfg_db, k, data, len);
+    bool ok = !read_only() && !s_resetting && kv_write(&s_cfg_db, k, data, len);
     UNLOCK();
     return ok ? STORE_OK : STORE_EFLASH;
 }
@@ -805,7 +850,7 @@ store_err_t store_cert_set(const char *scope, const char *kind, const void *pem,
     if (!s_cert_ok)
         return STORE_EFLASH;
     LOCK();
-    bool ok = !read_only() && kv_write(&s_cert_db, key, pem, len);
+    bool ok = !read_only() && !s_resetting && kv_write(&s_cert_db, key, pem, len);
     UNLOCK();
     if (ok)
         notify(scope);  // the owning module reconnects with new material

@@ -8,3 +8,5 @@ void store_port_unlock(void);
 int64_t store_port_wall_ms(void);    // Unix time in ms, 0 while the clock is not set
 uint32_t store_port_uptime_ms(void);
 void store_port_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+/** A factory reset ended (or could not be done): the gateway restarts, after a short delay for a web reply. */
+void store_port_restart(void);

@@ -33,6 +33,12 @@ static void test_timing(void)
     CHECK(sf_gap_ms(&f, 0) == 2, "3.5 characters at 230 400: the 2 ms floor");
     CHECK(sf_gap_ms(&l8n1, 0) == 4, "3.5 characters at 9600: 4 ms (rounded up)");
     CHECK(sf_gap_ms(&l8n1, 50) == 50, "packetInterval wins");
+    sf_line_t zero = l8n1;
+    zero.baud = 0;  // a config the UI would refuse; the loader no longer bounds it (Plan 09b)
+    CHECK(sf_gap_ms(&zero, 0) == 2, "baud 0: the 2 ms floor, no division by zero");
+    CHECK(sf_char_us(&zero) == 0 && sf_t15_us(&zero) == 0 && sf_t35_us(&zero) == 0 && sf_rto_us(&zero, 10) == 0 &&
+              sf_t35_oneshot_us(&zero) <= 1,
+          "baud 0: every timing 0, no division by zero");
     CHECK(sf_rto_bits(&r1200, 13750) == 17, "t1.5 at 1200 as RTO bits: 17 (%u)", (unsigned)sf_rto_bits(&r1200, 13750));
     CHECK(sf_rto_bits(&f, 2000) == 461, "2 ms at 230 400: 461 bits (%u)", (unsigned)sf_rto_bits(&f, 2000));
     static const uint32_t bauds[] = {600, 1200, 9600, 19200, 115200, 230400};

@@ -257,9 +257,16 @@ int serial_transact(int port, const uint8_t *req, size_t len, uint8_t *resp, siz
         }
         vTaskDelay(ticks(2));
     }
-    // A frame still arriving belongs to the subscribers: let it finish first.
-    for (uint64_t since; since = rx_quiet_since(p), (now_us() - since) / 1000u < p->gap_ms + 1u;)
+    // A frame still arriving belongs to the subscribers: let it finish first, within the same deadline (a bus
+    // that never goes quiet must not keep it: Plan 10c task 4, Codex review Important 4).
+    for (uint64_t until = now_us() + (uint64_t)timeout_ms * 1000u, since;
+         since = rx_quiet_since(p), (now_us() - since) / 1000u < p->gap_ms + 1u;) {
+        if (now_us() >= until) {
+            xSemaphoreGive(p->bus);
+            return 0;
+        }
         vTaskDelay(ticks(p->gap_ms + 1u));
+    }
     xSemaphoreTake(p->txn_lock, portMAX_DELAY);
     p->tail = false;  // serial_rx[n] no longer switches to transparent: this transaction owns the mode
     xSemaphoreGive(p->txn_lock);

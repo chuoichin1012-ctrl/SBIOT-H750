@@ -5,7 +5,9 @@
 
 void fal_nor_set(nor_t *nor);
 
-// A read that failed after its retries makes the flash read-only (no write, no erase) until
-// fal_nor_rearm(): FlashDB acts on what it reads, so it must never write after a misread.
+// A read that failed after its retries, or a program or erase that failed, makes the flash read-only
+// (no write, no erase) until fal_nor_rearm() at the next boot. FlashDB acts on what it reads, so it must
+// never write after a misread; and after a failed sector-status write it would go on filling a sector
+// the next mount takes for empty (Plan 09b T2, Codex): nothing more is written this boot.
 bool fal_nor_read_failed(void);
 void fal_nor_rearm(void);

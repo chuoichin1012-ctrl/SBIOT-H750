@@ -4,6 +4,7 @@
 #include <string.h>
 #include "fal_nor.h"
 #include "flashdb.h"
+#include "jsonscan.h"
 #include "store_port.h"
 
 #define MAX_CONFIGS 16
@@ -169,30 +170,34 @@ static void cache_put(const char *name, const char *text, size_t len)
 }
 
 /** Loads one small config from flash, re-validated, or its default. */
+/** A stored body that a save would take: valid JSON (RFC 8259, jsonscan) of the config's root type. */
+static bool body_ok(const char *name, const char *text, size_t len)
+{
+    js_span_t root;
+    return js_parse_root(text, len, &root) && js_type(root) == (cfg_is_list(&s_env, name) ? JS_ARRAY : JS_OBJECT);
+}
+
+// The cache holds each config's stored bytes, as GET serves them (Plan 09b ruling 4): a key this DB
+// lacks is its default, from cfgmodel; a stored copy that no save could have made (not JSON, from
+// outside this firmware) is served as the default, so the UI can still open it.
 static void load(const char *name)
 {
-    char err[96] = "";
-    cJSON *doc = NULL;
-    char *raw = kv_read(&s_cfg_db, name, NULL);
-    if (raw) {
-        cJSON *parsed = cJSON_Parse(raw);
-        // Re-validating fills keys added by newer firmware and drops removed ones.
-        if (parsed)
-            doc = cfg_load(&s_env, name, parsed, err, sizeof err);
-        if (!doc)
-            store_port_log("%s: stored copy unusable (%s), using defaults", name, err);
-        cJSON_Delete(parsed);
-        free(raw);
+    size_t n = 0;
+    char *raw = kv_read(&s_cfg_db, name, &n);
+    const char *text = raw;
+    if (raw && !body_ok(name, raw, n)) {
+        store_port_log("%s: the stored copy is not JSON of its kind; its default is served", name);
+        text = NULL;
     }
-    if (!doc)
-        doc = cfg_default(&s_env, name);
-    char *text = doc ? cJSON_PrintUnformatted(doc) : NULL;
-    cJSON_Delete(doc);
-    if (text && cache_fits(name, strlen(text)))
-        cache_put(name, text, strlen(text));
+    if (!text) {
+        text = cfg_default_text(&s_env, name);
+        n = text ? strlen(text) : 0;
+    }
+    if (text && cache_fits(name, n))
+        cache_put(name, text, n);
     else
         store_port_log("%s: no memory for its text", name);
-    cJSON_free(text);
+    free(raw);
 }
 
 static void load_all(void)
@@ -478,8 +483,13 @@ cJSON *store_get(const char *name)
         return NULL;
     LOCK();
     int i = cache_find(name);
-    cJSON *doc = i >= 0 ? cJSON_ParseWithLength(s_pool + s_cache[i].off, s_cache[i].len) : NULL;
+    cJSON *in = i >= 0 ? cJSON_ParseWithLength(s_pool + s_cache[i].off, s_cache[i].len) : NULL;
     UNLOCK();
+    char err[160] = "";
+    cJSON *doc = in ? cfg_load(&s_env, name, in, err, sizeof err) : NULL;  // the loader: keys filled, rules checked
+    if (in && !doc && err[0])
+        store_port_log("%s: %s", name, err);
+    cJSON_Delete(in);
     return doc;
 }
 
@@ -516,29 +526,24 @@ static store_err_t from_cfg(cfg_result_t r, char *err, size_t errlen)
     }
 }
 
-// The listen ports with `name` as it would be saved (`text`) and the others as stored. Under LOCK.
-static store_err_t listen_check(const char *name, const char *text, char *err, size_t errlen)
+/** What a save checks (Plan 09b ruling 3): the size, the JSON syntax and the root type; nothing else. */
+static store_err_t body_check(const char *name, const char *text, size_t len, size_t max, char *err, size_t errlen)
 {
-    static const char *const NAMES[] = {"port1", "port2", "system"};
-    cJSON *c[3] = {NULL, NULL, NULL};
-    bool missing = false;  // a config that is there but did not parse: out of memory (Codex 08b r1)
-    for (int k = 0; k < 3; k++) {
-        if (!strcmp(name, NAMES[k])) {
-            c[k] = cJSON_Parse(text);
-            missing |= !c[k];
-        } else {
-            int i = cache_find(NAMES[k]);
-            if (i >= 0) {
-                c[k] = cJSON_ParseWithLength(s_pool + s_cache[i].off, s_cache[i].len);
-                missing |= !c[k];
-            }
-        }
+    js_span_t root;
+    if (len > max) {
+        snprintf(err, errlen, "%s", max == CFG_EDGE_MAX ? "The Edge model is too large." : "These settings are too large.");
+        return STORE_ETOOLARGE;
     }
-    store_err_t r = missing ? from_cfg(CFG_NO_MEMORY, err, errlen)
-                    : cfg_listen_ok(c[0], c[1], c[2], err, errlen) ? STORE_OK : STORE_EINVALID;
-    for (int k = 0; k < 3; k++)
-        cJSON_Delete(c[k]);
-    return r;
+    if (!js_parse_root(text, len, &root)) {
+        snprintf(err, errlen, "The request body is not valid JSON.");
+        return STORE_EINVALID;
+    }
+    bool list = cfg_is_list(&s_env, name);
+    if (js_type(root) != (list ? JS_ARRAY : JS_OBJECT)) {
+        snprintf(err, errlen, "%s", list ? "The settings must be a JSON array." : "The settings must be a JSON object.");
+        return STORE_EINVALID;
+    }
+    return STORE_OK;
 }
 
 store_err_t store_set_text(const char *name, const char *text, size_t len, char *err, size_t errlen)
@@ -548,37 +553,26 @@ store_err_t store_set_text(const char *name, const char *text, size_t len, char 
         snprintf(err, errlen, "Unknown settings \"%s\".", name ? name : "");
         return STORE_ENOTFOUND;
     }
-    char *out = cJSON_malloc(CFG_SMALL_BUF);  // the caller's allocator: its arena scope, or the heap
-    if (!out)
-        return from_cfg(CFG_NO_MEMORY, err, errlen);
+    store_err_t e = body_check(name, text, len, CFG_SMALL_MAX, err, errlen);
+    if (e != STORE_OK)
+        return e;
     LOCK();
     if (read_only() || s_resetting) {
         UNLOCK();
-        cJSON_free(out);
         snprintf(err, errlen, s_resetting ? "A factory reset is in progress; the gateway restarts."
                                           : "The settings storage is read-only after a flash error; restart the gateway.");
         return STORE_EFLASH;
     }
-    int i = cache_find(name);
-    cJSON *cur = i >= 0 ? cJSON_ParseWithLength(s_pool + s_cache[i].off, s_cache[i].len) : NULL;
-    store_err_t e = cur ? from_cfg(cfg_validate_text(&s_env, name, text, len, cur, out, CFG_SMALL_BUF, err, errlen), err, errlen)
-                        : from_cfg(CFG_NO_MEMORY, err, errlen);
-    cJSON_Delete(cur);
-    if (e == STORE_OK && (!strcmp(name, "port1") || !strcmp(name, "port2") || !strcmp(name, "system")))
-        e = listen_check(name, out, err, errlen);  // Plan 08b T0: across the configs
-    size_t n = e == STORE_OK ? strlen(out) : 0;
-    if (e == STORE_OK && !cache_fits(name, n)) {
+    if (!cache_fits(name, len)) {
         snprintf(err, errlen, "The settings do not fit in the gateway's memory.");
         e = STORE_ETOOLARGE;
-    }
-    if (e == STORE_OK && !kv_write(&s_cfg_db, name, out, n)) {
+    } else if (!kv_write(&s_cfg_db, name, text, len)) {
         snprintf(err, errlen, "The settings could not be written to flash.");
         e = STORE_EFLASH;
+    } else {
+        cache_put(name, text, len);  // the bytes as sent: GET serves them (Plan 09b ruling 4)
     }
-    if (e == STORE_OK)
-        cache_put(name, out, n);
     UNLOCK();
-    cJSON_free(out);
     if (e == STORE_OK) {
         store_port_log("%s saved", name);
         notify(name);
@@ -602,9 +596,17 @@ store_err_t store_edge_save(const char *text, size_t len, char *err, size_t errl
     // delete anything before it is validated (records of a lost or unreadable manifest survive it).
     uint32_t top = highest_record_gen();
     edge_writer_t w = {.gen = (top > s_gen ? top : s_gen) + 1};
-    cfg_result_t r = cfg_edge_text(&s_env, text, len, true, CFG_EDGE_MAX, emit, &w, err, errlen);
-    if (r == CFG_OK && w.fill && !flush(&w))
+    // The body as sent, cut into 8 KB records by byte (Plan 09b ruling 3); the rules are the loader's.
+    store_err_t chk = body_check(EDGE, text, len, CFG_EDGE_MAX, err, errlen);
+    cfg_result_t r = chk == STORE_OK ? CFG_OK : chk == STORE_ETOOLARGE ? CFG_TOO_LARGE : CFG_INVALID;
+    if (r == CFG_OK && (!emit(&w, text, len) || (w.fill && !flush(&w))))
         r = CFG_ABORTED;
+    // A flash write FlashDB did not report (a garbage collection's sector status) locked the FAL: never
+    // commit after it; the remount below decides, and writes nothing more this boot.
+    if (r == CFG_OK && fal_nor_read_failed()) {
+        store_port_log("edgeDevices: a flash write failed during the save; not committed");
+        r = CFG_ABORTED;
+    }
     char manifest[32];
     snprintf(manifest, sizeof manifest, "@%lu,%lu", (unsigned long)w.gen, (unsigned long)w.idx);
     uint32_t old = s_gen;

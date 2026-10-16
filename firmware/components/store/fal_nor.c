@@ -40,8 +40,10 @@ static int dev_write(long off, const uint8_t *buf, size_t size)
         uint32_t n = NOR_PAGE - at % NOR_PAGE;
         if (n > size - done)
             n = (uint32_t)(size - done);
-        if (s_nor->program(s_nor, at, buf + done, n))
+        if (s_nor->program(s_nor, at, buf + done, n)) {
+            s_read_failed = true;  // locked before FlashDB hears of it: it may go on using that sector (Plan 09b T2)
             return -1;
+        }
         done += n;
     }
     return (int)size;
@@ -52,8 +54,10 @@ static int dev_erase(long off, size_t size)
     if (!s_nor || s_read_failed || off < 0 || off % NOR_SECTOR || (uint32_t)off + size > FDB_REGION)
         return -1;
     for (size_t done = 0; done < size; done += NOR_SECTOR)
-        if (s_nor->erase_sector(s_nor, (uint32_t)off + (uint32_t)done))
+        if (s_nor->erase_sector(s_nor, (uint32_t)off + (uint32_t)done)) {
+            s_read_failed = true;
             return -1;
+        }
     return (int)size;
 }
 

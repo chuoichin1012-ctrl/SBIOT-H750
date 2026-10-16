@@ -222,6 +222,12 @@ cJSON *cfg_default(const cfg_env_t *env, const char *name)
     return def ? cJSON_Parse(def->defaults) : NULL;
 }
 
+bool cfg_is_list(const cfg_env_t *env, const char *name)
+{
+    const cfgdef_t *def = find(env, name);
+    return def && def->kind != K_OBJECT;
+}
+
 const char *cfg_default_text(const cfg_env_t *env, const char *name)
 {
     const cfgdef_t *def = find(env, name);

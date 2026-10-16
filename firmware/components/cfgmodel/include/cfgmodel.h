@@ -30,6 +30,8 @@ size_t cfg_names(const cfg_env_t *env, const char **out, size_t max);
 
 /** New default document for `name` (caller deletes), or NULL if unknown. */
 cJSON *cfg_default(const cfg_env_t *env, const char *name);
+/** The same default as its compact text, static for the whole run (FlashDB's default KV table, Plan 09b ruling 1). */
+const char *cfg_default_text(const cfg_env_t *env, const char *name);
 /**
  * The listen ports across configs (Plan 08b T0): a port whose bridge is a TCP server (workMode 3) may not
  * listen where the other port's TCP server does, nor on system.webPort or system.websocketPort. Any of

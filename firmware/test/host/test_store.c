@@ -62,6 +62,8 @@ static bool s_quiet;
 void store_port_lock(void) { s_depth++; }
 void store_port_unlock(void) { s_depth--; }
 int64_t store_port_wall_ms(void) { return s_wall; }
+static int s_restarts;
+void store_port_restart(void) { s_restarts++; }
 uint32_t store_port_uptime_ms(void) { return s_uptime; }
 void store_port_log(const char *fmt, ...)
 {
@@ -254,6 +256,29 @@ static void raw_put(const char *part, const char *key, const char *value)
     CHECK(fdb_kv_set_blob(&db, key, fdb_blob_make(&blob, value, strlen(value))) == FDB_NO_ERR, "raw put %s", key);
     fdb_kvdb_deinit(&db);
     reboot();
+}
+
+/** `key` in partition `part` as FlashDB holds it, with no default table (NULL when absent); then a reboot. */
+static char *raw_get(const char *part, const char *key)
+{
+    store_deinit();
+    struct fdb_kvdb db = {0};
+    uint32_t sec = 16 * 1024;
+    fdb_kvdb_control(&db, FDB_KVDB_CTRL_SET_SEC_SIZE, &sec);
+    char *out = NULL;
+    if (fdb_kvdb_init(&db, part, part, NULL, NULL) == FDB_NO_ERR) {
+        struct fdb_blob blob;
+        static char buf[12288];
+        size_t n = fdb_kv_get_blob(&db, key, fdb_blob_make(&blob, buf, sizeof buf - 1));
+        if (n && blob.saved.len) {
+            buf[n] = '\0';
+            out = malloc(n + 1);
+            memcpy(out, buf, n + 1);
+        }
+        fdb_kvdb_deinit(&db);
+    }
+    reboot();
+    return out;
 }
 
 static char *default_text(const char *name)
@@ -495,6 +520,116 @@ static void test_certs_and_factory_reset(void)
     free(edef);
     reboot();
     CHECK(edge_keys("ed.") == 0, "no edge records left");  // the log is checked in test_log
+}
+
+// ---- Plan 09b T1: the defaults in FlashDB, the factory reset ----------------------------------
+
+static void test_defaults_stored(void)
+{
+    flash_new(31);
+    reboot();
+    const char *names[32];
+    size_t n = cfg_names(&ENV, names, 32);
+    for (size_t i = 0; i < n; i++) {
+        if (!strcmp(names[i], "edgeDevices"))
+            continue;
+        char *raw = raw_get("cfg", names[i]);
+        const char *want = cfg_default_text(&ENV, names[i]);
+        CHECK(raw && want && !strcmp(raw, want), "%s: a blank flash is created with its default stored", names[i]);
+        free(raw);
+    }
+    // An older DB that lacks a config (a newer firmware added it): read from the table, never written.
+    flash_new(32);
+    store_deinit();
+    {
+        struct fdb_kvdb db = {0};
+        uint32_t sec = 16 * 1024;
+        fdb_kvdb_control(&db, FDB_KVDB_CTRL_SET_SEC_SIZE, &sec);
+        fdb_kvdb_init(&db, "cfg", "cfg", NULL, NULL);
+        struct fdb_blob blob;
+        const char *sys = "{\"hostname\":\"old\"}";
+        fdb_kv_set_blob(&db, "system", fdb_blob_make(&blob, sys, strlen(sys)));
+        fdb_kvdb_deinit(&db);
+    }
+    reboot();
+    char *got = store_get_json("mqtt"), *want = default_text("mqtt");
+    CHECK(got && want && !strcmp(got, want), "a config missing from an older DB loads its default");
+    free(got), free(want);
+    char *raw = raw_get("cfg", "mqtt");
+    CHECK(!raw, "and the default is not written to it");
+    free(raw);
+    BALANCED("defaults");
+}
+
+static long s_programs;
+static int counting_program(nor_t *n, uint32_t off, const void *buf, uint32_t len)
+{
+    s_programs++;
+    return tracing_program(n, off, buf, len);
+}
+
+static void test_reset_blocks_and_restarts(void)
+{
+    flash_new(33);
+    reboot();
+    char err[200];
+    store_set_text("system", "{\"hostname\":\"before\"}", 21, err, sizeof err);
+    s_restarts = 0;
+    CHECK(store_factory_reset() == STORE_OK && s_restarts == 1, "a factory reset restarts the gateway once (%d)", s_restarts);
+    s_spi.nor.program = counting_program;
+    long e0 = s_erases;
+    s_programs = 0;
+    const char *pem = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+    uint8_t mask = 1;
+    CHECK(store_set_text("system", "{\"hostname\":\"after\"}", 20, err, sizeof err) != STORE_OK &&
+              store_edge_save("[]", 2, err, sizeof err) != STORE_OK && store_cert_set("mqtt", "ca", pem, strlen(pem)) != STORE_OK &&
+              store_state_set("do", &mask, 1) != STORE_OK,
+          "after the reset began, every write is refused until the restart");
+    CHECK(s_programs == 0 && s_erases == e0, "and nothing reaches the flash (%ld programs, %ld erases)", s_programs, s_erases - e0);
+    s_spi.nor.program = tracing_program;
+    reboot();
+    char *got = store_get_json("system"), *want = default_text("system");
+    CHECK(got && want && !strcmp(got, want), "after the restart: the defaults, writable again");
+    free(got), free(want);
+    CHECK(store_set_text("system", "{\"hostname\":\"after\"}", 20, err, sizeof err) == STORE_OK, "saves work again (%s)", err);
+    BALANCED("reset blocks");
+}
+
+static void test_reset_read_back(void)
+{
+    flash_new(34);
+    reboot();
+    char err[200];
+    store_set_text("system", "{\"hostname\":\"before\"}", 21, err, sizeof err);
+    s_restarts = 0;
+    sim_fail(&s_w, 0, 2, 0x00000, 0x40000, SIM_SILENT);  // the defaults are "written" and land nowhere
+    s_quiet = true;
+    store_err_t e = store_factory_reset();
+    s_quiet = false;
+    sim_fail(&s_w, 0, 0, 0, 0, 0);
+    CHECK(e != STORE_OK && s_restarts == 1, "defaults that did not land: the read-back reports the reset incomplete, and it restarts");
+    BALANCED("reset read-back");
+}
+
+static void test_reset_unmounted(void)
+{
+    flash_new(35);
+    reboot();
+    store_deinit();
+    sim_fail(&s_w, 0, 2, 0x00000, 0x40000, SIM_READ_EIO);  // cfg cannot be read: the FAL locks the flash read-only
+    s_quiet = true;
+    store_init(&ENV, &s_spi.nor);
+    s_spi.nor.program = counting_program;
+    long e0 = s_erases;
+    s_programs = 0;
+    s_restarts = 0;
+    store_err_t e = store_factory_reset();
+    s_quiet = false;
+    sim_fail(&s_w, 0, 0, 0, 0, 0);
+    s_spi.nor.program = tracing_program;
+    CHECK(e != STORE_OK && s_restarts == 1, "cfg not mounted: the reset is incomplete, and it restarts");
+    CHECK(s_programs == 0 && s_erases == e0, "nothing written or erased while the FAL is locked (%ld, %ld)", s_programs, s_erases - e0);
+    BALANCED("reset unmounted");
 }
 
 #if STORE_CACHE_SIZE < 5000
@@ -1378,6 +1513,55 @@ static void test_small_power_cuts(void)
     free(s_snap);
 }
 
+static void test_reset_power_cuts(void)
+{
+    s_snap = malloc(0x100000);
+    flash_new(36);
+    reboot();
+    char err[200], *m = edge_model(3, 2, 1);
+    store_set_text("system", "{\"hostname\":\"before\"}", 21, err, sizeof err);
+    store_set_text("mqtt", "{\"host\":\"old.example\"}", 24, err, sizeof err);
+    store_edge_save(m, strlen(m), err, sizeof err);
+    const char *pem = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+    store_cert_set("mqtt", "ca", pem, strlen(pem));
+    char *old_sys = store_get_json("system"), *old_mq = store_get_json("mqtt"), *old_edge = edge_now();
+    char *def_sys = default_text("system"), *def_mq = default_text("mqtt"), *def_edge = default_text("edgeDevices");
+    store_deinit();
+    snapshot();
+    restore();
+    reboot();
+    s_w.ops = 0;
+    store_factory_reset();
+    long total = s_w.ops;
+    s_quiet = true;
+    int bad = 0;
+    for (long cut = 0; cut < total; cut++) {
+        store_deinit();
+        restore();
+        reboot();
+        s_w.ops = 0;
+        s_w.cut_at = cut;
+        if (!setjmp(s_jb))
+            store_factory_reset();
+        s_w.cut_at = -1;
+        reboot();
+        char *gs = store_get_json("system"), *gm = store_get_json("mqtt"), *ge = edge_now();
+        bool ok = gs && gm && ge && (!strcmp(gs, old_sys) || !strcmp(gs, def_sys)) && (!strcmp(gm, old_mq) || !strcmp(gm, def_mq)) &&
+                  (!strcmp(ge, old_edge) || !strcmp(ge, def_edge));
+        store_factory_reset();  // the user presses Reload again
+        reboot();
+        char *s2 = store_get_json("system"), *e2 = edge_now(), *c2 = store_cert_get("mqtt", "ca");
+        ok = ok && s2 && !strcmp(s2, def_sys) && e2 && !strcmp(e2, def_edge) && !c2;
+        if (!ok && (stop_if_failfast(), bad++ < 3))
+            printf("  reset cut at %ld: system %.40s mqtt %.40s edge %.20s\n", cut, gs ? gs : "-", gm ? gm : "-", ge ? ge : "-");
+        free(gs), free(gm), free(ge), free(s2), free(e2), free(c2);
+    }
+    CHECK(bad == 0, "factory reset: %d of %ld cut points (writes and erases) end torn, or not clean after a second reset", bad, total);
+    s_quiet = false;
+    free(old_sys), free(old_mq), free(old_edge), free(def_sys), free(def_mq), free(def_edge), free(m);
+    free(s_snap);
+}
+
 // ---- log -------------------------------------------------------------------------------------
 
 typedef struct {
@@ -1450,6 +1634,7 @@ int main(void)
     // so the Makefile runs them in a second pass, STORE_CUTS=1, without leak detection.
     if (getenv("STORE_CUTS")) {
         test_small_power_cuts();
+        test_reset_power_cuts();
         test_power_cuts();
         test_write_failures();
         test_gc_write_failures();
@@ -1463,6 +1648,10 @@ int main(void)
         test_state_read_failures();
         test_certs_and_factory_reset();
         test_factory_reset_fails();
+        test_defaults_stored();
+        test_reset_blocks_and_restarts();
+        test_reset_read_back();
+        test_reset_unmounted();
         test_edge_save_and_read();
         test_edge_too_large();
         test_pinning();

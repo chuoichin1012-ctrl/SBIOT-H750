@@ -345,8 +345,7 @@ void api_handle(struct mg_connection *c, struct mg_http_message *hm)
         if (e == STORE_OK)
             api_ok(c);
         else
-            api_error(c, 500, "Some settings could not be erased.");
-        sysmgr_restart_later(1500);
+            api_error(c, 500, "Some settings could not be erased.");  // the store restarts the gateway either way
     } else
         api_error(c, 404, "Unknown API endpoint.");
 }

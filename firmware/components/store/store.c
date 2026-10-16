@@ -20,6 +20,7 @@
 static struct fdb_kvdb s_cfg_db, s_edge_db, s_cert_db;
 static struct fdb_tsdb s_log_db;
 static bool s_mounted, s_log_ok;
+static bool s_resetting;  // a factory reset began: no write until the restart (Plan 09b ruling 2)
 // edge: mounted, and its committed generation known. False after a mount that failed, a manifest
 // that does not read back, or a save whose commit is not known: no model is served and no record
 // deleted until the next boot decides.
@@ -74,10 +75,31 @@ static size_t s_nlisteners;
 
 // ---- FlashDB helpers -------------------------------------------------------------------------
 
-static bool kvdb_open(fdb_kvdb_t db, const char *part, uint32_t sector)
+// The cfg DB's default KV (Plan 09b ruling 1): cfgmodel's defaults, the one source. FlashDB keeps the
+// pointer, so the table and its strings live for the whole run. A new DB is created with them, and a
+// factory reset writes them again; a key an older DB lacks is read from cfgmodel at boot, not written.
+static struct fdb_default_kv_node s_def_nodes[MAX_CONFIGS];
+static struct fdb_default_kv s_defs;
+
+static void defaults_build(void)
+{
+    const char *names[MAX_CONFIGS];
+    size_t n = cfg_names(&s_env, names, MAX_CONFIGS);
+    s_defs.num = 0;
+    for (size_t i = 0; i < n; i++) {
+        const char *text = cfg_default_text(&s_env, names[i]);
+        if (!strcmp(names[i], EDGE) || !text)
+            continue;  // edgeDevices: no manifest means its default, "[]" (spec §9.4)
+        s_def_nodes[s_defs.num] = (struct fdb_default_kv_node){(char *)names[i], (void *)text, strlen(text)};
+        s_defs.num++;
+    }
+    s_defs.kvs = s_def_nodes;
+}
+
+static bool kvdb_open(fdb_kvdb_t db, const char *part, uint32_t sector, struct fdb_default_kv *defs)
 {
     fdb_kvdb_control(db, FDB_KVDB_CTRL_SET_SEC_SIZE, &sector);
-    fdb_err_t e = fdb_kvdb_init(db, part, part, NULL, NULL);
+    fdb_err_t e = fdb_kvdb_init(db, part, part, defs, NULL);
     if (e != FDB_NO_ERR)
         store_port_log("KVDB %s init failed (%d)", part, e);
     return e == FDB_NO_ERR;
@@ -279,7 +301,7 @@ static bool edge_mount(manifest_t *state)
 {
     s_gen = s_count = 0;
     *state = MANIFEST_BAD;
-    if (!kvdb_open(&s_edge_db, "edge", EDGE_SECTOR))
+    if (!kvdb_open(&s_edge_db, "edge", EDGE_SECTOR, NULL))
         return false;
     *state = manifest_read(&s_gen, &s_count);
     return *state != MANIFEST_BAD;
@@ -359,12 +381,14 @@ store_err_t store_init(const cfg_env_t *env, nor_t *flash)
     fal_nor_set(flash);
     fal_nor_rearm();  // a new boot: the flash is writable until a read fails
     LOCK();
-    if (!kvdb_open(&s_cfg_db, "cfg", CFG_SECTOR)) {
+    s_resetting = false;
+    defaults_build();
+    if (!kvdb_open(&s_cfg_db, "cfg", CFG_SECTOR, &s_defs)) {
         UNLOCK();
         return STORE_EFLASH;  // no configs, no boot counter: the caller runs on defaults
     }
     s_mounted = true;
-    s_cert_ok = kvdb_open(&s_cert_db, "cert", CERT_SECTOR);
+    s_cert_ok = kvdb_open(&s_cert_db, "cert", CERT_SECTOR, NULL);
     uint32_t sec = LOG_SECTOR;
     fdb_tsdb_control(&s_log_db, FDB_TSDB_CTRL_SET_SEC_SIZE, &sec);
     s_log_seq = 0;
@@ -528,10 +552,11 @@ store_err_t store_set_text(const char *name, const char *text, size_t len, char 
     if (!out)
         return from_cfg(CFG_NO_MEMORY, err, errlen);
     LOCK();
-    if (read_only()) {
+    if (read_only() || s_resetting) {
         UNLOCK();
         cJSON_free(out);
-        snprintf(err, errlen, "The settings storage is read-only after a flash error; restart the gateway.");
+        snprintf(err, errlen, s_resetting ? "A factory reset is in progress; the gateway restarts."
+                                          : "The settings storage is read-only after a flash error; restart the gateway.");
         return STORE_EFLASH;
     }
     int i = cache_find(name);
@@ -567,9 +592,10 @@ store_err_t store_edge_save(const char *text, size_t len, char *err, size_t errl
 {
     err[0] = '\0';
     LOCK();
-    if (!edge_usable()) {
+    if (!edge_usable() || s_resetting) {
         UNLOCK();
-        snprintf(err, errlen, "The Edge model storage is unavailable; restart the gateway.");
+        snprintf(err, errlen, s_resetting ? "A factory reset is in progress; the gateway restarts."
+                                          : "The Edge model storage is unavailable; restart the gateway.");
         return STORE_EFLASH;
     }
     // Above the committed generation and above every record in flash, so this save never has to
@@ -725,38 +751,54 @@ size_t store_edge_text(char *buf, size_t cap)
 
 // ---- factory reset, state, certificates ---------------------------------------------------------
 
+/** Every default of the cfg DB reads back as the table says: FlashDB 2.2.0's fdb_kv_set_default ignores
+ * create_kv_blob's result (fdb_kvdb.c:1435), so only this proves the reset (Plan 09b ruling 2). */
+static bool defaults_read_back(void)
+{
+    for (size_t i = 0; i < s_defs.num; i++) {
+        size_t n = 0;
+        char *v = kv_read(&s_cfg_db, s_def_nodes[i].key, &n);
+        bool same = v && n == s_def_nodes[i].value_len && !memcmp(v, s_def_nodes[i].value, n);
+        free(v);
+        if (!same)
+            return false;
+    }
+    return true;
+}
+
 store_err_t store_factory_reset(void)
 {
     LOCK();
-    if (read_only()) {
-        UNLOCK();
-        return STORE_EFLASH;
+    s_resetting = true;  // from here on nothing else is written, until the restart
+    // Only a mounted DB is reset, and nothing at all while the FAL holds the flash read-only after a
+    // read error: the reset is then incomplete, and the next boot tries again (Plan 09b rulings 2, 10).
+    bool ok = s_mounted && !read_only();
+    if (ok) {
+        // Each database on its own; they are not atomic together: after a power cut the user
+        // presses Reload again. The configs are reloaded below from the flash as it now is.
+        bool cfg = fdb_kv_set_default(&s_cfg_db) == FDB_NO_ERR && defaults_read_back();
+        bool edge = s_edge_ok && fdb_kv_set_default(&s_edge_db) == FDB_NO_ERR;
+        bool cert = s_cert_ok && fdb_kv_set_default(&s_cert_db) == FDB_NO_ERR;
+        if (edge) {
+            s_gen = s_count = 0;
+            memset(s_pins, 0, sizeof s_pins);
+        } else if (s_edge_ok) {
+            fdb_kvdb_deinit(&s_edge_db);
+            memset(&s_edge_db, 0, sizeof s_edge_db);
+            manifest_t m;
+            memset(s_pins, 0, sizeof s_pins);
+            if (!edge_mount(&m))
+                edge_unknown("a factory reset failed");
+        }
+        if (!read_only())  // the boot numbering of the log goes on
+            kv_write(&s_cfg_db, "st.boot", &s_boot, sizeof s_boot);
+        load_all();  // from the flash as it now is
+        ok = cfg && edge && cert && !read_only();
     }
-    // Each database on its own. The configs are reloaded below from the flash as it now is, and
-    // certificates are always read from it; only edge keeps its generation in RAM, so a failed
-    // edge reset is mounted again: what this boot serves is what the next boot finds.
-    bool cfg = fdb_kv_set_default(&s_cfg_db) == FDB_NO_ERR;
-    bool edge = s_edge_ok && fdb_kv_set_default(&s_edge_db) == FDB_NO_ERR;
-    bool cert = s_cert_ok && fdb_kv_set_default(&s_cert_db) == FDB_NO_ERR;
-    if (edge) {
-        s_gen = s_count = 0;
-        memset(s_pins, 0, sizeof s_pins);
-    } else if (s_edge_ok) {
-        fdb_kvdb_deinit(&s_edge_db);
-        memset(&s_edge_db, 0, sizeof s_edge_db);
-        manifest_t m;
-        memset(s_pins, 0, sizeof s_pins);
-        if (!edge_mount(&m))
-            edge_unknown("a factory reset failed");
-    }
-    if (!s_ro)
-        store_state_set("boot", &s_boot, sizeof s_boot);  // the boot numbering of the log goes on
-    load_all();  // from the flash as it now is
-    read_only();
     UNLOCK();
-    store_err_t e = cfg && edge && cert ? STORE_OK : STORE_EFLASH;
-    store_port_log(e == STORE_OK ? "factory settings restored" : "factory reset incomplete");
-    return e;
+    store_port_log(ok ? "factory settings restored" : "factory reset incomplete");
+    store_port_restart();
+    return ok ? STORE_OK : STORE_EFLASH;
 }
 
 store_err_t store_state_set(const char *key, const void *data, size_t len)
@@ -764,7 +806,7 @@ store_err_t store_state_set(const char *key, const void *data, size_t len)
     char k[FDB_KV_NAME_MAX];
     snprintf(k, sizeof k, "st.%s", key);
     LOCK();
-    bool ok = !read_only() && kv_write(&s_cfg_db, k, data, len);
+    bool ok = !read_only() && !s_resetting && kv_write(&s_cfg_db, k, data, len);
     UNLOCK();
     return ok ? STORE_OK : STORE_EFLASH;
 }
@@ -805,7 +847,7 @@ store_err_t store_cert_set(const char *scope, const char *kind, const void *pem,
     if (!s_cert_ok)
         return STORE_EFLASH;
     LOCK();
-    bool ok = !read_only() && kv_write(&s_cert_db, key, pem, len);
+    bool ok = !read_only() && !s_resetting && kv_write(&s_cert_db, key, pem, len);
     UNLOCK();
     if (ok)
         notify(scope);  // the owning module reconnects with new material

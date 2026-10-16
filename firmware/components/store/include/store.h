@@ -68,7 +68,9 @@ size_t store_edge_text(char *buf, size_t cap);
 typedef void (*store_listener_t)(const char *name, void *ctx);
 void store_subscribe(store_listener_t fn, void *ctx);
 
-/** Restores factory settings: configs, edgeDevices and certificates; the log is kept. */
+/** Restores factory settings: configs, edgeDevices and certificates; the log is kept. Every write is
+ * refused from its start, the defaults are read back, and the gateway restarts (store_port_restart),
+ * whatever the outcome; STORE_EFLASH when a database could not be reset (Plan 09b ruling 2). */
 store_err_t store_factory_reset(void);
 
 // ---- Small runtime state kept across restarts (DO outputs, the boot counter) ----

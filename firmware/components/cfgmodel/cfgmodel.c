@@ -222,6 +222,12 @@ cJSON *cfg_default(const cfg_env_t *env, const char *name)
     return def ? cJSON_Parse(def->defaults) : NULL;
 }
 
+const char *cfg_default_text(const cfg_env_t *env, const char *name)
+{
+    const cfgdef_t *def = find(env, name);
+    return def ? def->defaults : NULL;
+}
+
 // ---- Validation -------------------------------------------------------------------------
 
 static void fail(char *err, size_t len, const char *fmt, const char *a, const char *b)

@@ -34,3 +34,5 @@ void store_port_log(const char *fmt, ...)
     va_end(ap);
     blog("store: %s\r\n", line);
 }
+
+void store_port_restart(void) { sysmgr_restart_later(1500); }

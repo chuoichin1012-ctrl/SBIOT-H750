@@ -111,6 +111,13 @@ static void test_mac(void)
     uid2[11] ^= 1;
     netcfg_mac(uid2, mac2);
     CHECK(memcmp(mac, mac2, 6) != 0, "another UID, another MAC");
+    // The serial number (the user, 2026-10-17: the 24-digit UID was too long): SB and the MAC's last 5 bytes.
+    char sn[NETCFG_SERIAL_LEN + 1], want[16], sn2[NETCFG_SERIAL_LEN + 1];
+    netcfg_serial(uid, sn);
+    snprintf(want, sizeof want, "SB%02X%02X%02X%02X%02X", mac[1], mac[2], mac[3], mac[4], mac[5]);
+    CHECK(strlen(sn) == 12 && !strcmp(sn, want), "SN %s: SB, then the MAC's last 5 bytes in hex (%s)", sn, want);
+    netcfg_serial(uid2, sn2);
+    CHECK(strcmp(sn, sn2) != 0, "another UID, another SN");
 }
 
 

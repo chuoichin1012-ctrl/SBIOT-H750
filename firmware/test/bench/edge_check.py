@@ -690,12 +690,12 @@ def case_partial():
 
 
 def case_bigreport():
-    # The template is at most 2048 characters (the schema): 70 slots of sys_sn render about 3.5 KB, over twice the
-    # bridge's 1.5 KB frame.
+    # The template is at most 2048 characters (the schema): 70 slots of sys_sn (12 characters) render about 2.3 KB,
+    # over the bridge's 1.5 KB frame.
     big = {'k_long_name_%03d' % i: 'sys_sn' for i in range(70)}
     big['t'] = 't'
     check(setup([plc()], report={'reporting': 1, 'interval': 1, 'remoteAccess': 1, 'remoteFormat': 2, 'template': json.dumps(big, separators=(',', ':'))}),
-          'set up: a report of about 3.5 KB every second, rw_prot on the same socket')
+          'set up: a report of about 2.3 KB every second, rw_prot on the same socket')
     slave = BusSlave()
     slave.start()
     time.sleep(3)
@@ -724,7 +724,7 @@ def case_bigreport():
     ahead = (at - before) if at > 0 else -1  # report bytes that had to go out before the reply
     check(ahead > 5840 + rcv, 'the reply waited for %d report bytes, more than lwIP and the PC hold (%d): a report was half sent in the bridge'
           % (ahead, 5840 + rcv))
-    check(len(reps) >= 5 and all(len(o) == 71 and n > 3000 for o, n in reps), 'TCP: whole reports of %d bytes, one byte stream each' % (reps[0][1] if reps else 0))
+    check(len(reps) >= 5 and all(len(o) == 71 and n > 2000 for o, n in reps), 'TCP: whole reports of %d bytes, one byte stream each' % (reps[0][1] if reps else 0))
     check(rest.replace(b' ', b'') == b''.join(b'SER%02d' % i for i in range(5)), 'serial frames between them arrive whole and in order (%r)' % rest[:60])
     check(len(replies) == 1, 'a remote request while a report is half sent: the report whole, then the reply')
     # UDP: one datagram
@@ -734,7 +734,7 @@ def case_bigreport():
     ev = bc.wait_peer(p, 1)
     slave.close()
     d = [bytes.fromhex(e['hex']) for e in ev if e.get('ev') == 'data']
-    check(d and all(len(x) > 3000 and json.loads(x).get('k_long_name_069') for x in d), 'UDP: one datagram per report (%s)' % [len(x) for x in d][:4])
+    check(d and all(len(x) > 2000 and json.loads(x).get('k_long_name_069') for x in d), 'UDP: one datagram per report (%s)' % [len(x) for x in d][:4])
     # the 26 KB limit
     _, before = w.get_json('/api/config/edgeReport')
     over = dict(before, template=json.dumps({'a%03d' % i: 't' for i in range(120)}))
@@ -753,14 +753,14 @@ def case_mqtt():
     try:
         r = mc.relay(60)
         ok = mc.post('mqtt', mc.mqtt_cfg()) and mc.post('mqttPublish', []) and mc.post('mqttSubscribe', [])
-        # The largest report the 2048-character template allows: 70 slots of sys_sn, about 3.5 KB.
+        # A large report the 2048-character template allows: 70 slots of sys_sn, about 2.3 KB.
         big = {'k_long_name_%03d' % i: 'sys_sn' for i in range(70)}
         big['t'] = 't'
         check(ok and setup([plc()], report={'channel': 0, 'reporting': 1, 'interval': 2, 'reportTopic': 'edge/report', 'reportQos': 1,
                                              'remoteAccess': 1, 'remoteWrite': True, 'remoteFormat': 2, 'requestTopic': 'edge/req',
                                              'requestQos': 1, 'replyTopic': 'edge/reply', 'replyQos': 1,
                                              'template': json.dumps(big, separators=(',', ':'))}),
-              'set up: channel 0 (MQTT), a 3.5 KB report every 2 s, rw_prot on edge/req')
+              'set up: channel 0 (MQTT), a 2.3 KB report every 2 s, rw_prot on edge/req')
         slave = BusSlave()
         slave.start()
         sub = mc.Sub('edge/#', qos=1)

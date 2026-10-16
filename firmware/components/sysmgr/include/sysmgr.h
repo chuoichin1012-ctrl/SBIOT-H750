@@ -36,5 +36,5 @@ bool sysmgr_restart_claim(void);
  */
 size_t sysmgr_payload(int content, const char *custom, bool hex, uint8_t *out, size_t max);
 uint32_t sysmgr_uptime_s(void);
-/** The chip UID as 24 hex digits. */
+/** The serial number: SB and the MAC's last 5 bytes in hex, 12 characters (netcfg_serial). */
 const char *sysmgr_serial(void);

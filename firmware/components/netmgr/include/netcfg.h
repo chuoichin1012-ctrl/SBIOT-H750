@@ -51,3 +51,6 @@ bool netcfg_ip4(const char *s, uint32_t *out);
 
 /** 02 (locally administered, unicast), then the first 5 bytes of SHA-256 over the 12-byte UID. */
 void netcfg_mac(const uint8_t uid[12], uint8_t mac[6]);
+/** The serial number from the same hash: "SB" and the MAC's last 5 bytes in upper-case hex, e.g. SB3F9A0C12D4. */
+#define NETCFG_SERIAL_LEN 12
+void netcfg_serial(const uint8_t uid[12], char out[NETCFG_SERIAL_LEN + 1]);

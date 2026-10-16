@@ -167,15 +167,26 @@ type Editing =
 
 /** The edit dialogs' checks, on every device and point of a whole model (a CSV import): the gateway stores what it
  * is sent, so nothing the dialogs would refuse may come in through a file (Codex 09b review). */
+/** formErrors, plus a select's value among its options: a file can hold any value (Codex 09b review r2). */
+function importErrors(defs: FieldDef[], v: Values): Record<string, string> {
+  const out = formErrors(defs, v);
+  for (const d of defs) {
+    if ((d.kind !== 'select' && d.kind !== 'radio') || (d.show && !d.show(v)) || out[d.id] || v[d.id] === undefined) continue;
+    const opts = typeof d.options === 'function' ? d.options(v) : d.options ?? [];
+    if (!opts.some(([o]) => String(o) === String(v[d.id]))) out[d.id] = `${String(v[d.id])} is not one of the choices.`;
+  }
+  return out;
+}
+
 function modelErrors(dev: DeviceInfo, slaves: EdgeSlave[], ioAddr: number): string[] {
   const out: string[] = [];
   const names = allNodeNames(slaves);
   slaves.forEach((s, i) => {
-    const sErr = formErrors(slaveDefs(dev, s, slaves.filter((_, k) => k !== i), ioAddr), s as unknown as Values);
+    const sErr = importErrors(slaveDefs(dev, s, slaves.filter((_, k) => k !== i), ioAddr), s as unknown as Values);
     for (const [id, e] of Object.entries(sErr)) out.push(`${s.name}: ${id}: ${e}`);
     s.nodes.forEach((n, j) => {
       const siblings = s.nodes.filter((_, k) => k !== j);
-      const nErr = formErrors(nodeDefs(dev, s, n, names.filter((x) => x !== n.name), siblings), n as unknown as Values);
+      const nErr = importErrors(nodeDefs(dev, s, n, names.filter((x) => x !== n.name), siblings), n as unknown as Values);
       for (const [id, e] of Object.entries(nErr)) out.push(`${s.name}/${n.name}: ${id}: ${e}`);
     });
   });

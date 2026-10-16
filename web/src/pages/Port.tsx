@@ -173,9 +173,12 @@ export function PortPage(props: { path?: string; n?: string; tab?: string }) {
   const f = useForm(() => api.getValues(`port${n}`), all, [n]);
   // The listen port across configs (Plan 09b): the gateway stores what it is sent, so the UI checks it.
   const others = useAsync(
-    () => Promise.all([d.portmax > 1 ? api.getValues(`port${n === 1 ? 2 : 1}`) : Promise.resolve(null), api.getValues('system')]),
+    () => Promise.all([d.portmax > 1 ? api.getValues(`port${n === 1 ? 2 : 1}`) : Promise.resolve(null), api.getValues('system')])
+      .then(([other, system]) => ({ n, other, system })),
     [n],
   );
+  // Only this UART's own read, finished and without error, may clear the save (Codex 09b review r2).
+  const checked = !others.loading && !others.error && others.data?.n === n;
   const save = useSaver();
 
   if (!f.ready) return <Pending error={f.error} retry={f.reload} />;
@@ -186,7 +189,7 @@ export function PortPage(props: { path?: string; n?: string; tab?: string }) {
     if (id === 'workMode' && !(SOCK_MODES[Number(v)] ?? []).some(([m]) => m === sm(f.values))) f.set('socketMode', NONE);
   };
   // The listen port's clash with the other UART or the web, shown on the field as it is edited (Plan 09b).
-  const clash = listenClash(n, f.values, others.data?.[0] ?? null, others.data?.[1] ?? null);
+  const clash = checked ? listenClash(n, f.values, others.data!.other, others.data!.system) : null;
   const errors = clash ? { ...f.errors, listenPort: clash } : f.errors;
   const p = { values: f.values, errors, onChange };
   const serialErr = serial.some((x) => errors[x.id]);
@@ -207,7 +210,7 @@ export function PortPage(props: { path?: string; n?: string; tab?: string }) {
       )}
       <SaveBar
         busy={save.busy}
-        invalid={!f.valid || !!clash || !others.data}
+        invalid={!f.valid || !!clash || !checked}
         note={others.error ? 'The other UART and the system settings could not be read to check the listen port: reload the page.' : undefined}
         tabbed
         onSave={() => save.run(() => api.saveValues(`port${n}`, f.values), { restart: true, after: f.reload })}

@@ -71,7 +71,8 @@ export function SystemPage(_: { path?: string }) {
 
   if (!f.ready) return <Pending error={f.error} retry={f.reload} />;
   // A port a UART listens on, shown on the web or WebSocket port field as it is edited (Plan 09b).
-  const clash = systemPortClash(f.values, ports.data?.[0] ?? null, ports.data?.[1] ?? null);
+  const checked = !ports.loading && !ports.error && !!ports.data;
+  const clash = checked ? systemPortClash(f.values, ports.data![0], ports.data![1]) : {};
   const errors = { ...f.errors, ...clash };
   const p = { values: f.values, errors, onChange: f.set };
 
@@ -91,7 +92,7 @@ export function SystemPage(_: { path?: string }) {
       </Panel>
       <SaveBar
         busy={save.busy}
-        invalid={Object.keys(errors).length > 0 || !ports.data}
+        invalid={Object.keys(errors).length > 0 || !checked}
         note={ports.error ? 'The UART settings could not be read to check the ports: reload the page.' : undefined}
         onSave={() => save.run(() => api.saveValues('system', f.values), { restart: true, after: f.reload })}
       />

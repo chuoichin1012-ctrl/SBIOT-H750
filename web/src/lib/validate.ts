@@ -77,7 +77,7 @@ export function fieldError(def: FieldDef, values: Values): string | null {
   const s = String(v ?? '').trim();
   if (!s) return def.required || def.kind === 'number' || def.kind === 'ipv4' ? 'Required.' : null;
   // Bytes, as the firmware's buffers count them: "é" takes two (Codex 09b review).
-  if (def.maxLength && new TextEncoder().encode(s).length > def.maxLength) return `Use at most ${def.maxLength} bytes (an accented letter takes 2).`;
+  if (def.maxLength && new TextEncoder().encode(String(v ?? '')).length > def.maxLength) return `Use at most ${def.maxLength} bytes (an accented letter takes 2).`;
   if (def.kind === 'number') {
     const err = rangeError(Number(s), def.min, def.max, def.zeroOk);
     if (err) return err;

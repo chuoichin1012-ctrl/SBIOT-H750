@@ -66,4 +66,5 @@ test('a text limit counts UTF-8 bytes, as the firmware buffers do', () => {
   assert.equal(fieldError(def, { username: 'é'.repeat(8) }), null);  // 16 bytes
   assert.match(fieldError(def, { username: 'é'.repeat(9) }) ?? '', /16 bytes/);  // 18 bytes, 9 characters
   assert.equal(fieldError(def, { username: 'a'.repeat(16) }), null);
+  assert.match(fieldError(def, { username: 'é'.repeat(8) + ' ' }) ?? '', /16 bytes/);  // 17 bytes as sent, untrimmed
 });

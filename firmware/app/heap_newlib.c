@@ -19,6 +19,12 @@ void heap_init(void)
 
 size_t heap_free_now(void) { return xPortGetFreeHeapSize(); }
 size_t heap_free_min(void) { return xPortGetMinimumEverFreeHeapSize(); }
+size_t heap_largest_free(void)
+{
+    HeapStats_t st;
+    vPortGetHeapStats(&st);
+    return st.xSizeOfLargestFreeBlockInBytes;
+}
 
 void *malloc(size_t n) { return sb_malloc(n); }
 void free(void *p) { sb_free(p); }

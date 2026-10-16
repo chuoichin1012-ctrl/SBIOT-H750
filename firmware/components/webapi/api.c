@@ -138,6 +138,7 @@ static void status_get(struct mg_connection *c)
     cJSON_AddBoolToObject(sys, "clockSet", sysmgr_clock_set());
     cJSON_AddNumberToObject(sys, "heapFree", heap_free_now());
     cJSON_AddNumberToObject(sys, "heapMin", heap_free_min());
+    cJSON_AddNumberToObject(sys, "heapLargest", heap_largest_free());  // the largest free block (Plan 09c)
     cJSON_AddNumberToObject(sys, "psramFree", 0);
     cJSON_AddNumberToObject(sys, "wdiMaxGapMs", wdog_max_gap_us() / 1000u);
 

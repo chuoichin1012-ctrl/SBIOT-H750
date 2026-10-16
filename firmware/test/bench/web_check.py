@@ -541,6 +541,7 @@ def case_review(ws_port):
 
     # 5. Edge GETs that hold 4 generations: the fifth gets 503, not an empty 200; closing frees them.
     big = json.dumps(edge_model(10, 10)).encode()
+    big = big[:-1] + b" " * (17 * 1024 - len(big)) + b"]"  # stored as sent (Plan 09b): 3 records, so a slow GET stays pinned
     holders = []
     for i in range(4):
         req('POST', '/api/config/edgeDevices', body=big.replace(b'"p0"', b'"q%d"' % i), timeout=60)

@@ -56,10 +56,10 @@ char *rwprot_handle(const char *req, size_t len, rwprot_read_fn rd, rwprot_write
     cJSON *out = cJSON_GetObjectItem(doc, "rw_prot");
     char value[48];
     if (cJSON_IsArray(r)) {
-        cJSON *list = cJSON_AddArrayToObject(out, "r_data");
+        cJSON *list = cJSON_AddArrayToObject(out, "r_data");  // NULL out of memory: no item built (Plan 10c task 7)
         int n = 0;
         const cJSON *e;
-        cJSON_ArrayForEach(e, r)
+        for (e = list ? r->child : NULL; e; e = e->next)
         {
             const char *name = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(e, "name"));
             cJSON *x = cJSON_CreateObject();
@@ -67,14 +67,15 @@ char *rwprot_handle(const char *req, size_t len, rwprot_read_fn rd, rwprot_write
             bool ok = name && ++n <= RWPROT_MAX && rd && rd(ctx, name, value, sizeof value);
             cJSON_AddStringToObject(x, "value", ok ? value : "");
             cJSON_AddStringToObject(x, "err", ok ? "0" : "1");
-            cJSON_AddItemToArray(list, x);
+            if (!cJSON_AddItemToArray(list, x))
+                cJSON_Delete(x);
         }
     }
     if (cJSON_IsArray(w)) {
         cJSON *list = cJSON_AddArrayToObject(out, "w_data");
         int n = 0;
         const cJSON *e;
-        cJSON_ArrayForEach(e, w)
+        for (e = list ? w->child : NULL; e; e = e->next)
         {
             const char *name = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(e, "name"));
             bool have = as_text(cJSON_GetObjectItemCaseSensitive(e, "value"), value, sizeof value);
@@ -83,7 +84,8 @@ char *rwprot_handle(const char *req, size_t len, rwprot_read_fn rd, rwprot_write
             cJSON_AddStringToObject(x, "value", have ? value : "");
             bool ok = name && have && ++n <= RWPROT_MAX && wr && wr(ctx, name, value);
             cJSON_AddStringToObject(x, "err", ok ? "0" : "1");
-            cJSON_AddItemToArray(list, x);
+            if (!cJSON_AddItemToArray(list, x))
+                cJSON_Delete(x);
         }
     }
     cJSON_Delete(in);

@@ -394,6 +394,44 @@ static char *deep_request(int depth)
     return buf;
 }
 
+// Plan 10c task 7 (Codex review, Important 7): rw_prot out of memory at any allocation answers NULL or valid
+// JSON, and leaks nothing (LeakSanitizer at exit).
+static int s_fail_at = -1;
+static void *failing_malloc(size_t n)
+{
+    if (s_fail_at >= 0 && s_fail_at-- == 0)
+        return NULL;
+    return malloc(n);
+}
+
+static void test_rwprot_oom(void)
+{
+    const char *req = "{\"rw_prot\":{\"ver\":\"1.0\",\"dir\":\"down\",\"id\":\"9\",\"r_data\":[{\"name\":\"temperature\"},"
+                      "{\"name\":\"humidity\"},{\"name\":\"nope\"}],\"w_data\":[{\"name\":\"humidity\",\"value\":\"40\"},"
+                      "{\"name\":\"nope\",\"value\":1}]}}";
+    cJSON_Hooks hooks = {failing_malloc, free};
+    cJSON_InitHooks(&hooks);
+    int answers = 0, nulls = 0;
+    for (int n = 0; n < 1000; n++) {
+        s_fail_at = n;
+        char *got = rwprot_handle(req, strlen(req), rd, wr, NULL);
+        bool hit = s_fail_at < 0;
+        s_fail_at = -1;
+        if (got) {
+            cJSON *back = cJSON_Parse(got);
+            CHECK(back != NULL, "allocation %d failed: the answer is JSON (%s)", n, got);
+            cJSON_Delete(back);
+            answers++;
+        } else {
+            nulls++;
+        }
+        free(got);
+        if (!hit) break;
+    }
+    cJSON_InitHooks(NULL);
+    CHECK(nulls > 0 && answers > 0, "the sweep met failures (%d) and an answer (%d)", nulls, answers);
+}
+
 static void test_depth_limit(void)
 {
     const char *r16 = deep_request(16);
@@ -473,6 +511,7 @@ int main(void)
     test_ipacl();
     test_rwprot();
     test_depth_limit();
+    test_rwprot_oom();
     test_edge();
     test_mqtt();
     test_crc();

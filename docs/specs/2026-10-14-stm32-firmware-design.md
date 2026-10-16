@@ -497,6 +497,11 @@ Những gì Plan 10b thêm (mất mạng lâu):
 - **Hai lần đầu** xử lý như Plan 10 (CMUX: `AT+CFUN=1,1`; UART thường: RESET_N). **Từ lần thứ ba**: soft power cycle, tức `AT+QPOWD=1`, chờ `POWERED DOWN`, rồi PWRKEY 2,5 s từ `OFF` đã xác nhận. Không nhận `POWERED DOWN` thì trạng thái là `UNKNOWN` và đi RECOVER (RESET_N), không nhấn PWRKEY mù.
 - **Cả hai đường dùng chung backoff:** trên UART thường, thời gian chờ đăng ký mạng và chờ địa chỉ đều lấy giới hạn của backoff, thay cho 90 s và 2 phút cố định.
 - `/api/status` có `cell.recoveries`: số lần xử lý liên tiếp chưa có địa chỉ.
+- **Đo trên bench (2026-10-17, lệnh `b` chia thời gian chờ cho 10):**
+  - không địa chỉ qua CMUX: `AT+CFUN=1,1` sau 12 s, rồi sau 30 s; lần thứ ba soft power cycle sau 60 s. `POWERED DOWN` đến, rồi PWRKEY 2,5 s, không có RESET_N xen giữa. `cell.recoveries` là 3;
+  - lệnh `d` (bỏ qua `POWERED DOWN`): lần thứ ba đi RECOVER (RESET_N), rồi trình tự từ `UNKNOWN`. PWRKEY chỉ được nhấn sau khi RESET_N và AT đều không được trả lời;
+  - restart trong data mode: `+++`, ATH, rồi `POWERED DOWN`;
+  - **chưa kiểm:** PPP lên lại sau khi phục hồi, và các ca cần PPP (`mux`, `cfun`, `power`, `fallback`, phần UART thường của `backoff_plain`). Trong lúc chạy, SIM và mạng mất dịch vụ: tín hiệu CSQ 19–23 nhưng `+CEREG: 0,2` kéo dài (người dùng: vấn đề của SIM và mạng). Bộ đếm vẫn được dùng chung giữa hai đường: ca `backoff_plain` mở đầu bằng lần CFUN thứ nhất qua CMUX, rồi tới lần 2 và lần 3 trên UART thường.
 
 
 - **Timing của EC600U** lấy theo *Quectel EC600U系列 QuecOpen 硬件设计手册 V1.3* (bản trên developer.quectel.com, 2024-09), mục 3.7–3.8. **Không** dùng timing của EC800 trong bản ESP32 (xung PWRKEY 700 ms ở `modem.c:47`). Mốc thời gian tính từ cạnh GPIO của MCU. Qua transistor, độ trễ không đáng kể so với các giá trị dưới đây.

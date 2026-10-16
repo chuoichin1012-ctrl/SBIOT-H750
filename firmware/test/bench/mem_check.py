@@ -3,7 +3,7 @@
 
     python3 stm32/firmware/test/bench/mem_check.py
 
-(b) the largest Edge model (300 points, both buses, 5 Modbus TCP devices; nobody answers: memory is the same),
+(b) the largest Edge model (200 points, both buses, 5 Modbus TCP devices; nobody answers: memory is the same),
     reporting over MQTT a template of 100 values (within the 26 624-byte report limit);
 (c) the same plus MQTT over TLS, UART1 a TLS client and UART2 an HTTPS client, each with a session up,
     and the reports arriving at the broker;
@@ -77,20 +77,20 @@ def kill_events(p):
     return ev
 
 
-REPORTED = 100  # values in the report template (Plan 09d: all 300 points polled, about 100 reported)
+REPORTED = 100  # values in the report template (Plan 09d/09e: all 200 points polled, about 100 reported)
 REPORT_MAX = 26 * 1024
 PER_SLOT = 2 + 6 * 40  # as edge_tmpl_size and the UI's templateSize
 
 
 def largest_model():
-    """300 points: 120 on UART1, 100 on UART2, 5 Modbus TCP devices of 12, 2 IO, 18 virtual (Plan 09d)."""
+    """200 points: 80 on UART1, 60 on UART2, 5 Modbus TCP devices of 8, 2 IO, 18 virtual (Plan 09e)."""
     nodes = lambda n, base, **kw: [dict({'name': '%s%d' % (base, i), 'reg': 20 + i, 'timeout': 300}, **kw) for i in range(n)]
-    devs = [ec.plc(nodes=nodes(120, 'p')), {'name': 'b2', 'addr': '9', 'uart': 2, 'poll': 2000, 'nodes': nodes(100, 'q')}]
+    devs = [ec.plc(nodes=nodes(80, 'p')), {'name': 'b2', 'addr': '9', 'uart': 2, 'poll': 2000, 'nodes': nodes(60, 'q')}]
     for k in range(5):
-        devs.append(ec.tcpdev(name='tcp%d' % k, nodes=nodes(12, 'e%d_' % k)))
+        devs.append(ec.tcpdev(name='tcp%d' % k, nodes=nodes(8, 'e%d_' % k)))
     devs += [ec.io(), ec.virt(nodes=[{'name': 'v%d' % i, 'formula': '=%s+1,p0', 'dtype': 'float32_abcd'} for i in range(18)])]
     names = [n['name'] for d in devs for n in d['nodes'] if 'name' in n]
-    assert sum(len(d['nodes']) for d in devs) == 300
+    assert sum(len(d['nodes']) for d in devs) == 200
     tmpl = {n: n for n in names[:REPORTED]}
     # As the UI's templateSize: the template printed without its slots, plus a slot's worst case each, plus 1.
     size = len(json.dumps({n: '' for n in tmpl}, separators=(',', ':'))) - 2 * REPORTED + REPORTED * PER_SLOT + 1
@@ -147,8 +147,8 @@ def main():
         ed = st['edge'] if st else {}
         reps = reports_of(sub)
         est = str(ed.get('state', ''))
-        check(est.startswith('RUNNING ') and est.split()[1].endswith('/300') and reps and all(n == REPORTED for n in reps),
-              'Edge runs with 300 points (%s) and its reports reach the broker, %d values each (%s)' % (est, REPORTED, reps[-3:]))
+        check(est.startswith('RUNNING ') and est.split()[1].endswith('/200') and reps and all(n == REPORTED for n in reps),
+              'Edge runs with 200 points (%s) and its reports reach the broker, %d values each (%s)' % (est, REPORTED, reps[-3:]))
         out['c'] = heap()
 
         # (d) plus a 96 000-byte save while a GET runs

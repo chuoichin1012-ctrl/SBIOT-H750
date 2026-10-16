@@ -32,7 +32,7 @@ Tiêu chí hoàn thành:
 | D3 | Web | Mongoose 7.x đảm nhận toàn bộ `webapi`: HTTP (UI, `/api/*`, upload) và WebSocket console. Chạy trên socket lwIP, **build không có TLS** |
 | D4 | Phạm vi phần cứng | Đủ cả board: UART1 và UART2, mỗi cổng có socket riêng và TLS riêng; Edge trên cả hai bus; 2 AI. **UART1 không phân biệt RS232/RS485** |
 | D5 | Build | CMake + arm-none-eabi-gcc. CubeMX chỉ dùng để sinh HAL/LL, clock, pinmux, startup vào thư mục `cube/` |
-| D6 | Edge | **Tối đa 300 điểm** (Plan 09d; trước đó 100; bản ESP32: 300), body `edgeDevices` ≤ 96.000 byte. `edgeDevices` xử lý **theo từng node** trong một arena cố định (§9) |
+| D6 | Edge | **Tối đa 200 điểm** (Plan 09e; Plan 09d là 300, trước đó 100; bản ESP32: 300), body `edgeDevices` ≤ 96.000 byte. `edgeDevices` xử lý **theo từng node** trong một arena cố định (§9) |
 | D7 | Kiểm thử | Host unit test cộng bench HIL trên board thật. E2E chỉ kiểm **UART1** |
 | D8 | MQTT | coreMQTT v2.3.1, chạy trong task riêng, đặt trên `tlsconn.c` chép từ ESP32. Outbox tự viết. Vá CONNECT để hỗ trợ MQTT 3.1 |
 | D9 | Bootloader/OTA | Bootloader tự viết trong flash nội. Slot staging và slot firmware gốc nằm trên SPI flash. Cài đặt kiểm bằng SHA-256, mất điện thì cài lại từ đầu. **Không tự cứu hộ, không boot thử, không rollback tự động**: có sự cố thì người dùng giữ nút Reload để khôi phục firmware gốc (§11.2) |
@@ -94,7 +94,7 @@ stm32/
 | Module | Cách xử lý | Thay đổi |
 |---|---|---|
 | `proto` | Chép nguyên | Không chép `rfc2217.c`. Thêm `jsonscan.c` (§9) và `cmux.c` (§7.2) |
-| `cfgmodel` | Chép, sửa | Bật TLS cho `port2`, thêm chứng chỉ `scope=port2`. Xóa `telnet`, `telnetPort`, `rfc2217`. `MAX_NODES` = 300 (Plan 09d). API validate theo node (§9) |
+| `cfgmodel` | Chép, sửa | Bật TLS cho `port2`, thêm chứng chỉ `scope=port2`. Xóa `telnet`, `telnetPort`, `rfc2217`. `MAX_NODES` = 200 (Plan 09e; 09d là 300). API validate theo node (§9) |
 | `services/bridge.c` | Chép, sửa | **Một instance cho mỗi cổng**: bỏ khoảng 22 chỗ viết cứng UART1. Bỏ nhánh RFC 2217 và PUSR |
 | `services/edge_rt.c` | Chép, sửa | `edge_bus[n]` cho mỗi bus. Mô hình nạp vào struct C bằng đường xử lý theo node |
 | `services/net.c`, `tlsconn.c` | Chép, sửa nhẹ | Gần như giữ nguyên: socket lwIP và mbedTLS dùng chung được cho cả hai nền tảng |
@@ -774,7 +774,8 @@ Có hai vùng tĩnh riêng trong AXI, vì chúng có vòng đời khác nhau.
 
 ### 9.4 Lưu `edgeDevices`
 
-**Plan 09d: 300 điểm, body ≤ 96.000 byte** (6 record 16.000 B; `CFG_EDGE_MAX`, `WEB_EDGE_MAX`).
+**Plan 09e: 200 điểm** (người dùng, 2026-10-16; Plan 09d đã đo và chạy được 300). **Body ≤ 96.000 byte** (Plan 09d: 6 record 16.000 B; `CFG_EDGE_MAX`, `WEB_EDGE_MAX`), giữ nguyên.
+- Các số đo và kiểm tra dưới đây là của Plan 09d với 300 điểm; 200 điểm nằm trong phạm vi đó.
 - Mô hình 300 điểm UI gửi (minified, đủ mọi trường) ước khoảng 68 KB. Mô hình lớn nhất (64 thiết bị, 300 điểm, mọi trường văn bản ở giới hạn) là 90.304 B (`test_edge_text`).
 - UI kiểm kích thước body trước khi lưu (`edgeBodyError`, §10.3). Gateway trả 413 cho body trên 96.000 byte.
 - Buffer report giữ ở 26 KB: cả 300 điểm đều được poll và dùng cho linkage và truy cập từ xa, còn một report mang khoảng 100 giá trị (`templateSize`).
@@ -897,7 +898,7 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
 | `/api/io` | Trả 503 cho tới khi có `iomgr` (Plan 07) |
 | `port<n>` | Bỏ `rfc2217` |
 | `system` | Bỏ `telnet`, `telnetPort` |
-| `edgeDevices` | Tối đa 300 điểm, 64 thiết bị. Body ≤ 96.000 byte (Plan 09d), lưu đúng như gửi. Lỗi 411, 413, 503 như §9.4 |
+| `edgeDevices` | Tối đa 200 điểm (Plan 09e), 64 thiết bị. Body ≤ 96.000 byte (Plan 09d), lưu đúng như gửi. Lỗi 411, 413, 503 như §9.4 |
 | Các cấu hình khác | Body và văn bản chuẩn hóa ≤ 10 KB (bản ESP32: body 96 KB) |
 | `GET /api/status` | Thêm trạng thái của port2. Thêm `wdiMaxGapMs`. Thêm `mem` gồm: <br>• heap AXI: còn trống hiện tại và thấp nhất; <br>• đỉnh arena; <br>• mức chiếm dụng cao nhất của các pool tĩnh (pbuf, netconn, ring, outbox, MessageBuffer) dưới dạng `{used, size}`; <br>• stack còn dư thấp nhất cùng tên task; <br>• các bộ đếm `overrun` và frame bị bỏ của từng UART |
 | Trạng thái MQTT | Bỏ `WAITING FOR CLOCK` |
@@ -905,7 +906,7 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
 ### 10.3 Web UI bản STM32 (`stm32/web`)
 
 Chép từ `src/` ở gốc, rồi sửa trực tiếp:
-- `MAX_NODES` = 300 (Plan 09d). Trước khi lưu, UI kiểm body `edgeDevices` (minified, byte UTF-8) không quá 96.000 byte (`edgeBodyError`). Lỗi hiện ở tab Data acquisition, và nút Save bị tắt;
+- `MAX_NODES` = 200 (Plan 09e; 09d là 300). Trước khi lưu, UI kiểm body `edgeDevices` (minified, byte UTF-8) không quá 96.000 byte (`edgeBodyError`). Lỗi hiện ở tab Data acquisition, và nút Save bị tắt;
 - bỏ các trường Telnet (`System.tsx`) và RFC 2217 (`Port.tsx`);
 - hiện TLS cho mọi cổng và cho phép upload chứng chỉ `port2`;
 - đổi chuỗi EC800 thành EC600U;
@@ -1124,7 +1125,7 @@ Logic quyết định và chép viết trong `boot/install.c` bằng C thuần, 
   - fixture DI/DO.
 - **Các bộ test port từ `test/qemu`:** bridge, MQTT, Edge, misc, OTA.
   - Bỏ các test của Telnet, RFC 2217 và PUSR.
-  - Mô hình Edge ≤ 300 điểm (Plan 09d).
+  - Mô hình Edge ≤ 200 điểm (Plan 09e).
   - E2E chỉ chạy trên UART1 (D7).
 - **Bổ sung, kiểm trên phần cứng:**
   - timing DE (DE giữ tới hết stop bit cuối), t1.5/t3.5, XON/XOFF, nhận liên tục sau nhiều lần RTO, DMA quay vòng có overrun;
@@ -1147,7 +1148,7 @@ Hai cổng không thể đồng thời vừa là TCP server vừa là TCP/TLS cl
 
 | Kịch bản | Cấu hình |
 |---|---|
-| A: nhiều kết nối | UART1 và UART2 đều là TCP server, mỗi cổng 16 client. MQTT có TLS. 4 client WebSocket. Edge 300 điểm (Plan 09d), 5 thiết bị Modbus TCP, **template report 100 slot** (buffer 26 KB) |
+| A: nhiều kết nối | UART1 và UART2 đều là TCP server, mỗi cổng 16 client. MQTT có TLS. 4 client WebSocket. Edge 200 điểm (Plan 09e; đã đo với 300 ở Plan 09d), 5 thiết bị Modbus TCP, **template report 100 slot** (buffer 26 KB) |
 | B: nhiều TLS | UART1 là TCP client có TLS, UART2 là HTTPS client. MQTT có TLS, ba handshake chạy cùng lúc. Outbox đầy (broker tắt, `bufferOffline`). Một HTTP client tải chậm UI. FlashDB đang dọn rác |
 
 Bộ test đọc `/api/status.mem` sau mỗi kịch bản. Điều kiện đạt:
@@ -1182,7 +1183,7 @@ Ngoài ra, file map của linker phải cho thấy mỗi section nằm trong ng�
 | Cổng nối tiếp | 1 × RS485. Schema đã có sẵn `port2`, nhưng bị tắt theo phần cứng (`cfgmodel.c:178`) | UART1 (RS485 và RS232 song song) và UART2 (RS485), bật `port2` |
 | AI | 1, khoảng 12 bit hiệu dụng, đọc bằng phần mềm | 2, ADC3 16 bit, VREF 3,0 V. Oversampling ×16 bằng phần cứng, TIM6 kích 1 kHz, BDMA vòng với hai nửa, trung bình 100 ms, hiệu chuẩn hai điểm lấy từ factory record. Tiêu chí định lượng ở §6.6 |
 | TLS bridge | Chỉ UART1 | Cả hai cổng |
-| Edge | 300 điểm, body 96 KB | **300 điểm, 64 thiết bị, body ≤ 96.000 byte** (Plan 09d; trước đó 100 điểm, 48 KB) |
+| Edge | 300 điểm, body 96 KB | **200 điểm, 64 thiết bị, body ≤ 96.000 byte** (Plan 09e; Plan 09d 300 điểm; trước đó 100 điểm, 48 KB) |
 | Body của các cấu hình khác | 96 KB | **10 KB**, kể cả văn bản chuẩn hóa |
 | `bufferOffline` | 64 KB | **32 KB mỗi cổng** |
 | Ring `mqtt_io` | 2 × 16 KB | **2 × 12 KB** |

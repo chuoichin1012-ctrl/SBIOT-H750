@@ -374,15 +374,15 @@ def edge_model(devs, per):
 
 
 def case_edge():
-    model = edge_model(30, 10)  # 300 points, the STM32 limit (Plan 09d)
+    model = edge_model(20, 10)  # 200 points, the STM32 limit (Plan 09e)
     text = json.dumps(model).encode()
     body = text[:-1] + b' ' * (96000 - len(text)) + b']'  # whitespace up to 96 000 bytes: still the same model
     s, _, d = req('POST', '/api/config/edgeDevices', body=body, timeout=60)
     s2, _, raw_back = req('GET', '/api/config/edgeDevices')
     back = json.loads(raw_back) if s2 == 200 else []
     names = [n['name'] for dev in back for n in dev.get('nodes', [])]
-    check(s == 200 and s2 == 200 and raw_back == body and len(names) == 300 and names[0] == 'p0' and names[-1] == 'p299',
-          'edgeDevices: a 96 000-byte body (300 points) saved and read back as sent (%d, %d points)' % (s, len(names)))
+    check(s == 200 and s2 == 200 and raw_back == body and len(names) == 200 and names[0] == 'p0' and names[-1] == 'p199',
+          'edgeDevices: a 96 000-byte body (200 points) saved and read back as sent (%d, %d points)' % (s, len(names)))
     s, _, _ = req('POST', '/api/config/edgeDevices', body=b' ' * 96001)
     check(s == 413, 'edgeDevices over 96 000 bytes: 413 (got %d)' % s)
     req('POST', '/api/config/edgeDevices', body=b'[]')

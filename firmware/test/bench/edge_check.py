@@ -8,7 +8,8 @@ and remote access use port1's socket (channel 1).
 
     python3 stm32/firmware/test/bench/edge_check.py [case ...]
 
-Cases: basic change schedule remote split contention dead late shortreport partial bigreport memory.
+Cases: basic change schedule remote split contention dead late shortreport partial bigreport memory di (di needs
+DO1 wired to DI1).
 Prints one line per check and "bench: ok".
 """
 import datetime
@@ -571,7 +572,8 @@ def case_dead():
             'nodes': [{'name': 'd%d' % i, 'reg': i * 10, 'timeout': 1000} for i in range(10)]}
     links = [{'name': 'mirror', 'enable': True, 'cond': 0, 'point': 'DO1', 'output': 'DO2', 'cycle': 100, 'minInterval': 500}]
     tmpl = {'t': 't', 'h': 'h', 'd0': 'd0', 'd9': 'd9'}
-    check(setup([plc(), dead, tcpdev(), io()], report={'reporting': 1, 'interval': 2, 'template': json.dumps(tmpl)}, links=links),
+    quiet = plc(nodes=[dict(n, onChange=False) for n in plc()['nodes']])  # periodic reports only: the cadence is counted
+    check(setup([quiet, dead, tcpdev(), io()], report={'reporting': 1, 'interval': 2, 'template': json.dumps(tmpl)}, links=links),
           'set up: a dead device with 10 nodes of 1 s on the bus')
     set_do(0, False)
     slave, tcp = start_all(secs=50)
@@ -718,9 +720,31 @@ def case_memory():
     check(hp and int(hp.group(2)) > 60000, 'the heap keeps more than 60 KB at its lowest (%s)' % (hp.group(2) if hp else '-'))
 
 
+def case_di():
+    """The board's DO1 wired to DI1: Edge reads DI1 as the output moves, an on-change report follows."""
+    _, ioc = w.get_json('/api/config/io')
+    deb = int(ioc.get('diDebounce', 10))
+    devs = [io(nodes=[{'ioPoint': 'DO1'}, {'ioPoint': 'DI1', 'onChange': True}])]
+    check(setup(devs, report={'reporting': 1, 'periodic': False, 'template': json.dumps({'di1': 'DI1', 'do1': 'DO1'})}),
+          'set up: DI1 (wired to DO1) with on-change reports, diDebounce %d ms' % deb)
+    set_do(0, False)
+    st = Stream()
+    st.start()
+    time.sleep(2)
+    seen = []
+    for on in (True, False, True, False):
+        n0 = len(reports(st))
+        set_do(0, on)
+        t0 = time.time()
+        got = wait(lambda: [r for r in reports(st)[n0:] if r.get('di1') == int(on)], 3, 0.02)
+        seen.append((on, round(time.time() - t0, 2) if got else None))
+    st.close()
+    check(all(dt is not None and dt < deb / 1000 + 0.5 for _, dt in seen), 'DI1 follows DO1 in an on-change report, within debounce + 0.5 s (%s)' % seen)
+
+
 CASES = {'basic': case_basic, 'change': case_change, 'schedule': case_schedule, 'remote': case_remote, 'split': case_split,
          'contention': case_contention, 'dead': case_dead, 'late': case_late, 'shortreport': case_shortreport,
-         'partial': case_partial, 'bigreport': case_bigreport, 'memory': case_memory}
+         'partial': case_partial, 'bigreport': case_bigreport, 'memory': case_memory, 'di': case_di}
 
 
 def main():

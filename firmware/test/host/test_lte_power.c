@@ -176,11 +176,26 @@ static void test_plain_wait(void)
     CHECK(lte_plain_wait(&had, false, true, 10 * LTE_NO_ADDR_MS, LTE_NO_ADDR_MS) == LTE_PLAIN_DOWN, "then DOWN");
 }
 
+// Plan 10b code review r2 (Codex): 8 minutes into a 10-minute wait, PPP gets an address and loses it before
+// the next poll. The backoff is back to 2 minutes, and the wait counts from the address, not from before it.
+static void test_wait_restarts_at_address(void)
+{
+    lte_backoff_t b = {.fails = 2};
+    uint32_t start = 0, addr = 8 * 60000u, now = addr + 20000u;
+    lte_backoff_ok(&b);  // took_addr()
+    uint32_t limit = lte_backoff_limit(&b);
+    CHECK(limit == 2 * 60000u, "the limit back to 2 minutes");
+    CHECK(lte_supervise(now, start, now, true, false, limit) == LTE_ACT_CFUN, "measured from before the address: CFUN at once (the bug)");
+    CHECK(lte_supervise(now, addr, now, true, false, limit) == LTE_ACT_NONE, "from the address: a new 2-minute wait");
+    CHECK(lte_supervise(addr + limit, addr, addr + limit, true, false, limit) == LTE_ACT_CFUN, "and CFUN once it has passed");
+}
+
 int main(void)
 {
     test_paths();
     test_backoff();
     test_plain_wait();
+    test_wait_restarts_at_address();
     test_pulses();
     test_supervise();
     printf("test_lte_power: %s\n", failures ? "FAILED" : "ok");

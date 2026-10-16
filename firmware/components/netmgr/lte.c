@@ -745,7 +745,8 @@ static void lte_task(void *arg)
                     SLOG_I("lte", "SIM ready");
                 }
             }
-            took_addr();  // an address since the last poll, kept or not: the waits back to 2 minutes
+            if (took_addr())  // an address since the last poll, kept or not: the waits back to 2 minutes,
+                last_addr = ms();  // counted from it
             if (no_sim || s_ppp_up)
                 last_addr = ms();  // NO SIM: nothing dialled, nothing missed
             else if (!s_ppp_running && registered())

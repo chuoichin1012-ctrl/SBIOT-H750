@@ -7,9 +7,8 @@ Review code Plan 09c, lượt 2: các sửa cho 3 điểm Important của lượ
 
 **2. Phiên streaming sống qua reboot giả lập:**
 - `store_deinit` xóa `s_es`.
-- Test mới `test_stream_cut_reboot` chạy trong pha `STORE_CUTS`. Nó cắt điện ở mọi lần ghi flash, trong lúc stream một body trên 8 KB (nhiều record) đè lên một model đã commit. Sau mỗi lần cắt, nó reboot rồi kiểm:
-  - model đọc lại được một thế hệ nguyên vẹn;
-  - lần lưu tiếp theo thành công, không bị BUSY.
+- Test mới `test_stream_cut_reboot` chạy trong pha `STORE_CUTS`. Nó stream một body trên 8 KB (nhiều record), cắt điện ở thao tác flash thứ 1, 4, 7, … 37, rồi reboot. Sau mỗi lần như vậy, lần lưu tiếp theo phải thành công, không bị BUSY.
+- Việc giữ nguyên một thế hệ khi bị cắt điện vẫn do ma trận cắt điện sẵn có (`test_power_cuts`) kiểm.
 - Trước khi sửa, test này đỏ: cả 7/7 lần cắt đều kết thúc bằng BUSY.
 
 **3. Bench có thể PASS khi tải thử thất bại:**

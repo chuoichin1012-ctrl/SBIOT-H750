@@ -192,6 +192,7 @@ static void status_get(struct mg_connection *c)
     cJSON_AddNumberToObject(cc, "uartErrors", li.uart_errors);
     cJSON_AddNumberToObject(cell, "stackCmux", li.stack_cmux);
     cJSON_AddNumberToObject(cell, "stackLte", li.stack_lte);
+    cJSON_AddNumberToObject(cell, "recoveries", li.recoveries);
 
     cJSON *ports = cJSON_AddArrayToObject(o, "ports");  // the bridge (the state): Plan 08
     for (int p = 1; p <= store_env()->uart_count; p++) {

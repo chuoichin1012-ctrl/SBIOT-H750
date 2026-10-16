@@ -13,7 +13,12 @@ Cases:
 - cfun: no PPP address for 2 minutes (PPP's input dropped by the bench): CFUN, then RECOVER;
 - fallback: AT+CMUX refused (forced by the console 'j'): PPP on the plain UART, and a restart leaves data mode
   (+++, ATH) before QPOWD;
-- p0: priority 0 powers down a module that answers.
+- p0: priority 0 powers down a module that answers;
+- backoff: no PPP address over CMUX, with the waits divided by 10 (console 'b'): CFUN after 12 s, then 30 s,
+  then a soft power cycle after 60 s (POWERED DOWN, then PWRKEY with no RESET_N between); an address resets it;
+- backoff_plain: the same on the plain UART (the fallback forced): RESET_N twice, then the soft power cycle;
+- backoff_nopd: the power cycle with POWERED DOWN disregarded (console 'd'): UNKNOWN, a RECOVER, PWRKEY only
+  after RESET_N and AT have failed.
 Ends with priority 1, MQTT off. Prints one line per check and "bench: ok".
 """
 import json
@@ -224,8 +229,82 @@ def case_p0():
     check(c.get('modem') == 'OFF' and c.get('state') == 'disconnected', 'modem OFF, cell disconnected (%s)' % c.get('modem'))
 
 
+def found(lines, pat, start=0):
+    """The index of the first line from start matching pat, -1 if none."""
+    return next((i for i in range(start, len(lines)) if re.search(pat, lines[i])), -1)
+
+
+def cmux_attempts(lines):
+    """[(attempt, limit s, action, line index)] of the CMUX path's backoff."""
+    out = []
+    for i, l in enumerate(lines):
+        m = re.search(r'no PPP address for (\d+) s \(attempt (\d+)\): (.*?)\s*$', l)
+        if m:
+            out.append((int(m.group(2)), int(m.group(1)), m.group(3), i))
+    return out
+
+
+def power_cycled(lines, at):
+    """After line at: POWERED DOWN, then PWRKEY 2.5 s with no RESET_N between."""
+    down = found(lines, r'lte: POWERED DOWN', at)
+    key = found(lines, r'lte: PWRKEY 2500', max(down, at))
+    rst = found(lines, r'lte: RESET_N', max(down, at))
+    return down > at and key > down and (rst < 0 or rst > key)
+
+
+def backoff_reset():
+    """'q' passes PPP's input again: PPP up, and the attempts back to 0."""
+    console([(1, 'q')], 3)
+    check(ppp_up(240) and wait(lambda: cell().get('recoveries') == 0, 40),
+          'an address: PPP up, recoveries %s' % cell().get('recoveries'))
+
+
+def case_backoff():
+    check(network(priority=1) and restart(), 'set up: priority 1')
+    lines = console([(1, 'b'), (1.5, 'q')], 270)  # the waits / 10, PPP's input dropped
+    a = cmux_attempts(lines)
+    got = [(n, l, act) for n, l, act, _ in a]
+    check(got[:3] == [(1, 12, 'AT+CFUN=1,1'), (2, 30, 'AT+CFUN=1,1'), (3, 60, 'a soft power cycle')],
+          'no address: CFUN after 12 s, CFUN after 30 s, then a soft power cycle after 60 s (%s)' % got)
+    check(len(a) >= 3 and power_cycled(lines, a[2][3]), 'the power cycle: POWERED DOWN, then PWRKEY 2.5 s, no RESET_N')
+    check(cell().get('recoveries') == 3, 'cell.recoveries 3 (%s)' % cell().get('recoveries'))
+    backoff_reset()
+
+
+def case_backoff_plain():
+    check(network(priority=1) and restart() and ppp_up(), 'set up: PPP up over CMUX')
+    # the waits / 10, PPP's input dropped, the fallback forced, then a DISC on DLC2 reopens on the plain UART
+    lines = console([(1, 'b'), (1.5, 'q'), (2, 'j'), (3, 'Q')], 240)
+    a = [(int(m.group(1)), m.group(2), i) for i, l in enumerate(lines)
+         for m in [re.search(r'plain UART, attempt (\d+): (.*?)\s*$', l)] if m]
+    lim = [int(m.group(1)) for l in lines for m in [re.search(r'plain UART: no address within (\d+) s', l)] if m]
+    got = [(n, act) for n, act, _ in a]
+    check(got[:3] == [(1, 'RESET_N'), (2, 'RESET_N'), (3, 'a soft power cycle')] and lim[:3] == [12, 30, 60],
+          'the plain UART: RESET_N after 12 s, after 30 s, then a soft power cycle after 60 s (%s, %s)' % (got, lim))
+    check(len(a) >= 3 and power_cycled(lines, a[2][2]) and not any('no OK to ATH' in l for l in lines),
+          'the power cycle: out of data mode, POWERED DOWN, then PWRKEY 2.5 s, no RESET_N')
+    backoff_reset()
+    check(cell().get('mux') == 'PLAIN', 'PPP up on the plain UART (%s)' % cell().get('mux'))
+
+
+def case_backoff_nopd():
+    check(network(priority=1) and restart(), 'set up: priority 1')
+    lines = console([(1, 'b'), (1.5, 'q'), (2, 'd')], 290)  # POWERED DOWN disregarded
+    a = cmux_attempts(lines)
+    check(len(a) >= 3 and a[2][:3] == (3, 60, 'a soft power cycle'), 'the third attempt: a soft power cycle (%s)' % a[:3])
+    at = a[2][3] if len(a) >= 3 else len(lines)
+    warn = found(lines, r'no POWERED DOWN within 60 s', at)
+    rec = found(lines, r'recovering: CLD, RESET_N', max(warn, at))
+    key = found(lines, r'lte: PWRKEY', max(warn, at))
+    rsts = [i for i in range(max(rec, 0), key if key > 0 else len(lines)) if 'lte: RESET_N' in lines[i]] if rec > 0 else []
+    check(warn > at and rec > warn and key > rec and len(rsts) >= 2,
+          'no POWERED DOWN: UNKNOWN, a RECOVER, PWRKEY only after RESET_N and AT failed (RESET_N x%d)' % len(rsts))
+    backoff_reset()
+
+
 CASES = {'identity': case_identity, 'power': case_power, 'mux': case_mux, 'priority': case_priority, 'load': case_load,
-         'cfun': case_cfun, 'fallback': case_fallback, 'p0': case_p0}
+         'cfun': case_cfun, 'fallback': case_fallback, 'p0': case_p0, 'backoff': case_backoff,
+         'backoff_plain': case_backoff_plain, 'backoff_nopd': case_backoff_nopd}
 
 
 def main():

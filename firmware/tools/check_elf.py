@@ -37,8 +37,13 @@ AXI = (0x24000000, 0x24080000)
 SRAM1 = (0x30000000, 0x30020000)
 # What a DMA engine touches, plus lwIP's MEM heap: SRAM1, non-cacheable (spec §5.4, §5.6).
 APP_SRAM1 = ['lwip_ram_heap', 'DMARxDscrTab', 'DMATxDscrTab', 's_eth_rx_bufs', 's_eth_tx_bufs', 's_uart_ring', 's_uart_txbuf']
+# The bridges' serial -> network queues and bufferOffline: SRAM2+3 (spec §5.3, Plan 08a).
+SRAM23 = (0x30020000, 0x30048000)
+APP_SRAM23 = ['s_mb_store']
+# newlib's close/fcntl on an lwIP socket would leak it (LWIP_POSIX_SOCKETS_IO_NAMES 0, Plan 08a).
+APP_NO_LIBC_IO = ['close', 'fcntl']  # _close is syscalls.c's stub, always there
 # The JSON arena, the Edge and certificate body and the web stack: static, in AXI (spec §5.3, Plan 06b).
-APP_AXI = ['s_web_arena', 's_edge_body', 's_web_stack']
+APP_AXI = ['s_web_arena', 's_edge_body', 's_web_stack', 's_bridge_stack']  # bridge[n] (Plan 08a)
 # The BDMA's ADC buffer: the 1 KB non-cacheable region in SRAM4 (MPU region 3, spec §6.6).
 ADCBUF = (0x3800FC00, 0x38010000)
 DTCM = (0x20000000, 0x20020000)
@@ -122,6 +127,11 @@ def main():
     for name in APP_ITCM:
         a = sym.get(name, 0)
         check(ITCM[0] <= a < ITCM[1], 'app: %s in ITCM (0x%08x)' % (name, a))
+    for name in APP_SRAM23:
+        a = sym.get(name)
+        check(a is not None and SRAM23[0] <= a < SRAM23[1], 'app: %s in SRAM2+3 (0x%08x)' % (name, a or 0))
+    for name in APP_NO_LIBC_IO:
+        check(name not in sym, 'app: no %s (lwIP sockets use closesocket / lwip_fcntl)' % name)
     a = sym.get('s_adc_buf')
     check(a is not None and ADCBUF[0] <= a < ADCBUF[1], 'app: s_adc_buf in the ADC region (0x%08x)' % (a or 0))
     for name in APP_SRAM1:

@@ -26,3 +26,7 @@ typedef struct {
 int netmgr_init(const net_cfg_t *cfg, const uint8_t mac[6]);
 /** The running state, copied under the lwIP core lock. */
 void netmgr_status(net_status_t *out);
+/** The link is up and an address is held: the bridges may dial. */
+bool netmgr_online(void);
+/** Netconns free in lwIP's pool (spec §5.6: the TCP servers' accept gate). */
+int netmgr_netconn_free(void);

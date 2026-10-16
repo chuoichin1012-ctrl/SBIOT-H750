@@ -19,6 +19,9 @@
 #define DEFAULT_UDP_RECVMBOX_SIZE 8
 #define DEFAULT_RAW_RECVMBOX_SIZE 4
 #define DEFAULT_ACCEPTMBOX_SIZE 8
+// The listen backlog is honoured: past it a SYN waits for the client's retry instead of a pending
+// connection being reset when the accept mailbox is full (Plan 08a).
+#define TCP_LISTEN_BACKLOG 1
 #define LWIP_FREERTOS_CHECK_CORE_LOCKING 0
 // lwIP 2.2.1's FreeRTOS port still uses this old name; FreeRTOSConfig.h turns the old names off.
 #define portTICK_RATE_MS portTICK_PERIOD_MS
@@ -112,6 +115,7 @@ uint32_t board_rand32(void);
 #define LWIP_COMPAT_SOCKETS 1
 #define LWIP_POSIX_SOCKETS_IO_NAMES 0  // no read/write/close macros over newlib's
 #define LWIP_SO_RCVTIMEO 1
+#define LWIP_SO_LINGER 1  // a lost bridge client is reset at once, its queued data freed (Plan 08a)
 #define LWIP_SO_SNDTIMEO 1
 #define LWIP_SO_RCVBUF 0
 #define LWIP_TIMEVAL_PRIVATE 0  // newlib's struct timeval

@@ -126,6 +126,22 @@ static void pool(net_pool_t *o, const struct stats_mem *m)
     o->size = m ? m->avail : 0;
 }
 
+bool netmgr_online(void)
+{
+    eth_status_t e;
+    eth_drv_status(&e);
+    LOCK_TCPIP_CORE();
+    bool bound = s_added && ip4_addr_get_u32(netif_ip4_addr(&s_netif)) != 0;
+    UNLOCK_TCPIP_CORE();
+    return e.up && bound;
+}
+
+int netmgr_netconn_free(void)
+{
+    const struct stats_mem *m = lwip_stats.memp[MEMP_NETCONN];
+    return m ? (int)m->avail - (int)m->used : 0;
+}
+
 void netmgr_status(net_status_t *out)
 {
     memset(out, 0, sizeof *out);

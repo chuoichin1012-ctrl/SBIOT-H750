@@ -176,7 +176,29 @@ def case_dido():
         check(on and off, 'DO%d on: DI%d active; off: inactive (within 500 ms)' % (d + 1, i + 1))
     pulse_do, pulse_di = next(iter(pairs.items()))
     flip_do, flip_di = list(pairs.items())[-1]
-    check(setup_io(diInvert=1), 'set up diInvert 1')
+    # The DI filter (diDebounce, "Debounce time" in IO function): a new level must hold that long.
+    check(setup_io(diDebounce=1000), 'set up diDebounce 1000 ms')
+    d0, i0 = next(iter(pairs.items()))
+    t0 = time.time()
+    set_do(d0, True)
+    reads = []
+    while time.time() - t0 < 2.5:
+        v = io().get('di', [None, None])[i0]
+        reads.append((time.time() - t0, v))
+        time.sleep(0.05)
+    early = [v for t, v in reads if t < 0.8]
+    first_on = next((t for t, v in reads if v), None)
+    set_do(d0, False)
+    time.sleep(2)
+    t0 = time.time()
+    set_do(d0, True)
+    time.sleep(0.5)
+    set_do(d0, False)
+    blip = [io().get('di', [None, None])[i0] for _ in range(20) if not time.sleep(0.1)]
+    check(early and not any(early) and first_on is not None and 0.9 <= first_on <= 2.0 and not any(blip),
+          'diDebounce 1000: DI%d active %.2f s after DO%d on (none before 0.8 s); a 0.5 s pulse never shows'
+          % (i0 + 1, first_on or -1, d0 + 1))
+    check(setup_io(diInvert=1, diDebounce=50), 'set up diInvert 1')
     set_do(pulse_do, False)
     check(wait_di(pulse_di, True, 0.5), 'diInvert: DO%d off reads DI%d active' % (pulse_do + 1, pulse_di + 1))
     modes = {'diInvert': 0, 'do%dMode' % pulse_do: 1, 'do%dFlipDelay' % pulse_do: 2}

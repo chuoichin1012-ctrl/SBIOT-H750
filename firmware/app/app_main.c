@@ -19,6 +19,8 @@
 #include "store.h"
 #include "store_port.h"
 #include "iomgr.h"
+#include "bridge.h"
+#include "services.h"
 #include "bench_io.h"
 #include "syslog.h"
 #include <stdbool.h>
@@ -216,6 +218,7 @@ static void init_task(void *arg)
         cJSON_Delete(pc);
     }
     bench_serial_init();
+    services_start(sys);  // spec §6.3 step 6: the bridges after serial, before the web
     if (webapi_start(sys))
         blog("app: web FAILED\r\n");
     sysmgr_start(sys);
@@ -366,6 +369,15 @@ static void init_task(void *arg)
             char l[80];
             read_line(l, sizeof l);
             bench_io_cmd('A', l);
+            break;
+        }
+        case 'Y': {  // bench: "Y<n>": the free netconns a TCP server needs to accept (spec §5.6, default 4)
+            char l[8];
+            read_line(l, sizeof l);
+            int n = 0;
+            sscanf(l, "%d", &n);
+            bridge_set_accept_reserve(n);
+            blog("app: Y accept reserve %d netconns\r\n", n);
             break;
         }
         case 's': {  // bench: the serial counters of both ports

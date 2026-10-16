@@ -7,6 +7,7 @@
 #include "heap_newlib.h"
 #include "io_core.h"
 #include "iomgr.h"
+#include "bridge.h"
 #include "netmgr.h"
 #include "serial.h"
 #include "store.h"
@@ -156,7 +157,9 @@ static void status_get(struct mg_connection *c)
         serial_counters_t sc;
         serial_counters(p, &sc);
         cJSON *x = cJSON_CreateObject();
-        cJSON_AddStringToObject(x, "state", "NOT STARTED");
+        char st[20];
+        bridge_state(p, st, sizeof st);
+        cJSON_AddStringToObject(x, "state", st);
         cJSON_AddNumberToObject(x, "tx", sc.tx);
         cJSON_AddNumberToObject(x, "rx", sc.rx);
         cJSON_AddItemToArray(ports, x);
@@ -214,6 +217,7 @@ static void status_get(struct mg_connection *c)
         cJSON_AddNumberToObject(x, "dropped", sc.dropped);
         cJSON_AddNumberToObject(x, "lineErrors", sc.line_errors);
         cJSON_AddNumberToObject(x, "t15Violations", sc.violations);
+        cJSON_AddNumberToObject(x, "bridgeDropped", bridge_dropped(p));
         cJSON_AddItemToArray(uart, x);
     }
     api_json(c, 200, o);

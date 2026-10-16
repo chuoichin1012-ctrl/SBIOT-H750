@@ -6,7 +6,9 @@
 #include "clock.h"
 #include "lwip/apps/sntp.h"
 #include "lwip/tcpip.h"
+#include "netmgr.h"
 #include "now_us.h"
+#include "serial_frame.h"
 #include "stm32h7xx.h"
 #include "syslog.h"
 #include "task.h"
@@ -124,6 +126,23 @@ void sysmgr_restart_later(uint32_t delay_ms)
     static StackType_t stack[RESTART_STACK_WORDS];
     if (sysmgr_restart_claim())
         xTaskCreateStatic(restart_task, "restart", RESTART_STACK_WORDS, (void *)(uintptr_t)delay_ms, 10, stack, &tcb);
+}
+
+size_t sysmgr_payload(int content, const char *custom, bool hex, uint8_t *out, size_t max)
+{
+    char text[32] = "";  // the serial number: 24 hex digits
+    if (content == 0)
+        return sf_payload_custom(custom, hex, out, max);
+    if (content == 2) {
+        snprintf(text, sizeof text, "%s", sysmgr_serial());
+    } else if (content == 4) {
+        net_status_t ns;
+        netmgr_status(&ns);
+        snprintf(text, sizeof text, "%02x:%02x:%02x:%02x:%02x:%02x", ns.mac[0], ns.mac[1], ns.mac[2], ns.mac[3], ns.mac[4], ns.mac[5]);
+    }  // 1 IMEI, 3 ICCID: the modem comes with Plan 10; nothing until then, as the ESP32 without a modem
+    size_t n = strlen(text) < max ? strlen(text) : max;
+    memcpy(out, text, n);
+    return n;
 }
 
 uint32_t sysmgr_uptime_s(void)

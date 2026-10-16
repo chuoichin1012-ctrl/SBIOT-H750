@@ -157,9 +157,14 @@ def case_tcpserver():
     a.close()
     b.close()
     _, p = w.get_json('/api/config/port1')
+    was = p.get('allowedClients', '')
     p['allowedClients'] = '300.1.1.1'
     s, _, _ = w.req('POST', '/api/config/port1', body=json.dumps(p).encode())
-    check(s == 400, 'allowedClients: a malformed list is refused on save (%d)' % s)
+    # Plan 09b: the UI refuses it (allowListError); the gateway stores what it is sent, and its bridge ignores a
+    # list it cannot read (anyone, logged).
+    check(s == 200, 'allowedClients: a malformed list is stored as sent; the UI is the one to refuse it (%d)' % s)
+    p['allowedClients'] = was
+    w.req('POST', '/api/config/port1', body=json.dumps(p).encode())
     check(setup(1, **base(allowedClients='192.168.0.99')), 'set up allowedClients 192.168.0.99')
     c = socket.create_connection((GW, 23), 5)
     closed = recv_some(c, 2) == b''

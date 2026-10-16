@@ -26,15 +26,16 @@ export function listenClash(n: number, port: Obj, other: Obj | null, system: Obj
   return null;
 }
 
-/** The System page: a UART that listens on the web's or the WebSocket's port. */
-export function systemPortClash(system: Obj, port1: Obj | null, port2: Obj | null): string | null {
+/** The System page: a UART that listens on the web's or the WebSocket's port, as each field's error. */
+export function systemPortClash(system: Obj, port1: Obj | null, port2: Obj | null): Record<string, string> {
+  const out: Record<string, string> = {};
   for (const [key, what] of WEB) {
     const p = Number(system[key]);
     for (const [n, port] of [[1, port1], [2, port2]] as const) {
-      if (p && listenOf(port) === p) return `UART${n} listens on TCP port ${p}, which ${what} uses: choose another port.`;
+      if (p && listenOf(port) === p && !out[key]) out[key] = `UART${n} listens on TCP port ${p}, which ${what} uses: choose another port.`;
     }
   }
-  return null;
+  return out;
 }
 
 /** Replaces each string value naming a point or a system field by a slot mark; keys are never slots. */

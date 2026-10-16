@@ -230,10 +230,10 @@ def case_plain():
     """Plan 09b: a save stores the bytes as sent; the device runs with them, a wrong field taking its default."""
     _, p2 = get_json('/api/config/port2')
     keep = json.dumps(p2, separators=(',', ':')).encode()
-    odd = json.dumps(dict(p2, workMode=3, listenPort=70000, maxClients=5), separators=(',', ':')).encode()
+    odd = json.dumps(dict(p2, workMode=3, listenPort=4100, maxClients='five', remoteHost='h' * 80), separators=(',', ':')).encode()
     s, _, _ = req('POST', '/api/config/port2', body=odd)
     s2, _, raw = req('GET', '/api/config/port2')
-    check(s == 200 and s2 == 200 and raw == odd, 'a business-invalid port2 (listenPort 70000) is stored, GET returns its bytes')
+    check(s == 200 and s2 == 200 and raw == odd, 'a port2 the UI would refuse (maxClients as text, an 80-char host) is stored, GET returns its bytes')
     s, _, _ = req('POST', '/api/config/port2', body=b'{"workMode":')
     s2, _, _ = req('POST', '/api/config/port2', body=b'[]')
     s3, _, raw = req('GET', '/api/config/port2')
@@ -241,8 +241,9 @@ def case_plain():
     check(restart(), 'restart')
     log = log_since_start()
     _, st = get_json('/api/status')
-    check('port2: defaults used for listenPort' in log and st and st['ports'][1]['state'] == 'LISTEN',
-          'after the restart port2 runs: listenPort takes its default (logged), the rest as stored')
+    check('port2: defaults used for maxClients' in log and 'remoteHost' not in log.split('defaults used for', 1)[-1].split('\n')[0]
+          and st and st['ports'][1]['state'] == 'LISTEN',
+          'after the restart port2 runs as sent (listen 4100): only the wrong type, maxClients, takes its default (logged)')
     req('POST', '/api/config/port2', body=keep)
 
 

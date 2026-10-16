@@ -182,10 +182,12 @@ export function PortPage(props: { path?: string; n?: string; tab?: string }) {
     // Keep the extra mode valid when the working mode changes.
     if (id === 'workMode' && !(SOCK_MODES[Number(v)] ?? []).some(([m]) => m === sm(f.values))) f.set('socketMode', NONE);
   };
-  const p = { values: f.values, errors: f.errors, onChange };
-  const clash = d.portmax > 0 ? listenClash(n, f.values, others.data?.[0] ?? null, others.data?.[1] ?? null) : null;
-  const serialErr = serial.some((x) => f.errors[x.id]);
-  const socketErr = socket.some((x) => f.errors[x.id]);
+  // The listen port's clash with the other UART or the web, shown on the field as it is edited (Plan 09b).
+  const clash = listenClash(n, f.values, others.data?.[0] ?? null, others.data?.[1] ?? null);
+  const errors = clash ? { ...f.errors, listenPort: clash } : f.errors;
+  const p = { values: f.values, errors, onChange };
+  const serialErr = serial.some((x) => errors[x.id]);
+  const socketErr = socket.some((x) => errors[x.id]);
   const tls = socket.some((x) => x.id === 'tls' && x.show?.(f.values)) && Number(f.values.tls) > 0;
 
   return (
@@ -203,7 +205,6 @@ export function PortPage(props: { path?: string; n?: string; tab?: string }) {
       <SaveBar
         busy={save.busy}
         invalid={!f.valid || !!clash}
-        note={clash ?? undefined}
         tabbed
         onSave={() => save.run(() => api.saveValues(`port${n}`, f.values), { restart: true, after: f.reload })}
       />

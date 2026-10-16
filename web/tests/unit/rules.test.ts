@@ -24,12 +24,12 @@ test('only a TCP server listens', () => {
   assert.equal(listenClash(1, server(4000), null, null), null);
 });
 
-test('the System page sees a port a UART listens on', () => {
-  assert.equal(systemPortClash({ webPort: 4000, websocketPort: 6432 }, server(4000), null),
+test('the System page sees a port a UART listens on, as that field\'s error', () => {
+  assert.equal(systemPortClash({ webPort: 4000, websocketPort: 6432 }, server(4000), null).webPort,
     'UART1 listens on TCP port 4000, which the web interface uses: choose another port.');
-  assert.equal(systemPortClash({ webPort: 80, websocketPort: 23 }, null, server(23)),
+  assert.equal(systemPortClash({ webPort: 80, websocketPort: 23 }, null, server(23)).websocketPort,
     'UART2 listens on TCP port 23, which the WebSocket console uses: choose another port.');
-  assert.equal(systemPortClash(sys, server(23), server(24)), null);
+  assert.equal(Object.keys(systemPortClash(sys, server(23), server(24))).length, 0);
 });
 
 test('the template size is edge_tmpl_size: literal bytes + 242 per slot + 1', () => {

@@ -669,8 +669,24 @@ Quy tắc riêng của bản STM32:
   - chỉ ghi khi lưu cấu hình. Ngoại lệ là bộ đếm boot `st.boot`, ghi một lần nhỏ ở mỗi lần boot để log có dạng `[boot N …]` (`store.c:219`);
   - trạng thái DO chỉ ghi khi bật `keepOutputs` và có thay đổi;
   - factory reset xóa `cfg`, `edge`, `cert` và giữ lại `log`;
-  - validate lại toàn bộ cấu hình khi khởi động;
   - log TSDB đánh khóa bằng số thứ tự tăng dần.
+- **Luồng cấu hình (Plan 09b, người dùng, 2026-10-16):**
+  - **Web UI validate toàn bộ** và gửi JSON đầy đủ, đã minify. Gateway lưu nguyên từng byte nhận được, và GET trả lại đúng các byte đó.
+  - **Khi lưu, gateway chỉ kiểm:** xác thực, tên cấu hình, kích thước (10.240 byte; `edgeDevices` 49.152 byte), cú pháp JSON (`jsonscan`), kiểu gốc (object hoặc array) và lỗi ghi. Không merge với bản cũ, không chuẩn hóa, không kiểm quy tắc nghiệp vụ.
+  - **Lúc khởi động, bộ nạp (`cfg_load`) chỉ kiểm kiểu JSON của từng trường** và giữ nguyên mọi giá trị đã gửi: không kiểm giới hạn, độ dài hay quy tắc chéo.
+    - Trường sai kiểu thì lấy giá trị mặc định của trường đó, có ghi log; key thiếu thì điền mặc định.
+    - Danh sách topic và event giữ tối đa 16 và 10 phần tử, để giới hạn bộ nhớ.
+    - Hết bộ nhớ thì trả NULL, không bao giờ trả một cấu hình thiếu trường.
+    - Cấu hình sai thì thiết bị vẫn chạy với nó, có thể không hoạt động hay không kết nối được; người dùng tự sửa, hoặc bấm Reload. An toàn bộ nhớ do nơi dùng bảo đảm: chặn chỉ số, chép chuỗi bằng `snprintf`, baud 0 không gây chia cho 0.
+  - **Default KV của FlashDB** dựng từ chuỗi mặc định trong `cfgmodel`, là nguồn duy nhất. DB mới được tạo với các giá trị này. Key thiếu ở DB cũ thì đọc từ cùng bảng, không ghi xuống.
+  - **Factory reset** (nút Reload, `POST /api/factory-reset`), theo thứ tự:
+    1. chặn mọi lần ghi;
+    2. gọi `fdb_kv_set_default` cho các DB đã mount;
+    3. đọc lại các giá trị mặc định, vì FlashDB 2.2.0 bỏ qua kết quả `create_kv_blob`;
+    4. khởi động lại.
+
+    Ba DB không nguyên tử với nhau: mất điện giữa chừng thì bấm Reload lại.
+  - **Một lần program hoặc erase thất bại cũng khóa FAL sang chỉ đọc tới lần boot sau,** như lỗi đọc. Lý do: sau khi ghi trạng thái sector của GC thất bại, FlashDB vẫn ghi tiếp vào sector đó, và lần mount sau coi nó là trống, làm mất manifest (Plan 09b T2, Codex).
 - **Đo trên board (Plan 05b):**
   - **Thời gian mount:** khoảng 0,2 s khi DB mới. Khi DB `cfg` đầy giá trị cũ thì khoảng 1,8 s; mức này có chặn trên, vì bộ dọn rác giới hạn số KV trong mỗi sector. Ước tính ban đầu (5.300 lần đọc × 5 µs, khoảng 30 ms) là quá lạc quan: mỗi lần đọc nhỏ qua HAL mất khoảng 170 µs. Có thể tối ưu sau, chưa làm.
   - **Lưu một cấu hình:** trung bình khoảng 12 ms, lâu nhất khoảng 250 ms (khi dọn rác có xóa sector). CPU còn khoảng 70 % idle trong 1.000 lần lưu liên tiếp, và `wdog` vẫn giữ nhịp 200 ms.
@@ -740,7 +756,7 @@ Có hai vùng tĩnh riêng trong AXI, vì chúng có vòng đời khác nhau.
   - Một `POST edgeDevices` thứ hai đến trong lúc buffer đang bận thì nhận ngay 503 `{ "error": "Another Edge save is in progress." }`.
   - Buffer được giải phóng khi request xong, khi connection đóng, hoặc khi body hết thời gian chờ (quy tắc chung ở §10.1).
 
-**Các cấu hình nhỏ** (port, mqtt*, system, io, edgeReport, edgeLinkage):
+**Các cấu hình nhỏ** (port, mqtt*, system, io, edgeReport, edgeLinkage). *Plan 09b: lưu không còn parse, validate hay chuẩn hóa (§9.1). Các quy tắc chuẩn hóa dưới đây chỉ còn là oracle cho host test. Arena vẫn còn, cho tới khi Plan 09c bỏ nó.*
 - body ≤ **10.240 byte** (10 × 1024), nằm sẵn trong `c->recv`. Buffer in ra là `CFG_SMALL_BUF` = 10.246 byte, vì `cJSON_PrintPreallocated` cần dư 5 byte; giới hạn được kiểm trên độ dài thật của văn bản.
 - **Văn bản chuẩn hóa cũng phải ≤ 10.240 byte**, kiểm trước khi ghi. Vượt quá thì trả 413 `{ "error": "These settings are too large." }` và **cấu hình đã lưu giữ nguyên**.
 - Đây là **giới hạn chấp nhận**, không phải cực đại của schema. Schema vẫn cho phép những cấu hình hợp lệ mà sau chuẩn hóa vượt 10.240 byte, ví dụ `mqttPublish` có `identifier` và `delimiter` toàn ký tự điều khiển, khi escape thành `\uXXXX` thì dài gấp 6. Những cấu hình đó bị từ chối bằng 413.
@@ -766,6 +782,8 @@ Có hai vùng tĩnh riêng trong AXI, vì chúng có vòng đời khác nhau.
    - buffer văn bản Edge đang bận: trả 503.
 2. Nếu hợp lệ, handler nhận quyền kiểm soát connection và chép body vào buffer văn bản Edge. Số byte **thực nhận** cũng được kiểm theo giới hạn.
 3. Khi đủ body, phần còn lại chạy **đồng bộ trong một callback**, trong một phạm vi arena.
+
+*Plan 09b: khi lưu chỉ kiểm cú pháp và kiểu gốc; body được cắt theo byte thành các record 8 KB, generation và manifest giữ nguyên. Lúc boot, `cfg_edge_load` vẫn chạy pha 1–2; pha 3 do UI kiểm. Phần dưới đây mô tả đường validate cũ, nay chỉ dùng trong test.*
 
 **Validate theo đúng thứ tự của `cfgmodel.c`** (`slaves()` dòng 478 và `slaves_strict()` dòng 413), để câu báo lỗi đầu tiên giống bản ESP32. `proto/jsonscan.c` duyệt văn bản đã nằm trong RAM, nên có thể chạy nhiều lượt mà không cần parse cả cây:
 
@@ -821,7 +839,7 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
 - Kích thước tính bằng `edge_tmpl_size()` của mã ESP32 (`edgecore.c:407`): mỗi slot giá trị được dành 242 B, cho trường hợp xấu nhất là một chuỗi đã escape. Vì vậy kích thước phụ thuộc **số slot** của template, không phụ thuộc số điểm.
 - Giới hạn là **26 KB**, tức khoảng 100 slot với template 2 KB. Buffer cấp từ heap lúc boot, và ngân sách AXI ở §5.3 đã tính khoản này.
 - Template cần nhiều hơn thì lúc boot Edge báo trạng thái `TEMPLATE TOO LARGE` và tắt report, cùng cách bản ESP32 xử lý khi thiếu bộ nhớ cho report (`edge_rt.c:880`).
-- Lúc lưu `edgeReport`, `web` biên dịch thử template với tên điểm của mô hình Edge đang chạy, và trả 4xx `{ "error": "The report template needs too many values for this gateway." }` nếu vượt giới hạn. Nếu tên không khớp với mô hình đang chạy (ví dụ vừa lưu `edgeDevices` nhưng chưa restart), lần kiểm lúc boot là lần quyết định.
+- Kích thước template do UI kiểm (`rules.ts`, tính đúng như `edge_tmpl_size`, giới hạn 26.624 byte; Plan 09b). Lúc boot, template vượt giới hạn thì báo `TEMPLATE TOO LARGE` và tắt report, Edge vẫn chạy.
 - Cấu hình cực đại này (100 slot) có mặt trong kịch bản đo bộ nhớ (§12.3).
 
 **Ràng buộc kiểm thử:** với mọi payload trong bộ test, kể cả payload có nhiều lỗi, thứ tự thiết bị và node bị đảo, hay tên trùng hash, kết quả xử lý theo node phải **giống từng byte** với `cfg_validate` nguyên khối: cùng văn bản chuẩn hóa, cùng câu báo lỗi đầu tiên (§12.1).
@@ -875,7 +893,8 @@ Chép từ `src/` ở gốc, rồi sửa trực tiếp:
 - bỏ các trường Telnet (`System.tsx`) và RFC 2217 (`Port.tsx`);
 - hiện TLS cho mọi cổng và cho phép upload chứng chỉ `port2`;
 - đổi chuỗi EC800 thành EC600U;
-- bỏ cảnh báo `WAITING FOR CLOCK`.
+- bỏ cảnh báo `WAITING FOR CLOCK`;
+- **Plan 09b:** UI giữ mọi quy tắc. Phần đã có (`FieldDef` của từng trang, các quy tắc Edge trong `edge.ts`) giữ nguyên. `src/lib/rules.ts` thêm quy tắc chéo về listen port (port1, port2, `webPort`, `websocketPort`) và kích thước template. Mỗi body được gửi đầy đủ, đã minify (`JSON.stringify`). `npm run test:unit` chạy test các quy tắc mới.
 
 `npm run build:firmware` nhúng UI vào `stm32/firmware/components/webapi/www`: `tools/embed_web.py` ghi các byte gzip thành mảng C hằng trong `www_files.c`, nằm trong QSPI (đơn giản hơn `.incbin`, theo đề xuất của người dùng, Plan 06b). Bench: `npm run test:pages` lưu và tải lại từng trang trên board thật.
 

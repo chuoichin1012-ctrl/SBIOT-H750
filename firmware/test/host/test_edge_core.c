@@ -399,6 +399,39 @@ static void counting_free(void *p)
     free(p);
 }
 
+/** Plan 09d: a device's reads are planned once, into the model's arrays, not on its poll task's stack (300 points
+ * on one device would take 7 KB there). The plan is the one edge_batches gives. */
+static void test_plan_batches(void)
+{
+    edge_counts_t c = {.ndev = 2, .npts = 300, .tcb_bytes = 100, .lock_bytes = 80};
+    edge_mem_t m;
+    CHECK(edge_reserve(&c, &m, counting_alloc, counting_free) && m.order && m.batches, "the read plan reserved with the model");
+    edge_dev_t *a = &m.devs[0], *b = &m.devs[1];
+    a->merge = true, a->pts = m.pts, a->npts = 290;
+    b->merge = false, b->pts = m.pts + 290, b->npts = 10;
+    for (int i = 0; i < 300; i++) {
+        m.pts[i] = pt(i % 3 ? 3 : 1, (uint16_t)((i * 7) % 400), DT_UINT16, 200 + i);
+        m.pts[i].dev = i < 290 ? a : b;
+    }
+    edge_plan_batches(&m, 2);
+    for (int k = 0; k < 2; k++) {
+        edge_dev_t *d = &m.devs[k];
+        static edge_pt_t *order[300];
+        static edge_batch_t want[300];
+        for (int i = 0; i < d->npts; i++)
+            order[i] = &d->pts[i];
+        int n = edge_batches(d, order, want, d->npts);
+        bool same = d->nbatch == n && d->order >= m.order && d->order + d->npts <= m.order + 300;
+        for (int i = 0; same && i < n; i++)
+            same = !memcmp(&d->batches[i], &want[i], sizeof want[i]);
+        for (int i = 0; same && i < d->npts; i++)
+            same = d->order[i] == order[i];
+        CHECK(same, "device %d: the planned reads are edge_batches' (%d of %d)", k, d->nbatch, n);
+    }
+    edge_unreserve(&m, counting_free);
+    CHECK(s_live == 0, "and released with the model");
+}
+
 static void test_reserve(void)
 {
     edge_counts_t c = {.ndev = 5, .npts = 8, .nlinks = 2, .report_bytes = 4096, .ntasks = 4,
@@ -586,6 +619,7 @@ int main(void)
     test_schedule();
     test_sys();
     test_reserve();
+    test_plan_batches();
     printf("sizes: edge_pt_t %zu B, edge_dev_t %zu B (host, 64-bit)\n", sizeof(edge_pt_t), sizeof(edge_dev_t));
     printf("test_edge_core: %s\n", failures ? "FAILED" : "ok");
     return failures ? 1 : 0;

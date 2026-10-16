@@ -840,9 +840,29 @@ def case_di():
     check(all(dt is not None and dt < deb / 1000 + 0.5 for _, dt in seen), 'DI1 follows DO1 in an on-change report, within debounce + 0.5 s (%s)' % seen)
 
 
+def case_onedevice():
+    """Plan 09d (Codex code review): all 300 points on one device, Modbus RTU, then Modbus TCP: every point is
+    read, and the device's poll task keeps at least 1 KB of stack (its reads are planned at the start, not on it)."""
+    pts = [{'name': 'p%d' % i, 'reg': 2 * i, 'timeout': 300} for i in range(300)]  # gaps of 1: 5 reads of up to 125
+    # merge on both (plc's default; tcpdev's is off): 5 blocks, one a second, instead of 300 single reads
+    for dev, task in ((plc(nodes=pts), 'edge_bus1'), (tcpdev(nodes=pts, merge=True), 'edge_tcp0')):
+        check(setup([dev], report={'reporting': 0}), 'set up one %s device with 300 points' % ('RTU' if task == 'edge_bus1' else 'Modbus TCP'))
+        slave, tcp = start_all(secs=45)
+        full = wait(lambda: status() == 'RUNNING 300/300', 25, 0.5)
+        state = status()
+        time.sleep(max(0, 32 - 25))  # the headroom is logged once, 30 s in
+        m = wait(lambda: re.search(r'edge: stack headroom: (.*) bytes', log_text()), 10, 1)
+        slave.close()
+        bc.wait_peer(tcp, 1)
+        rooms = dict(re.findall(r'(edge_\w+) (\d+)', m.group(1))) if m else {}
+        check(full, '%s: every point read (%s)' % (task, state))
+        check(int(rooms.get(task, 0)) >= 1024, '%s keeps at least 1 KB of stack (%s bytes)' % (task, rooms.get(task)))
+
+
 CASES = {'basic': case_basic, 'change': case_change, 'schedule': case_schedule, 'remote': case_remote, 'split': case_split,
          'gwrtu': case_gwrtu, 'contention': case_contention, 'dead': case_dead, 'late': case_late, 'shortreport': case_shortreport,
-         'partial': case_partial, 'bigreport': case_bigreport, 'memory': case_memory, 'di': case_di, 'mqtt': case_mqtt}
+         'partial': case_partial, 'bigreport': case_bigreport, 'memory': case_memory, 'di': case_di, 'mqtt': case_mqtt,
+         'onedevice': case_onedevice}
 
 
 def main():

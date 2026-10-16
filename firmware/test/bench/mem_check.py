@@ -13,6 +13,7 @@
 Prints one line per check, the measurements, and "bench: ok". Ends with MQTT and Edge off.
 """
 import json
+import re
 import os
 import sys
 import threading
@@ -35,6 +36,32 @@ def heap():
     sm = st['mem']['stackMin'] if st else {}
     return {'free': s.get('heapFree', -1), 'min': s.get('heapMin', -1), 'largest': s.get('heapLargest', -1),
             'wdog_ms': s.get('wdiMaxGapMs', -1), 'stack': '%s %s words' % (sm.get('task'), sm.get('words'))}
+
+
+def last_connect_ms():
+    """The uptime (ms) of MQTT's last "connected" line, -1 for none. A count of those lines would not do: the
+    RAM log is a 32 KB ring, and UART2's HTTPS lines push the oldest out within about 3 minutes."""
+    ms = [int(x) for x in re.findall(r'I \((\d+)\) mqtt: connected to', ec.log_text())]
+    return max(ms) if ms else -1
+
+
+def wait_reconnect(after_ms, secs):
+    end = time.time() + secs
+    while time.time() < end:
+        if last_connect_ms() > after_ms:
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def resting_free(reads=3):
+    """The heap's resting level: the most free of a few reads 1 s apart, as UART2's HTTPS client holds a TLS
+    session (about 27 KB) for part of every 1.3 s."""
+    free = []
+    for _ in range(reads):
+        time.sleep(1)
+        free.append(heap()['free'])
+    return max(free)
 
 
 def kill_events(p):
@@ -141,11 +168,11 @@ def main():
         levels, bad, reconnects, https_sent, blips = [], 0, 0, 0, 0
         for r in range(50):
             if r and r % 10 == 0:
-                n0 = mc.connects()
+                c0 = last_connect_ms()
                 peers[0].kill()  # the relay goes: MQTT connects again through a new one (a new TLS handshake)
                 peers[0].wait()
                 peers[0] = mc.relay(400, to=mc.TLSP, port=mc.TLS_RELAY, raw='1')
-                reconnects += mc.wait_connects(n0 + 1, 30)
+                reconnects += wait_reconnect(c0, 30)
                 bc.send_serial(b'1', port=1)  # and UART2's HTTPS request, under the same load
                 https_sent += 1
             sock, again = w.connect_retry(60)
@@ -156,7 +183,7 @@ def main():
             blips += again
             bad += not (s1 == 200 and s2 == 200 and back == big)
             if r % 10 == 9:
-                levels.append(heap()['free'])
+                levels.append(resting_free())
         check(bad == 0, '50 rounds: every save 200, every GET 200 with the bytes saved (%d failed; %d connects tried again)' % (bad, blips))
         check(reconnects == 4, 'MQTT over TLS connected again after each of the 4 relay restarts (%d)' % reconnects)
         secs, during = time.time() - t0, reports_of(sub)[r0:]

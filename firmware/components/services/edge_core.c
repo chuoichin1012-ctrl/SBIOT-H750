@@ -385,6 +385,8 @@ void edge_unreserve(edge_mem_t *m, edge_free_fn release)
 {
     release(m->devs);
     release(m->pts);
+    release(m->order);
+    release(m->batches);
     release(m->links);
     release(m->snap_value);
     release(m->snap_valid);
@@ -412,6 +414,7 @@ bool edge_reserve(const edge_counts_t *c, edge_mem_t *m, edge_alloc_fn alloc, ed
         return false;
     size_t np = (size_t)(c->npts ? c->npts : 1);
     bool ok = take((void **)&m->devs, (size_t)c->ndev * sizeof *m->devs, alloc) && take((void **)&m->pts, np * sizeof *m->pts, alloc) &&
+              take((void **)&m->order, np * sizeof *m->order, alloc) && take((void **)&m->batches, np * sizeof *m->batches, alloc) &&
               take((void **)&m->links, (size_t)c->nlinks * sizeof *m->links, alloc) &&
               take((void **)&m->snap_value, np * sizeof *m->snap_value, alloc) && take((void **)&m->snap_valid, np * sizeof *m->snap_valid, alloc);
     if (ok && c->report_bytes)
@@ -425,4 +428,17 @@ bool edge_reserve(const edge_counts_t *c, edge_mem_t *m, edge_alloc_fn alloc, ed
     if (!ok)
         edge_unreserve(m, release);
     return ok;
+}
+
+void edge_plan_batches(edge_mem_t *m, int ndev)
+{
+    for (int k = 0; k < ndev; k++) {
+        edge_dev_t *d = &m->devs[k];
+        size_t at = (size_t)(d->pts - m->pts);
+        d->order = m->order + at;
+        d->batches = m->batches + at;
+        for (int i = 0; i < d->npts; i++)
+            d->order[i] = &d->pts[i];
+        d->nbatch = edge_batches(d, d->order, d->batches, d->npts);
+    }
 }

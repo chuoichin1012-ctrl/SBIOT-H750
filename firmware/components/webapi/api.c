@@ -11,6 +11,7 @@
 #include "bridge.h"
 #include "edge_core.h"
 #include "edge_rt.h"
+#include "mqttgw.h"
 #include "netmgr.h"
 #include "serial.h"
 #include "store.h"
@@ -170,7 +171,9 @@ static void status_get(struct mg_connection *c)
     }
     cJSON *mq = cJSON_AddObjectToObject(o, "mqtt");  // Plan 09
     cJSON_AddBoolToObject(mq, "enabled", enabled("mqtt"));
-    cJSON_AddStringToObject(mq, "state", "NOT STARTED");
+    char mstate[24];
+    mqttgw_status(mstate, sizeof mstate);
+    cJSON_AddStringToObject(mq, "state", mstate);
     cJSON *ed = cJSON_AddObjectToObject(o, "edge");  // Plan 08
     cJSON_AddBoolToObject(ed, "enabled", enabled("edge"));
     char est[48];
@@ -193,8 +196,9 @@ static void status_get(struct mg_connection *c)
     unsigned used = 0, size = 0;
     console_buffer_use(&used, &size);
     add_pool(pools, "console_log", used, size);
-    // The lowest stack left of any task, and whose.
-    TaskStatus_t ts[24];
+    // The lowest stack left of any task, and whose. Every task fits (about 30 with Edge's 9 and MQTT's 2, spec §6.1):
+    // uxTaskGetSystemState returns 0 for an array too small. Static, in AXI: only `web` runs this.
+    static TaskStatus_t ts[40] __attribute__((section(".axi_bss")));
     UBaseType_t n = uxTaskGetSystemState(ts, sizeof ts / sizeof ts[0], NULL);
     const char *worst = "";
     unsigned words = 0xFFFFFFFFu;

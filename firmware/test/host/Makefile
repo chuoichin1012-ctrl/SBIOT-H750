@@ -8,7 +8,7 @@ BUILD := build
 CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c ../../components/proto/jsonscan.c
 ARENA := ../../components/arena/arena.c $(TLSF)/tlsf.c
 
-all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/bind_sample.bin $(BUILD)/test_bind $(BUILD)/test_store $(BUILD)/test_store_small $(BUILD)/test_heap $(BUILD)/test_ip101 $(BUILD)/test_netcfg $(BUILD)/test_dhcp_dns $(BUILD)/test_rng $(BUILD)/test_clock $(BUILD)/test_web_core $(BUILD)/test_serial_frame $(BUILD)/test_io_core $(BUILD)/test_adc_core $(BUILD)/test_reload $(BUILD)/test_bridge_core $(BUILD)/test_io_mb $(BUILD)/test_tls_core $(BUILD)/test_tlsconn $(BUILD)/test_edge_core
+all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_arena $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/bind_sample.bin $(BUILD)/test_bind $(BUILD)/test_store $(BUILD)/test_store_small $(BUILD)/test_heap $(BUILD)/test_ip101 $(BUILD)/test_netcfg $(BUILD)/test_dhcp_dns $(BUILD)/test_rng $(BUILD)/test_clock $(BUILD)/test_web_core $(BUILD)/test_serial_frame $(BUILD)/test_io_core $(BUILD)/test_adc_core $(BUILD)/test_reload $(BUILD)/test_bridge_core $(BUILD)/test_io_mb $(BUILD)/test_tls_core $(BUILD)/test_tlsconn $(BUILD)/test_edge_core $(BUILD)/test_mqtt_wire $(BUILD)/test_mqtt_transport $(BUILD)/test_mqtt_outbox $(BUILD)/test_mqtt_session
 	$(BUILD)/test_cfgmodel
 	$(BUILD)/test_proto
 	$(BUILD)/test_jsonscan
@@ -39,6 +39,10 @@ all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/
 	$(BUILD)/test_tls_core
 	$(BUILD)/test_tlsconn
 	$(BUILD)/test_edge_core
+	$(BUILD)/test_mqtt_wire
+	$(BUILD)/test_mqtt_transport
+	$(BUILD)/test_mqtt_outbox
+	$(BUILD)/test_mqtt_session
 
 $(BUILD)/test_cfgmodel: test_cfgmodel.c $(CFG) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
@@ -213,3 +217,23 @@ $(BUILD)/test_tlsconn: test_tlsconn.c tls_test_port.c ../../components/services/
 $(BUILD)/test_edge_core: test_edge_core.c ../../components/services/edge_core.c ../../components/proto/edgecore.c ../../components/proto/modbus.c ../../components/sysmgr/clock.c $(CFG) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -I../../components/services/include -I../../components/sysmgr/include $^ -lm -Wl,--wrap=malloc -Wl,--wrap=calloc -o $@
+
+# coreMQTT 2.3.1 with the SBIOT patch (Plan 09), built without our warnings as upstream code.
+MQTT := ../../third_party/coremqtt/source
+MQTT_INC := -I$(MQTT)/include -I$(MQTT)/interface -I../../components/services/include
+MQTT_SRC := $(MQTT)/core_mqtt.c $(MQTT)/core_mqtt_serializer.c $(MQTT)/core_mqtt_state.c
+$(BUILD)/test_mqtt_wire: test_mqtt_wire.c $(MQTT_SRC)
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -D_DEFAULT_SOURCE -Wno-error $(MQTT_INC) $^ -o $@
+
+$(BUILD)/test_mqtt_transport: test_mqtt_transport.c ../../components/services/mqtt_transport.c ../../components/services/bridge_core.c ../../components/proto/ipacl.c ../../components/proto/modbus.c $(CJSON)/cJSON.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -D_DEFAULT_SOURCE $(MQTT_INC) $^ -o $@
+
+$(BUILD)/test_mqtt_outbox: test_mqtt_outbox.c ../../components/services/mqtt_outbox.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -I../../components/services/include $^ -o $@
+
+$(BUILD)/test_mqtt_session: test_mqtt_session.c ../../components/services/mqtt_sess.c ../../components/services/mqtt_outbox.c ../../components/services/mqtt_transport.c ../../components/services/bridge_core.c ../../components/proto/ipacl.c ../../components/proto/modbus.c $(CJSON)/cJSON.c $(MQTT_SRC)
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -D_DEFAULT_SOURCE -Wno-error $(MQTT_INC) $^ -lpthread -o $@

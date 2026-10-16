@@ -1,0 +1,244 @@
+diff --git a/source/core_mqtt.c b/source/core_mqtt.c
+index 0c71f3f..6547355 100644
+--- a/source/core_mqtt.c
++++ b/source/core_mqtt.c
+@@ -293,6 +293,11 @@ static MQTTStatus_t discardPacket( const MQTTContext_t * pContext,
+ static MQTTStatus_t discardStoredPacket( MQTTContext_t * pContext,
+                                          const MQTTPacketInfo_t * pPacketInfo );
+ 
++static bool sbiotOversizedHead( MQTTContext_t * pContext,
++                                const MQTTPacketInfo_t * pPacketInfo,
++                                uint16_t * pId,
++                                MQTTQoS_t * pQos );
++
+ /**
+  * @brief Receive a packet from the transport interface.
+  *
+@@ -427,6 +432,7 @@ static MQTTStatus_t validateSubscribeUnsubscribeParams( const MQTTContext_t * pC
+ static MQTTStatus_t receiveConnack( const MQTTContext_t * pContext,
+                                     uint32_t timeoutMs,
+                                     bool cleanSession,
++                                    bool mqtt31,
+                                     MQTTPacketInfo_t * pIncomingPacket,
+                                     bool * pSessionPresent );
+ 
+@@ -1105,6 +1111,67 @@ static MQTTStatus_t discardPacket( const MQTTContext_t * pContext,
+ 
+ /*-----------------------------------------------------------*/
+ 
++/* SBIOT patch: for an oversized PUBLISH, its QoS and, at QoS 1/2, its packet id, reading what of its head is still
++ * missing into the network buffer (the discard then drains the rest). False when the head does not fit. */
++static bool sbiotOversizedHead( MQTTContext_t * pContext,
++                                const MQTTPacketInfo_t * pPacketInfo,
++                                uint16_t * pId,
++                                MQTTQoS_t * pQos )
++{
++    uint8_t * pBuffer = pContext->networkBuffer.pBuffer;
++    size_t need;
++    uint32_t start = pContext->getTime();
++
++    if( ( pPacketInfo->type & 0xF0U ) != MQTT_PACKET_TYPE_PUBLISH )
++    {
++        return true;
++    }
++
++    *pQos = ( MQTTQoS_t ) ( ( pPacketInfo->type >> 1 ) & 0x03U );
++
++    if( *pQos == MQTTQoS0 )
++    {
++        return true;
++    }
++
++    for( ; ; )
++    {
++        int32_t got;
++
++        /* The topic's length comes first, then the topic, then the packet id. */
++        need = pPacketInfo->headerLength + 2U;
++
++        if( pContext->index >= need )
++        {
++            need += ( ( ( size_t ) pBuffer[ pPacketInfo->headerLength ] << 8 ) | pBuffer[ pPacketInfo->headerLength + 1U ] ) + 2U;
++        }
++
++        if( pContext->index >= need )
++        {
++            break;
++        }
++
++        if( need > pContext->networkBuffer.size )
++        {
++            return false;
++        }
++
++        got = pContext->transportInterface.recv( pContext->transportInterface.pNetworkContext,
++                                                 &pBuffer[ pContext->index ],
++                                                 need - pContext->index );
++
++        if( ( got < 0 ) || ( calculateElapsedTime( pContext->getTime(), start ) > MQTT_RECV_POLLING_TIMEOUT_MS ) )
++        {
++            return false;
++        }
++
++        pContext->index += ( size_t ) got;
++    }
++
++    *pId = ( uint16_t ) ( ( ( uint16_t ) pBuffer[ need - 2U ] << 8 ) | pBuffer[ need - 1U ] );
++    return *pId != 0U;
++}
++
+ static MQTTStatus_t discardStoredPacket( MQTTContext_t * pContext,
+                                          const MQTTPacketInfo_t * pPacketInfo )
+ {
+@@ -1750,10 +1817,45 @@ static MQTTStatus_t receiveSingleIteration( MQTTContext_t * pContext,
+     /* If the MQTT Packet size is bigger than the buffer itself. */
+     else if( totalMQTTPacketLength > pContext->networkBuffer.size )
+     {
++        /* SBIOT patch: an oversized QoS 1/2 PUBLISH is dropped, but its QoS exchange is completed, or the
++         * broker's in-flight window would stall. Its head (topic and packet id) is read in first. */
++        uint16_t sbiotId = 0U;
++        MQTTQoS_t sbiotQos = MQTTQoS0;
++        bool sbiotHead = sbiotOversizedHead( pContext, &incomingPacket, &sbiotId, &sbiotQos );
++
+         /* Discard the packet from the receive buffer and drain the pending
+          * data from the socket buffer. */
+         status = discardStoredPacket( pContext,
+                                       &incomingPacket );
++
++        if( ( status == MQTTNoDataAvailable ) && ( sbiotQos > MQTTQoS0 ) )
++        {
++            if( sbiotHead == false )
++            {
++                LogError( ( "An oversized PUBLISH whose topic does not fit: the connection is closed." ) );
++                status = MQTTRecvFailed;
++            }
++            else
++            {
++                MQTTPublishState_t sbiotState = MQTTStateNull;
++                MQTTStatus_t sbiotStatus = MQTT_UpdateStatePublish( pContext, sbiotId, MQTT_RECEIVE, sbiotQos, &sbiotState );
++
++                if( ( sbiotStatus == MQTTSuccess ) || ( sbiotStatus == MQTTStateCollision ) )
++                {
++                    sbiotStatus = sendPublishAcks( pContext, sbiotId, MQTT_CalculateStatePublish( MQTT_RECEIVE, sbiotQos ) );
++                }
++
++                if( sbiotStatus != MQTTSuccess )
++                {
++                    status = sbiotStatus;
++                }
++                else
++                {
++                    LogWarn( ( "An incoming PUBLISH larger than the buffer was dropped (packet id %u); its QoS exchange goes on.",
++                               ( unsigned int ) sbiotId ) );
++                }
++            }
++        }
+     }
+     /* If the total packet is of more length than the bytes we have available. */
+     else if( totalMQTTPacketLength > pContext->index )
+@@ -2188,8 +2290,9 @@ static MQTTStatus_t sendConnectWithoutCopy( MQTTContext_t * pContext,
+      * Protocol Name (MQTT)     + 4 = 11
+      * Protocol level           + 1 = 12
+      * Connect flags            + 1 = 13
+-     * Keep alive               + 2 = 15 */
+-    uint8_t connectPacketHeader[ 15U ];
++     * Keep alive               + 2 = 15
++     * SBIOT patch: "MQIsdp"    + 2 = 17 */
++    uint8_t connectPacketHeader[ 17U ];
+ 
+     /* The maximum vectors required to encode and send a connect packet. The
+      * breakdown is shown below.
+@@ -2312,6 +2415,7 @@ static MQTTStatus_t sendConnectWithoutCopy( MQTTContext_t * pContext,
+ static MQTTStatus_t receiveConnack( const MQTTContext_t * pContext,
+                                     uint32_t timeoutMs,
+                                     bool cleanSession,
++                                    bool mqtt31,
+                                     MQTTPacketInfo_t * pIncomingPacket,
+                                     bool * pSessionPresent )
+ {
+@@ -2402,8 +2506,20 @@ static MQTTStatus_t receiveConnack( const MQTTContext_t * pContext,
+         /* Update the packet info pointer to the buffer read. */
+         pIncomingPacket->pRemainingData = pContext->networkBuffer.pBuffer;
+ 
++        /* SBIOT patch: an MQTT 3.1 CONNACK's first byte is reserved, with no Session Present. */
++        if( ( mqtt31 == true ) && ( pIncomingPacket->remainingLength == 2U ) )
++        {
++            pContext->networkBuffer.pBuffer[ 0 ] = 0U;
++        }
++
+         /* Deserialize CONNACK. */
+         status = MQTT_DeserializeAck( pIncomingPacket, NULL, pSessionPresent );
++
++        /* SBIOT patch: in 3.1 the session is kept exactly when it was asked for. */
++        if( ( status == MQTTSuccess ) && ( mqtt31 == true ) )
++        {
++            *pSessionPresent = !cleanSession;
++        }
+     }
+ 
+     /* If a clean session is requested, a session present should not be set by
+@@ -2728,6 +2844,7 @@ MQTTStatus_t MQTT_Connect( MQTTContext_t * pContext,
+         status = receiveConnack( pContext,
+                                  timeoutMs,
+                                  pConnectInfo->cleanSession,
++                                 pConnectInfo->mqtt31,
+                                  &incomingPacket,
+                                  pSessionPresent );
+     }
+diff --git a/source/core_mqtt_serializer.c b/source/core_mqtt_serializer.c
+index 7877941..7c4df3a 100644
+--- a/source/core_mqtt_serializer.c
++++ b/source/core_mqtt_serializer.c
+@@ -1568,11 +1568,19 @@ uint8_t * MQTT_SerializeConnectFixedHeader( uint8_t * pIndex,
+     pIndexLocal = encodeRemainingLength( pIndexLocal, remainingLength );
+ 
+     /* The string "MQTT" is placed at the beginning of the CONNECT packet's variable
+-     * header. This string is 4 bytes long. */
+-    pIndexLocal = encodeString( pIndexLocal, "MQTT", 4 );
++     * header. This string is 4 bytes long. SBIOT patch: MQTT 3.1 uses "MQIsdp", level 3. */
++    if( pConnectInfo->mqtt31 == true )
++    {
++        pIndexLocal = encodeString( pIndexLocal, "MQIsdp", 6 );
++        *pIndexLocal = 3U;
++    }
++    else
++    {
++        pIndexLocal = encodeString( pIndexLocal, "MQTT", 4 );
++        *pIndexLocal = MQTT_VERSION_3_1_1;
++    }
+ 
+     /* The MQTT protocol version is the second field of the variable header. */
+-    *pIndexLocal = MQTT_VERSION_3_1_1;
+     pIndexLocal++;
+ 
+     /* Set the clean session flag if needed. */
+@@ -1729,6 +1737,12 @@ MQTTStatus_t MQTT_GetConnectPacketSize( const MQTTConnectInfo_t * pConnectInfo,
+     }
+     else
+     {
++        /* SBIOT patch: "MQIsdp" is 2 bytes longer than "MQTT". */
++        if( pConnectInfo->mqtt31 == true )
++        {
++            connectPacketSize += 2U;
++        }
++
+         /* Add the length of the client identifier. */
+         connectPacketSize += pConnectInfo->clientIdentifierLength + sizeof( uint16_t );
+ 
+diff --git a/source/include/core_mqtt_serializer.h b/source/include/core_mqtt_serializer.h
+index 077b8d0..d7b04ae 100644
+--- a/source/include/core_mqtt_serializer.h
++++ b/source/include/core_mqtt_serializer.h
+@@ -170,6 +170,12 @@ typedef struct MQTTConnectInfo
+      * @brief Length of MQTT password. Set to 0 if not used.
+      */
+     uint16_t passwordLength;
++
++    /**
++     * @brief SBIOT patch: MQTT 3.1 (protocol name "MQIsdp", level 3) instead of 3.1.1. Its CONNACK has no
++     * Session Present: the session is kept exactly when cleanSession is false.
++     */
++    bool mqtt31;
+ } MQTTConnectInfo_t;
+ 
+ /**

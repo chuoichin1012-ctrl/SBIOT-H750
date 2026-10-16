@@ -5,6 +5,7 @@
 #include "bridge_core.h"
 #include "cfgmodel.h"
 #include "edge_rt.h"
+#include "mqttgw.h"
 #include "now_us.h"
 #include "serial.h"
 #include "store.h"
@@ -60,6 +61,7 @@ void services_start(const cJSON *sys)
         bridge_start(port, pc, sys);
         cJSON_Delete(pc);
     }
+    mqttgw_start(sys);  // Plan 09: before Edge, which publishes through it and adds its listener
     cJSON *edge = store_get("edge");  // Plan 08c: after the bridges (it hooks into them), before the web
     if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(edge, "enabled")))
         edge_start();

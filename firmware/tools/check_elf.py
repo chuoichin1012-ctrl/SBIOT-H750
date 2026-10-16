@@ -6,6 +6,7 @@
 Prints one line per check and "elf: ok" when all pass; exits 1 otherwise. Needs arm-none-eabi-nm,
 -readelf and -objdump on PATH (source ~/opt/xpack/env.sh).
 """
+import glob
 import re
 import subprocess
 import sys
@@ -41,7 +42,13 @@ SRAM1 = (0x30000000, 0x30020000)
 APP_SRAM1 = ['lwip_ram_heap', 'DMARxDscrTab', 'DMATxDscrTab', 's_eth_rx_bufs', 's_eth_tx_bufs', 's_uart_ring', 's_uart_txbuf']
 # The bridges' serial -> network queues and bufferOffline: SRAM2+3 (spec §5.3, Plan 08a).
 SRAM23 = (0x30020000, 0x30048000)
-APP_SRAM23 = ['s_mb_store']
+APP_SRAM23 = ['s_mb_store', 's_ob_mem']  # and MQTT's outbox (Plan 09)
+# MQTT's rings between `mqtt` and `mqtt_io` (spec §5.3, Plan 09).
+SRAM4 = (0x38000000, 0x38010000)
+APP_SRAM4 = ['s_up_mem', 's_down_mem']
+# The only callers of coreMQTT (spec §6.4, Plan 09): the `mqtt` task's functions and mqtt_sess, which it runs;
+# mqttgw_start initialises the context once, before the task exists.
+MQTT_CALLERS = {'mqttgw_start', 'mqtt_task', 'dial', 'publish', 'next_id', 'ms_resume', 'ms_feed', 'ms_subscribe'}
 # newlib's close/fcntl on an lwIP socket would leak it (LWIP_POSIX_SOCKETS_IO_NAMES 0, Plan 08a).
 APP_NO_LIBC_IO = ['close', 'fcntl']  # _close is syscalls.c's stub, always there
 # The JSON arena, the Edge and certificate body and the web stack: static, in AXI (spec §5.3, Plan 06b).
@@ -82,6 +89,22 @@ def calls_in(elf, func):
     dis = run('arm-none-eabi-objdump', '-d', '--no-show-raw-insn', elf)
     body = re.search(r'<%s>:\n(.*?)\n\n' % re.escape(func), dis, re.S)
     return set(re.findall(r'\s(?:bl|blx|b\.w)\s+[0-9a-f]+ <([^>+]+)', body.group(1))) if body else None
+
+
+def callers_of(elf, prefix, objs):
+    """Functions outside objs' own symbols that call a name starting with prefix (suffixes like .isra dropped)."""
+    own = set()
+    for o in objs:
+        own |= {l.split()[-1] for l in run('arm-none-eabi-nm', o).splitlines() if l.split()[-2:-1] in (['T'], ['t'])}
+    out = set()
+    dis = run('arm-none-eabi-objdump', '-d', '--no-show-raw-insn', elf)
+    for name, body in re.findall(r'<([^>]+)>:\n(.*?)\n\n', dis, re.S):
+        base = name.split('.')[0]
+        if base in own:
+            continue
+        if any(c.startswith(prefix) for c in re.findall(r'\s(?:bl|blx|b\.w)\s+[0-9a-f]+ <([^>+]+)', body)):
+            out.add(base)
+    return out
 
 
 def errata_window(elf):
@@ -132,6 +155,13 @@ def main():
     for name in APP_SRAM23:
         a = sym.get(name)
         check(a is not None and SRAM23[0] <= a < SRAM23[1], 'app: %s in SRAM2+3 (0x%08x)' % (name, a or 0))
+    for name in APP_SRAM4:
+        a = sym.get(name)
+        check(a is not None and SRAM4[0] <= a < SRAM4[1], 'app: %s in SRAM4 (0x%08x)' % (name, a or 0))
+    cm = glob.glob(build + '/CMakeFiles/app.dir/third_party/coremqtt/source/*.obj')
+    calls = callers_of(app, 'MQTT_', cm)
+    check(len(cm) == 3 and 'mqtt_task' in calls and calls <= MQTT_CALLERS,
+          'app: MQTT_* called only by the mqtt task (callers: %s)' % ', '.join(sorted(calls)))
     for name in APP_NO_LIBC_IO:
         check(name not in sym, 'app: no %s (lwIP sockets use closesocket / lwip_fcntl)' % name)
     a = sym.get('s_adc_buf')

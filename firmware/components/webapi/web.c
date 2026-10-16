@@ -9,6 +9,7 @@
 #include <string.h>
 #include "FreeRTOS.h"
 #include "arena.h"
+#include "mbedtls/platform_util.h"
 #include "blog.h"
 #include "flash_spi4.h"
 #include "flashmap.h"
@@ -30,8 +31,7 @@
 
 web_boot_t g_web;
 
-// AXI (spec §5.3): the Edge and certificate body, the web stack.
-static char s_edge_body[WEB_EDGE_MAX + 1] __attribute__((section(".axi_bss")));
+// AXI (spec §5.3): the web stack. A certificate's body is on the heap for its upload only (Plan 09c).
 static StackType_t s_web_stack[WEB_STACK_WORDS] __attribute__((section(".axi_bss")));
 static StaticTask_t s_tcb;
 static char s_record[STORE_EDGE_RECORD] __attribute__((section(".axi_bss")));  // one Edge record at a time, for any GET
@@ -66,6 +66,7 @@ typedef struct {
     size_t expected, got;
     char scope[8], kind[8];
     bool edge_owner;  // this request's store_edge_begin succeeded: only it writes, commits or aborts (Plan 09c)
+    char *cert;       // a certificate's body (heap, WEB_CERT_MAX + 1), for its upload only
 } slot_t;
 
 static slot_t s_slots[WEB_MAX_CONNS];
@@ -217,6 +218,12 @@ static void serve_file(struct mg_connection *c, slot_t *s, struct mg_http_messag
 
 static void upload_end(struct mg_connection *c, slot_t *s)
 {
+    if (s->cert) {  // on every path: done, refused, timed out, closed; a private key is wiped first (Plan 09c)
+        if (!strcmp(s->kind, "key"))
+            mbedtls_platform_zeroize(s->cert, WEB_CERT_MAX + 1);
+        free(s->cert);
+        s->cert = NULL;
+    }
     if (s->edge_owner) {  // closed, timed out or refused before its commit: the session and its records go
         store_edge_abort();
         s->edge_owner = false;
@@ -235,14 +242,14 @@ static void cert_upload(struct mg_connection *c, slot_t *s)
 {
     bool is_key = !strcmp(s->kind, "key");
     const char *bad = is_key ? "This is not a PEM private key (encrypted keys are not supported)." : "This is not a PEM certificate.";
-    s_edge_body[s->got] = '\0';  // WEB_CERT_MAX < WEB_EDGE_MAX: there is room
-    if (web_pem_check(s->kind, s_edge_body, s->got)) {
+    s->cert[s->got] = '\0';
+    if (web_pem_check(s->kind, s->cert, s->got)) {
         api_error(c, 400, bad);
         return;
     }
     char *other = strcmp(s->kind, "ca") ? store_cert_get(s->scope, is_key ? "cert" : "key") : NULL;
     static cert_info_t info;  // the web task only
-    int r = cert_check(s->kind, s_edge_body, s->got, other, sysmgr_utc_ms() / 1000, tls_port_rng, &info);
+    int r = cert_check(s->kind, s->cert, s->got, other, sysmgr_utc_ms() / 1000, tls_port_rng, &info);
     bool paired = other != NULL;
     free(other);
     if (paired) {
@@ -257,7 +264,7 @@ static void cert_upload(struct mg_connection *c, slot_t *s)
         api_error(c, 400, bad);
         return;
     }
-    if (store_cert_set(s->scope, s->kind, s_edge_body, s->got) != STORE_OK) {
+    if (store_cert_set(s->scope, s->kind, s->cert, s->got) != STORE_OK) {
         api_error(c, 500, "The certificate could not be stored.");
         return;
     }
@@ -328,7 +335,7 @@ static void upload_take(struct mg_connection *c, slot_t *s)
             return;
         }
     } else if (s->ep == WEB_EP_CERT) {
-        memcpy(s_edge_body + s->got, c->recv.buf, n);
+        memcpy(s->cert + s->got, c->recv.buf, n);
     } else {
         store_edge_write(c->recv.buf, n);  // straight into the store's records, checked as it streams (Plan 09c)
     }
@@ -390,6 +397,10 @@ static bool upload_start(struct mg_connection *c, slot_t *s, struct mg_http_mess
     bool *busy = ep == WEB_EP_OTA ? &s_ota_busy : &s_body_busy;
     if (*busy) {
         reject(c, s, hm, ep == WEB_EP_OTA ? 409 : 503, "Another upload is in progress. Try again in a moment.");
+        return true;
+    }
+    if (ep == WEB_EP_CERT && !(s->cert = malloc(WEB_CERT_MAX + 1))) {  // after the checks above: scope, kind, length
+        reject(c, s, hm, 503, "Not enough free memory for the upload. Try again in a moment.");
         return true;
     }
     if (ep == WEB_EP_EDGE) {
@@ -609,18 +620,8 @@ static int int_of(const cJSON *o, const char *k, int dflt)
     return cJSON_IsNumber(v) ? v->valueint : dflt;
 }
 
-static bool s_web_started;
-
-char *web_edge_buffer_for_boot(size_t *cap)
-{
-    configASSERT(!s_web_started);  // one owner at a time (spec §9.3): init, until the web starts
-    *cap = sizeof s_edge_body;
-    return s_edge_body;
-}
-
 int webapi_start(const cJSON *system)
 {
-    s_web_started = true;
     char user[17], pass[17];
     str_into(user, sizeof user, system, "username");
     str_into(pass, sizeof pass, system, "password");

@@ -834,21 +834,29 @@ static void give_up(const char *why, const char *step)
 void edge_start(void)
 {
     json_alloc_install();  // so every failed cJSON allocation of the load is counted (the web does it later too)
-    size_t cap;
-    char *buf = web_edge_buffer_for_boot(&cap);
-    size_t len = store_edge_text(buf, cap);  // the default "[]" when none was saved; 0 only when it cannot be read
+    // The model's text in a heap buffer for the load only, freed before the Edge tasks start (Plan 09c ruling 4).
+    char *buf = malloc(CFG_EDGE_MAX + 1);
+    if (!buf) {
+        s_note = "NO MEMORY";
+        SLOG_E("edge", "no memory to read the saved model: Edge stays off");
+        return;
+    }
+    size_t len = store_edge_text(buf, CFG_EDGE_MAX + 1);  // the default "[]" when none was saved; 0 only when it cannot be read
     if (!len) {
+        free(buf);
         s_note = "MODEL UNREADABLE";  // spec §9.1: the edge DB is not usable, Edge stays off (Codex 08c code review)
         SLOG_E("edge", "the saved model cannot be read: Edge stays off");
         return;
     }
     load_t count = {0};
     if (!walk(&count, buf, len)) {
+        free(buf);
         s_note = "MODEL UNREADABLE";
         return;
     }
     cJSON *rep = store_get("edgeReport"), *links = store_get("edgeLinkage");
     if (!rep || !links) {
+        free(buf);
         cJSON_Delete(rep);
         cJSON_Delete(links);
         give_up("NO MEMORY", "edgeReport and edgeLinkage");
@@ -871,13 +879,16 @@ void edge_start(void)
         c.stack_bytes[c.ntasks++] = RPT_STACK;
     s_tcp = count.neth ? calloc((size_t)count.neth, sizeof *s_tcp) : NULL;
     if ((count.neth && !s_tcp) || !edge_reserve(&c, &M, heap_alloc, free)) {
+        free(buf);
         cJSON_Delete(links);
         give_up("NO MEMORY", "the model, stacks and locks");
         return;
     }
     s_devs = M.devs;
     load_t fill = {.fill = true};
-    bool ok = walk(&fill, buf, len) && edge_index_init(&s_index, (size_t)(fill.npts ? fill.npts : 1));
+    bool ok = walk(&fill, buf, len);
+    free(buf);  // its last use: the model holds copies (edge_*_from_json)
+    ok = ok && edge_index_init(&s_index, (size_t)(fill.npts ? fill.npts : 1));
     s_ndev = fill.ndev;
     s_npts = fill.npts;
     for (int i = 0; ok && i < s_npts; i++)

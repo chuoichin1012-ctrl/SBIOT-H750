@@ -513,8 +513,63 @@ static void test_step(void)
     CHECK(edge_step(&d, 2) == 0, "fewer blocks than the cursor (never after a load, but safe): from the first");
 }
 
+// ---- Plan 09c T4: the boot buffer is freed once the model is loaded --------------------------------------
+
+typedef struct {
+    edge_dev_t dev[32];
+    edge_pt_t pt[100];
+    int ndev, npt;
+} boot_model_t;
+
+static bool boot_dev(void *ctx, const cJSON *d, int index)
+{
+    boot_model_t *m = ctx;
+    edge_dev_from_json(d, &m->dev[index]);
+    m->dev[index].pts = &m->pt[m->npt];
+    m->ndev++;
+    return true;
+}
+
+static bool boot_node(void *ctx, const cJSON *n, int dev)
+{
+    boot_model_t *m = ctx;
+    edge_pt_from_json(n, &m->dev[dev], &m->pt[m->npt++]);
+    m->dev[dev].npts++;
+    return true;
+}
+
+/** As edge_start: the model read into a heap buffer, loaded, the buffer freed; then the model is used (ASan). */
+static void test_boot_buffer_freed(void)
+{
+    char *text = malloc(CFG_EDGE_MAX + 1);
+    size_t o = (size_t)snprintf(text, CFG_EDGE_MAX + 1, "[");
+    for (int d = 0, k = 0; d < 20; d++) {
+        o += (size_t)snprintf(text + o, CFG_EDGE_MAX + 1 - o, "%s{\"name\":\"dev_%02d\",\"source\":\"uart\",\"uart\":1,\"protocol\":\"modbus\",\"addr\":\"%d\",\"nodes\":[",
+                              d ? "," : "", d, d + 1);
+        for (int i = 0; i < 5; i++, k++)
+            o += (size_t)snprintf(text + o, CFG_EDGE_MAX + 1 - o, "%s{\"name\":\"pt_%03d\",\"fc\":3,\"reg\":%d,\"dtype\":\"uint16\",\"formula\":\"=%%s*2\"}",
+                                  i ? "," : "", k, i);
+        o += (size_t)snprintf(text + o, CFG_EDGE_MAX + 1 - o, "]}");
+    }
+    o += (size_t)snprintf(text + o, CFG_EDGE_MAX + 1 - o, "]");
+    static boot_model_t m;
+    memset(&m, 0, sizeof m);
+    char err[160];
+    cfg_result_t r = cfg_edge_load(&ENV, text, o, boot_dev, boot_node, &m, err, sizeof err);
+    free(text);  // edge_start frees it here, before the Edge tasks start
+    size_t total = 0;
+    for (int i = 0; i < m.npt; i++)
+        total += strlen(m.pt[i].name) + (m.pt[i].dev ? strlen(m.pt[i].dev->name) : 0);
+    for (int d = 0; d < m.ndev; d++)
+        total += strlen(m.dev[d].name) + strlen(m.dev[d].addr);
+    CHECK(r == CFG_OK && m.ndev == 20 && m.npt == 100 && total > 0,
+          "a 100-point model used after its boot buffer was freed: nothing points into it (%d %s, %d devices, %d points)", r, err, m.ndev,
+          m.npt);
+}
+
 int main(void)
 {
+    test_boot_buffer_freed();
     test_batch_top();
     test_tmpl_check();
     test_step();

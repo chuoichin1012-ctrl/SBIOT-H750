@@ -42,6 +42,7 @@ typedef struct {
     bool pend;  // the current frame is still to be sent to it
     uint64_t since;
     mbtcp_acc_t acc;
+    mbtcp_acc_t *eacc;  // Edge remote access framing (Plan 08c), apart from the gateway's acc; NULL without Edge
     uint16_t tid;             // Modbus TCP client: the transaction id of the request in flight
     uint64_t mb_deadline_us;  // ... awaited until then
     uint8_t mb_unit, mb_fc;
@@ -75,6 +76,8 @@ typedef struct {
     StaticSemaphore_t rpt_done_mem;
     volatile bridge_edge_fn edge;  // Edge remote access on this port (Plan 08c), or NULL
     volatile int edge_framing;
+    mbtcp_acc_t *volatile eaccs;   // BR_MAX_CLIENTS accumulators from Edge's reservation
+    uint32_t eacc_used;
     int udp;
     struct sockaddr_in peer;
     bool peer_ok;
@@ -331,9 +334,9 @@ static void from_network(bridge_t *b, client_t *cl, const uint8_t *data, size_t 
     int framing = b->edge_framing;
     if (edge && !(b->C.modbus_gw && framing == BRIDGE_EDGE_MBAP)) {  // a gateway's ADUs: on_adu
         edge_ctx_t e = {b, cl, reply, ctx};
-        if (cl && framing != BRIDGE_EDGE_JSON && !b->C.modbus_gw) {  // a TCP stream: requests cut out
-            frame_push(&cl->acc, data, len, framing == BRIDGE_EDGE_MBAP, edge_req, edge_pass, &e);
-            acc_stamp(&cl->acc, now_us());
+        if (cl && cl->eacc && framing != BRIDGE_EDGE_JSON) {  // a TCP stream: requests cut out, on any port
+            frame_push(cl->eacc, data, len, framing == BRIDGE_EDGE_MBAP, edge_req, edge_pass, &e);
+            acc_stamp(cl->eacc, now_us());
             return;
         }
         if (edge_req(&e, data, len))  // a segment or datagram is one request
@@ -348,17 +351,17 @@ static void drop_client(bridge_t *b, int i);
 // edge_flush_stale). Clients whose reply failed are dropped.
 static void edge_flush_stale(bridge_t *b)
 {
-    if (!b->edge || b->C.modbus_gw || b->edge_framing == BRIDGE_EDGE_JSON)
+    if (!b->edge || b->edge_framing == BRIDGE_EDGE_JSON)
         return;
     uint64_t now = now_us();
     for (int i = b->ncli - 1; i >= 0; i--) {
         client_t *cl = &b->cli[i];
-        if (!acc_stale(&cl->acc, now))
+        if (!cl->eacc || !acc_stale(cl->eacc, now))
             continue;
-        size_t n = cl->acc.len;
-        cl->acc.len = 0;
+        size_t n = cl->eacc->len;
+        cl->eacc->len = 0;
         tcp_reply_t rc = {b, cl};
-        pass_on(b, cl, cl->acc.buf, n, reply_tcp, &rc);
+        pass_on(b, cl, cl->eacc->buf, n, reply_tcp, &rc);
         if (cl->c.fd < 0)
             drop_client(b, i);
     }
@@ -386,8 +389,29 @@ static bool frame_to_adu(bridge_t *b, client_t *cl)
     return n > 0;
 }
 
+// A client's own Edge accumulator (Codex 08c code review: a Modbus gateway port frames RTU for Edge too).
+static void eacc_attach(bridge_t *b, client_t *cl)
+{
+    cl->eacc = NULL;
+    for (int k = 0; b->eaccs && k < BR_MAX_CLIENTS; k++)
+        if (!(b->eacc_used & 1u << k)) {
+            b->eacc_used |= 1u << k;
+            cl->eacc = &b->eaccs[k];
+            memset(cl->eacc, 0, sizeof *cl->eacc);
+            return;
+        }
+}
+
+static void eacc_detach(bridge_t *b, client_t *cl)
+{
+    if (cl->eacc)
+        b->eacc_used &= ~(1u << (cl->eacc - b->eaccs));
+    cl->eacc = NULL;
+}
+
 static void drop_client(bridge_t *b, int i)
 {
+    eacc_detach(b, &b->cli[i]);
     conn_close(&b->cli[i].c);
     b->cli[i] = b->cli[--b->ncli];
 }
@@ -397,6 +421,7 @@ static void abort_client(bridge_t *b, int i)
 {
     struct linger lg = {.l_onoff = 1, .l_linger = 0};
     lwip_setsockopt(b->cli[i].c.fd, SOL_SOCKET, SO_LINGER, &lg, sizeof lg);
+    eacc_detach(b, &b->cli[i]);
     conn_close(&b->cli[i].c);
     b->cli[i] = b->cli[--b->ncli];
 }
@@ -584,6 +609,7 @@ static void tcp_server(bridge_t *b)
                 memset(cl, 0, sizeof *cl);
                 cl->c.fd = fd;
                 cl->since = now_us();
+                eacc_attach(b, cl);
                 SLOG_I("bridge", "UART%d: client %s connected (%d)", b->n, inet_ntoa(from.sin_addr), b->ncli);
             }
         }
@@ -635,6 +661,7 @@ static void tcp_client(bridge_t *b)
             memset(cl, 0, sizeof *cl);
             cl->c.fd = fd;
             cl->c.tls = tls;
+            eacc_attach(b, cl);
             b->ncli = 1;
             frame_done(b, false);
             SLOG_I("bridge", "UART%d: connected to %s:%u", b->n, b->C.host, b->C.remote_port);
@@ -958,11 +985,14 @@ bool bridge_send(int port, const uint8_t *data, size_t len)
     }
 }
 
-void bridge_set_edge(int port, bridge_edge_fn fn, int framing)
+size_t bridge_edge_acc_bytes(void) { return BR_MAX_CLIENTS * sizeof(mbtcp_acc_t); }
+
+void bridge_set_edge(int port, bridge_edge_fn fn, int framing, void *accs)
 {
     if (port < 1 || port > SERIAL_PORTS)
         return;
     bridge_t *b = &s_br[port - 1];
     b->edge_framing = framing;
+    b->eaccs = accs;  // clients connected from now on get one; earlier ones are answered one segment at a time
     b->edge = fn;
 }

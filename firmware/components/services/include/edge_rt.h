@@ -8,6 +8,7 @@
 void edge_start(void);
 /** /api/status edge.state: "NOT RUNNING", "NO MEMORY", "RUNNING ok/total", with notes. */
 void edge_status(char *state, size_t len);
-/** The save check of edgeReport (spec §9.4): false when the template, compiled against the running model's
- * names, needs a report buffer over the 26 KB limit. True when Edge does not run (the boot decides). */
-bool edge_template_fits(const char *tmpl, bool quote, const char *placeholder);
+/** The save check of edgeReport (spec §9.4): the template compiled against the running model's names. An
+ * EDGE_TMPL_* value: OK (also when Edge does not run: the boot decides), TOO_LARGE over the 26 KB limit, or
+ * NO_MEMORY (the save is refused, the stored one kept). */
+int edge_template_check(const char *tmpl, bool quote, const char *placeholder);

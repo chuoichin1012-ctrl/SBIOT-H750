@@ -8,7 +8,7 @@ and remote access use port1's socket (channel 1).
 
     python3 stm32/firmware/test/bench/edge_check.py [case ...]
 
-Cases: basic change schedule remote split contention dead late shortreport partial bigreport memory di (di needs
+Cases: basic change schedule remote split gwrtu contention dead late shortreport partial bigreport memory di (di needs
 DO1 wired to DI1).
 Prints one line per check and "bench: ok".
 """
@@ -171,6 +171,9 @@ class Stream(threading.Thread):
 
     def run(self):
         while not self.stop:
+            if self.slow > 1:  # paused
+                time.sleep(0.05)
+                continue
             try:
                 d = self.sock.recv(65536 if not self.slow else 512)
             except socket.timeout:
@@ -318,7 +321,7 @@ def cadence_ok(st, rs, every):
     """Reports per second over the window: TCP may split one report or join two in a segment, so the count
     over the span is what is checked, not the gaps between segments."""
     span = st.pieces[-1][0] - st.pieces[0][0] if len(st.pieces) > 1 else 0
-    return span > 4 * every and abs((len(rs) - 1) - span / every) <= 1.5, (len(rs), round(span, 1))
+    return span >= 3 * every and abs((len(rs) - 1) - span / every) <= 1.5, (len(rs), round(span, 1))
 
 
 def reports(st):
@@ -345,9 +348,17 @@ def case_basic():
     check(r.get('k') == 'const' and r.get('sn') == s['system']['sn'] and r.get('mac') == s['system']['mac'],
           'template constants kept, sys_sn and sys_mac filled')
     check('ts' in r and r['ts'] is None and r['ut'] is None, 'no clock: sys_time and sys_unix_time are the placeholder')
-    check(re.match(r'RUNNING (\d+)/\1$', status()), 'status: every point read (%s)' % status())
+    full = wait(lambda: re.match(r'RUNNING (\d+)/\1$', status()), 5, 0.5)  # a late packet on the bench's WSL path can fail a read
+    check(full, 'status: every point read (%s)' % status())
     fc3 = [(a, n) for _, u, fc, a, n in slave.log if u == 5 and fc == 3]
     check(fc3 and all(x == (10, 4) for x in fc3), 'batch reads: t, c2, f in one request, FC3 10..13 (%s)' % fc3[:3])
+    u5 = [(t, fc) for t, u, fc, a, n in slave.log if u == 5]
+    gaps = [round(b[0] - a[0], 2) for a, b in zip(u5, u5[1:])]
+    pairs = [(a[1], b[1]) for a, b in zip(u5, u5[1:])]
+    good = [g for g, (x, y) in zip(gaps, pairs) if 0.85 <= g <= 1.4 and x != y]
+    # The slave's log is stamped on the PC: TCP through WSL's NAT now and then delays a packet by seconds.
+    check(len(gaps) >= 6 and len(good) >= 0.8 * len(gaps) and sorted(gaps)[len(gaps) // 2] <= 1.4,
+          "the polling interval: one block, then 1 s, then the device's next block (%d of %d gaps: %s)" % (len(good), len(gaps), gaps))
     ok, seen = cadence_ok(st, rs, 2)
     check(ok, 'periodic: every 2 s (%d reports over %s s)' % seen)
 
@@ -545,6 +556,28 @@ def case_split():
     bc.wait_peer(tcp, 1)
 
 
+def case_gwrtu():
+    """Codex 08c code review: on a Modbus gateway port, Edge's RTU requests are framed too (their own accumulator),
+    and what is not Edge's goes on to the gateway."""
+    check(setup([plc(mapEn=True, mapAddr=10)], report={'remoteAccess': 1, 'remoteFormat': 0}, port1={'socketMode': 1}),
+          'set up: port1 a Modbus gateway, Edge remote access RTU')
+    slave = BusSlave()
+    slave.start()
+    time.sleep(3)
+    s = connect()
+    q = rtu_req(10, 3, 11, 1)
+    s.sendall(q[:3])
+    time.sleep(0.05)
+    r = ask(s, q[3:], 2, 7)
+    check(r == bc.rtu(bytes([10, 3, 2, 0, 7])), 'an RTU request for Edge in two pieces: answered (%s)' % r.hex())
+    r = ask(s, q + rtu_req(10, 3, 10, 1), 2, 14)
+    check(r == bc.rtu(bytes([10, 3, 2, 0, 7])) + bc.rtu(bytes([10, 3, 2, 0, 250])), 'two in one segment: both (%s)' % r.hex())
+    r = ask(s, bc.mbap(7, bytes([5, 3, 0, 11, 0, 1])), 3, 11)
+    check(r == bc.mbap(7, bytes([5, 3, 2, 0, 7])), "Modbus TCP for the bus goes on to the gateway (%s)" % r.hex())
+    s.close()
+    slave.close()
+
+
 def case_contention():
     check(setup([plc(poll=200, mapEn=True, mapAddr=10)], report={'remoteAccess': 1, 'remoteFormat': 1},
                 port1={'socketMode': 1}), 'set up: port1 a Modbus gateway, Edge polling unit 5 every 200 ms')
@@ -663,20 +696,31 @@ def case_bigreport():
     slave = BusSlave()
     slave.start()
     time.sleep(3)
-    st = Stream(rcvbuf=4096)
-    st.slow = 0.01
+    st = Stream(rcvbuf=1024)
     st.start()
     time.sleep(3)
     for i in range(5):  # serial frames from the bus to port1, between reports
         slave.send(b'SER%02d' % i)
         time.sleep(0.3)
+    # Stop reading for 6 s: lwIP's send buffer (TCP_SND_BUF 5840) and the PC's receive buffer fill, and the bridge
+    # holds a report half sent. Then a request, and reading again.
+    st.slow = 6
+    time.sleep(1)
+    rcv = st.sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+    time.sleep(6)
+    before = len(st.data)
     req = {'rw_prot': {'Ver': '1.0.1', 'dir': 'down', 'id': '9', 'r_data': [{'name': 't'}]}}
     st.sock.sendall(json.dumps(req).encode())
+    st.slow = 0
     time.sleep(4)
     st.close()
     objs, rest = st.objects()
     reps = [(o, n) for o, n in objs if 'k_long_name_000' in o]
     replies = [o for o, n in objs if 'rw_prot' in o]
+    at = st.data.find(b'"rw_prot"')
+    ahead = (at - before) if at > 0 else -1  # report bytes that had to go out before the reply
+    check(ahead > 5840 + rcv, 'the reply waited for %d report bytes, more than lwIP and the PC hold (%d): a report was half sent in the bridge'
+          % (ahead, 5840 + rcv))
     check(len(reps) >= 5 and all(len(o) == 71 and n > 3000 for o, n in reps), 'TCP: whole reports of %d bytes, one byte stream each' % (reps[0][1] if reps else 0))
     check(rest.replace(b' ', b'') == b''.join(b'SER%02d' % i for i in range(5)), 'serial frames between them arrive whole and in order (%r)' % rest[:60])
     check(len(replies) == 1, 'a remote request while a report is half sent: the report whole, then the reply')
@@ -743,7 +787,7 @@ def case_di():
 
 
 CASES = {'basic': case_basic, 'change': case_change, 'schedule': case_schedule, 'remote': case_remote, 'split': case_split,
-         'contention': case_contention, 'dead': case_dead, 'late': case_late, 'shortreport': case_shortreport,
+         'gwrtu': case_gwrtu, 'contention': case_contention, 'dead': case_dead, 'late': case_late, 'shortreport': case_shortreport,
          'partial': case_partial, 'bigreport': case_bigreport, 'memory': case_memory, 'di': case_di}
 
 

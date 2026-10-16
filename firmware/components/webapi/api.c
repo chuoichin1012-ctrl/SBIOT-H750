@@ -7,7 +7,9 @@
 #include "heap_newlib.h"
 #include "io_core.h"
 #include "iomgr.h"
+#include "arena.h"
 #include "bridge.h"
+#include "edge_core.h"
 #include "edge_rt.h"
 #include "netmgr.h"
 #include "serial.h"
@@ -242,23 +244,29 @@ static void config_get(struct mg_connection *c, const char *name)
 
 // spec §9.4: a template that needs a report buffer over 26 KB with the running model's names is refused
 // before it is saved. Anything that does not parse goes on to the store, which answers it.
-static bool report_template_fits(struct mg_http_message *hm)
+// Out of memory here refuses the save (500), the stored one kept (Codex 08c code review).
+static int report_template_check(struct mg_http_message *hm)
 {
+    unsigned before = json_alloc_failures();
     cJSON *b = cJSON_ParseWithLength(hm->body.buf, hm->body.len);
     const char *tmpl = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(b, "template"));
     const char *ph = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(b, "placeholder"));
     bool quote = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(b, "quoteValues"));
     bool ph_on = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(b, "failurePlaceholder"));
-    bool fits = !tmpl || edge_template_fits(tmpl, quote, ph_on ? (ph ? ph : "null") : NULL);
+    int st = json_alloc_failures() != before ? EDGE_TMPL_NO_MEMORY
+             : tmpl                          ? edge_template_check(tmpl, quote, ph_on ? (ph ? ph : "null") : NULL)
+                                             : EDGE_TMPL_OK;
     cJSON_Delete(b);
-    return fits;
+    return st;
 }
 
 static void config_post(struct mg_connection *c, const char *name, struct mg_http_message *hm)
 {
     char err[160];
-    if (!strcmp(name, "edgeReport") && !report_template_fits(hm)) {
-        api_error(c, 400, "The report template needs too many values for this gateway.");
+    int tst = strcmp(name, "edgeReport") ? EDGE_TMPL_OK : report_template_check(hm);
+    if (tst == EDGE_TMPL_TOO_LARGE || tst == EDGE_TMPL_NO_MEMORY) {
+        api_error(c, tst == EDGE_TMPL_NO_MEMORY ? 500 : 400,
+                  tst == EDGE_TMPL_NO_MEMORY ? "Out of memory." : "The report template needs too many values for this gateway.");
         return;
     }
     store_err_t e = store_set_text(name, hm->body.buf, hm->body.len, err, sizeof err);

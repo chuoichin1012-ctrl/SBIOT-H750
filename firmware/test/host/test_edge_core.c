@@ -429,8 +429,95 @@ static void test_reserve(void)
     edge_unreserve(&m, counting_free);
 }
 
+// Codex 08c code review: a batch ending at 65536 must not wrap to 0.
+static void test_batch_top(void)
+{
+    edge_dev_t d = {.merge = true};
+    edge_pt_t p[] = {pt(3, 65530, DT_UINT16, 200), pt(3, 65534, DT_FLOAT32_ABCD, 200)};
+    edge_pt_t *order[2] = {&p[0], &p[1]};
+    p[0].dev = p[1].dev = &d;
+    d.pts = p, d.npts = 2;
+    edge_batch_t b[2];
+    int n = edge_batches(&d, order, b, 2);
+    CHECK(n == 1 && b[0].start == 65530 && b[0].qty == 6 && b[0].count == 2, "65530..65535 in one read (%d: %u, %u)", n, b[0].start, b[0].qty);
+}
+
+// The template checks (spec §9.4): its size against the limit, and no memory told apart from a bad template.
+static int s_mfail = -1;
+void *__real_malloc(size_t n);
+void *__wrap_malloc(size_t n)
+{
+    if (s_mfail >= 0 && s_mfail-- == 0)
+        return NULL;
+    return __real_malloc(n);
+}
+void *__real_calloc(size_t n, size_t m);
+void *__wrap_calloc(size_t n, size_t m)
+{
+    if (s_mfail >= 0 && s_mfail-- == 0)
+        return NULL;
+    return __real_calloc(n, m);
+}
+
+static void *res_t(void *ctx, const char *name)
+{
+    (void)ctx;
+    static char h;
+    return !strcmp(name, "t") ? &h : NULL;
+}
+
+static void test_tmpl_check(void)
+{
+    edge_tmpl_t *t = NULL;
+    CHECK(edge_tmpl_check("{\"a\":\"t\",\"k\":\"const\"}", res_t, NULL, false, "null", 26 * 1024, &t) == EDGE_TMPL_OK && t,
+          "a template that fits, kept");
+    edge_tmpl_free(t);
+    CHECK(edge_tmpl_check("[1,2]", res_t, NULL, false, NULL, 26 * 1024, NULL) == EDGE_TMPL_NOT_OBJECT, "not an object");
+    CHECK(edge_tmpl_check("{\"a\":\"t\",\"b\":\"t\"}", res_t, NULL, false, NULL, 300, NULL) == EDGE_TMPL_TOO_LARGE,
+          "two slots over a 300 B limit: too large");
+    const char *tm = "{\"a\":\"t\",\"b\":[\"t\",\"x\"],\"c\":{\"d\":\"t\"}}";
+    int n = 0, bad = 0;
+    for (;; n++) {
+        s_fail_at = n;  // cJSON's allocations through the hooks, counted
+        s_mfail = -1;
+        cJSON_Hooks h = {fail_malloc, free};
+        cJSON_InitHooks(&h);
+        int r = edge_tmpl_check(tm, res_t, NULL, false, "-1", 26 * 1024, NULL);
+        cJSON_InitHooks(NULL);
+        bool reached = s_fail_at < 0;
+        s_fail_at = -1;
+        bad += reached ? r != EDGE_TMPL_NO_MEMORY : r != EDGE_TMPL_OK;
+        if (!reached)
+            break;
+    }
+    for (int k = 0; k < 6; k++) {  // edgecore's own allocations (the compiled template, its fragments)
+        s_mfail = k;
+        int r = edge_tmpl_check(tm, res_t, NULL, false, "-1", 26 * 1024, NULL);
+        bool reached = s_mfail < 0;
+        s_mfail = -1;
+        bad += reached && r != EDGE_TMPL_NO_MEMORY;
+    }
+    CHECK(bad == 0 && n > 5, "no memory at any of %d allocations: NO_MEMORY, never a bad template or a silent fit (%d bad)", n, bad);
+}
+
+// The user's polling interval (Plan 08c): one block or point, then the interval, then the next one.
+static void test_step(void)
+{
+    edge_dev_t d = {.poll_ms = 1000};
+    int seq[7];
+    for (int i = 0; i < 7; i++)
+        seq[i] = edge_step(&d, 3);
+    CHECK(seq[0] == 0 && seq[1] == 1 && seq[2] == 2 && seq[3] == 0 && seq[6] == 0, "steps go round the device's blocks in order");
+    CHECK(edge_step(&d, 0) == -1, "a device with nothing to read: no step");
+    d.cursor = 5;
+    CHECK(edge_step(&d, 2) == 0, "fewer blocks than the cursor (never after a load, but safe): from the first");
+}
+
 int main(void)
 {
+    test_batch_top();
+    test_tmpl_check();
+    test_step();
     test_from_json();
     test_load_oom();
     test_batches();

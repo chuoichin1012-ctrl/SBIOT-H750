@@ -43,6 +43,7 @@ struct edge_dev {
     int npts;
     // runtime (edge_rt.c)
     int64_t next_poll;
+    int cursor;              // the next block or point to read (one per polling interval)
     volatile bool poll_now;  // a remote write asks for a read-back
     void *link;              // edge_rt's per-device I/O state (the Modbus TCP connection and its lock)
 };
@@ -64,6 +65,9 @@ typedef struct {
  * with merge, neighbours of one fc with gaps of up to 8 go into one read, at most 125 registers or 2000
  * bits; a batch waits as long as its slowest point. Returns the number of batches (≤ max). */
 int edge_batches(const edge_dev_t *d, edge_pt_t **order, edge_batch_t *out, int max);
+/** The user's polling interval (Plan 08c): a device reads one block (Modbus) or point (DL/T645) at a time and
+ * waits its interval before the next. The index of the step to read now among nsteps, advancing; -1 for none. */
+int edge_step(edge_dev_t *d, int nsteps);
 /** A point's registers out of a batch's reply data (n bytes, n < 0: no reply); false when not covered. */
 bool edge_batch_take(const edge_pt_t *p, const edge_batch_t *b, const uint8_t *data, int n, uint16_t *regs);
 /** The value after the point's formula (refs already resolved); false when an input is missing or it fails. */
@@ -122,6 +126,14 @@ int edge_sys_field(const char *name);
 edge_kind_t edge_sys_value(int field, int64_t utc_ms, const char *sn, const char *mac, const char *ver, double *num,
                            const char **text, char buf[20]);
 
+// ---- The report template (spec §9.4) ---------------------------------------------------------------------
+
+enum { EDGE_TMPL_OK, EDGE_TMPL_TOO_LARGE, EDGE_TMPL_NOT_OBJECT, EDGE_TMPL_NO_MEMORY };
+/** Compiles tmpl and checks its report buffer against max. Any failed allocation is NO_MEMORY (cJSON's counted by
+ * json_alloc_failures; a NULL from the compile of a valid object), never NOT_OBJECT or a silently wrong placeholder.
+ * With keep, an OK template is handed over (the caller frees it); otherwise it is freed here. */
+int edge_tmpl_check(const char *tmpl, edge_resolve_fn resolve, void *ctx, bool quote, const char *ph, size_t max, edge_tmpl_t **keep);
+
 // ---- Memory: all or nothing (Plan 08c ruling 2) ------------------------------------------------------
 
 #define EDGE_MAX_TASKS 9   // edge_bus 0..2, edge_tcp 0..5, edge_ctl, edge_rpt (bench: the largest model needs 9)
@@ -134,6 +146,7 @@ typedef struct {
     size_t tcb_bytes;
     int nlocks;
     size_t lock_bytes;
+    size_t acc_bytes;                 // the bridge's per-client Edge accumulators (remote access on a socket), or 0
 } edge_counts_t;
 typedef struct {
     edge_dev_t *devs;
@@ -143,6 +156,7 @@ typedef struct {
     bool *snap_valid;
     char *report;
     void *stacks[EDGE_MAX_TASKS], *tcbs[EDGE_MAX_TASKS], *locks[EDGE_MAX_LOCKS];
+    void *accs;
 } edge_mem_t;
 typedef void *(*edge_alloc_fn)(size_t n);  // zeroed memory, or NULL
 typedef void (*edge_free_fn)(void *p);

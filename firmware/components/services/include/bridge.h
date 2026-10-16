@@ -24,6 +24,9 @@ bool bridge_send(int port, const uint8_t *data, size_t len);
 /** Edge's answer to a request (the reply's length), or 0: not Edge's, it goes on down the bridge's path. */
 typedef size_t (*bridge_edge_fn)(const uint8_t *req, size_t len, uint8_t *reply, size_t max);
 enum { BRIDGE_EDGE_RTU, BRIDGE_EDGE_MBAP, BRIDGE_EDGE_JSON };  // edgeReport.remoteFormat 0, 1, 2
-/** Edge remote access on port n, ahead of the bridge's own paths: MBAP through a Modbus gateway's ADUs, RTU
- * and MBAP cut out of a TCP stream (frame_push), JSON one segment or datagram per request. */
-void bridge_set_edge(int port, bridge_edge_fn fn, int framing);
+/** Edge remote access on port n, ahead of the bridge's own paths: MBAP through a Modbus gateway's ADUs; RTU, and
+ * MBAP on other ports, cut out of each client's stream with its own accumulator (frame_push), what is not Edge's
+ * then going on to the gateway or the port; JSON one segment or datagram per request. */
+void bridge_set_edge(int port, bridge_edge_fn fn, int framing, void *accs);
+/** The bytes bridge_set_edge's accs needs: one framing accumulator per client of the port (Edge reserves them). */
+size_t bridge_edge_acc_bytes(void);

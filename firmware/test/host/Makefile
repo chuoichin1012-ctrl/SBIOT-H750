@@ -212,4 +212,4 @@ $(BUILD)/test_tlsconn: test_tlsconn.c tls_test_port.c ../../components/services/
 
 $(BUILD)/test_edge_core: test_edge_core.c ../../components/services/edge_core.c ../../components/proto/edgecore.c ../../components/proto/modbus.c ../../components/sysmgr/clock.c $(CFG) $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -I../../components/services/include -I../../components/sysmgr/include $^ -lm -o $@
+	$(CC) $(CFLAGS) -I../../components/services/include -I../../components/sysmgr/include $^ -lm -Wl,--wrap=malloc -Wl,--wrap=calloc -o $@

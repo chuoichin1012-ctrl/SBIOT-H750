@@ -7,7 +7,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include "clock.h"
+#include "jsonscan.h"
 #include "modbus.h"
+
+unsigned json_alloc_failures(void);  // the JSON allocator's failed allocations (arena.c; the host tests' own)
 
 static int num(const cJSON *o, const char *k) { return (int)cJSON_GetNumberValue(cJSON_GetObjectItem(o, k)); }
 static double dbl(const cJSON *o, const char *k) { return cJSON_GetNumberValue(cJSON_GetObjectItem(o, k)); }
@@ -95,11 +98,11 @@ int edge_batches(const edge_dev_t *d, edge_pt_t **order, edge_batch_t *out, int 
     for (int i = 0; i < d->npts && nb < max;) {
         edge_pt_t *first = order[i];
         bool bits = first->fc <= 2;
-        uint16_t start = first->reg, end = (uint16_t)(start + width_of(first));
+        uint32_t start = first->reg, end = start + (uint32_t)width_of(first);  // 32 bits: a read may end at 65536
         int j = i + 1, timeout = first->timeout_ms;
         // Neighbours of the same function code, gaps of up to 8 read through.
         while (d->merge && j < d->npts && order[j]->fc == first->fc && order[j]->reg >= start && order[j]->reg <= end + 8) {
-            uint16_t e = (uint16_t)(order[j]->reg + width_of(order[j]));
+            uint32_t e = order[j]->reg + (uint32_t)width_of(order[j]);
             if ((e - start) > (bits ? 2000 : 125))
                 break;
             if (e > end)
@@ -108,11 +111,22 @@ int edge_batches(const edge_dev_t *d, edge_pt_t **order, edge_batch_t *out, int 
                 timeout = order[j]->timeout_ms;
             j++;
         }
-        out[nb++] = (edge_batch_t){.first = i, .count = j - i, .fc = first->fc, .timeout_ms = timeout, .start = start,
+        out[nb++] = (edge_batch_t){.first = i, .count = j - i, .fc = first->fc, .timeout_ms = timeout, .start = (uint16_t)start,
                                    .qty = (uint16_t)(end - start)};
         i = j;
     }
     return nb;
+}
+
+int edge_step(edge_dev_t *d, int nsteps)
+{
+    if (nsteps <= 0)
+        return -1;
+    if (d->cursor < 0 || d->cursor >= nsteps)
+        d->cursor = 0;
+    int i = d->cursor;
+    d->cursor = (i + 1) % nsteps;
+    return i;
 }
 
 bool edge_batch_take(const edge_pt_t *p, const edge_batch_t *b, const uint8_t *data, int n, uint16_t *regs)
@@ -337,6 +351,34 @@ edge_kind_t edge_sys_value(int field, int64_t utc_ms, const char *sn, const char
     return *text_out = buf, EDGE_TEXT;
 }
 
+// ---- the report template --------------------------------------------------------------------------------
+
+int edge_tmpl_check(const char *tmpl, edge_resolve_fn resolve, void *ctx, bool quote, const char *ph, size_t max, edge_tmpl_t **keep)
+{
+    if (keep)
+        *keep = NULL;
+    unsigned before = json_alloc_failures();
+    edge_tmpl_t *t = edge_tmpl_compile(tmpl, resolve, ctx, quote, ph);
+    if (json_alloc_failures() != before) {  // a part of it may be missing or wrong (the placeholder's parse)
+        edge_tmpl_free(t);
+        return EDGE_TMPL_NO_MEMORY;
+    }
+    if (!t) {
+        js_span_t root;
+        bool object = js_parse_root(tmpl, strlen(tmpl), &root) && js_type(root) == JS_OBJECT;
+        return object ? EDGE_TMPL_NO_MEMORY : EDGE_TMPL_NOT_OBJECT;  // a valid object compiles unless memory ran out
+    }
+    if (edge_tmpl_size(t) > max) {
+        edge_tmpl_free(t);
+        return EDGE_TMPL_TOO_LARGE;
+    }
+    if (keep)
+        *keep = t;
+    else
+        edge_tmpl_free(t);
+    return EDGE_TMPL_OK;
+}
+
 // ---- memory ---------------------------------------------------------------------------------------------
 
 void edge_unreserve(edge_mem_t *m, edge_free_fn release)
@@ -353,6 +395,7 @@ void edge_unreserve(edge_mem_t *m, edge_free_fn release)
     }
     for (int i = 0; i < EDGE_MAX_LOCKS; i++)
         release(m->locks[i]);
+    release(m->accs);
     memset(m, 0, sizeof *m);
 }
 
@@ -377,6 +420,8 @@ bool edge_reserve(const edge_counts_t *c, edge_mem_t *m, edge_alloc_fn alloc, ed
         ok = take(&m->stacks[i], c->stack_bytes[i], alloc) && take(&m->tcbs[i], c->tcb_bytes, alloc);
     for (int i = 0; ok && i < c->nlocks; i++)
         ok = take(&m->locks[i], c->lock_bytes, alloc);
+    if (ok && c->acc_bytes)
+        ok = take(&m->accs, c->acc_bytes, alloc);
     if (!ok)
         edge_unreserve(m, release);
     return ok;

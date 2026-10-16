@@ -336,24 +336,26 @@ static void store_value(edge_pt_t *p, double raw)
         report_soon();
 }
 
-static void poll_modbus(edge_dev_t *d)
+// One block (the user's polling interval: each block, then the interval), or all of them for a read-back.
+static void poll_modbus(edge_dev_t *d, bool all)
 {
     edge_pt_t *order[d->npts ? d->npts : 1];
     edge_batch_t batches[d->npts ? d->npts : 1];
     for (int i = 0; i < d->npts; i++)
         order[i] = &d->pts[i];
     int nb = edge_batches(d, order, batches, d->npts);
-    for (int k = 0; k < nb; k++) {
+    int k0 = all ? 0 : edge_step(d, nb), k1 = all ? nb : k0 + 1;
+    for (int k = k0; k >= 0 && k < k1; k++) {
         edge_batch_t *b = &batches[k];
         uint8_t data[256];
         int n = modbus_read(d, b->fc, b->start, b->qty, b->timeout_ms, data);
         if (!cache_lock())
             return;
-        int last = n == MB_NO_LINK ? d->npts : b->first + b->count;  // no connection: the rest fail now
-        for (int i = b->first; i < last; i++) {
+        int first = n == MB_NO_LINK ? 0 : b->first, last = n == MB_NO_LINK ? d->npts : b->first + b->count;
+        for (int i = first; i < last; i++) {  // no connection: every point of the device fails now
             edge_pt_t *p = order[i];
             uint16_t regs[4];
-            if (n >= 0 && i < b->first + b->count && edge_batch_take(p, b, data, n, regs)) {
+            if (n >= 0 && i >= b->first && i < b->first + b->count && edge_batch_take(p, b, data, n, regs)) {
                 memcpy(p->raw, regs, (size_t)(b->fc <= 2 ? 1 : edge_dtype_regs(p->dtype)) * sizeof regs[0]);
                 store_value(p, edge_decode(p->dtype, p->raw));
             } else {
@@ -366,9 +368,10 @@ static void poll_modbus(edge_dev_t *d)
     }
 }
 
-static void poll_dlt645(edge_dev_t *d)
+static void poll_dlt645(edge_dev_t *d, bool all)
 {
-    for (int i = 0; i < d->npts; i++) {
+    int i0 = all ? 0 : edge_step(d, d->npts), i1 = all ? d->npts : i0 + 1;
+    for (int i = i0; i >= 0 && i < i1; i++) {
         edge_pt_t *p = &d->pts[i];
         uint8_t req[24], resp[128];
         size_t n = dlt645_read_req(d->addr, p->di, req, sizeof req);
@@ -417,16 +420,16 @@ static void poll_virtual(edge_dev_t *d)
     cache_unlock();
 }
 
-static void poll_device(edge_dev_t *d)
+static void poll_device(edge_dev_t *d, bool all)
 {
     switch (d->source) {
     case EDGE_SRC_UART:
         if (d->dlt645)
-            poll_dlt645(d);
+            poll_dlt645(d, all);
         else
-            poll_modbus(d);
+            poll_modbus(d, all);
         break;
-    case EDGE_SRC_ETH: poll_modbus(d); break;
+    case EDGE_SRC_ETH: poll_modbus(d, all); break;
     case EDGE_SRC_IO: poll_io(d); break;
     default: poll_virtual(d); break;
     }
@@ -671,7 +674,9 @@ static void report(const char *why)
 
 // ---- tasks ----------------------------------------------------------------------------------------------
 
-/** Polls `l`'s devices on their own intervals, in list order; sleeps until the next one is due. */
+/** Polls `l`'s devices in list order: each due device reads its next block or point, then waits its polling
+ * interval from the end of that read (the user's definition, Plan 08c); a read-back after a remote write reads the
+ * whole device at once. Sleeps until the next one is due. */
 static void poll_task(void *arg)
 {
     dev_list_t *l = arg;
@@ -680,10 +685,11 @@ static void poll_task(void *arg)
         for (int i = 0; i < l->n; i++) {
             edge_dev_t *d = l->devs[i];
             if (now >= d->next_poll || d->poll_now) {
+                bool all = d->poll_now;
                 d->poll_now = false;
-                d->next_poll = now + d->poll_ms;
-                poll_device(d);
+                poll_device(d, all);
                 now = now_ms();
+                d->next_poll = now + d->poll_ms;
             }
             if (d->next_poll < next)
                 next = d->next_poll;
@@ -740,7 +746,7 @@ static void ctl_task(void *arg)
             if (now >= d->next_poll || d->poll_now) {
                 d->poll_now = false;
                 d->next_poll = now + d->poll_ms;
-                poll_device(d);
+                poll_device(d, true);  // IO and virtual points: all of them, no bus
             }
         }
         run_linkage();
@@ -804,10 +810,11 @@ void edge_start(void)
     json_alloc_install();  // so every failed cJSON allocation of the load is counted (the web does it later too)
     size_t cap;
     char *buf = web_edge_buffer_for_boot(&cap);
-    size_t len = store_edge_text(buf, cap);
+    size_t len = store_edge_text(buf, cap);  // the default "[]" when none was saved; 0 only when it cannot be read
     if (!len) {
-        strcpy(buf, "[]");
-        len = 2;
+        s_note = "MODEL UNREADABLE";  // spec §9.1: the edge DB is not usable, Edge stays off (Codex 08c code review)
+        SLOG_E("edge", "the saved model cannot be read: Edge stays off");
+        return;
     }
     load_t count = {0};
     if (!walk(&count, buf, len)) {
@@ -826,7 +833,8 @@ void edge_start(void)
 
     // Tasks: a poll task per port with devices, one per Modbus TCP device, edge_ctl, and edge_rpt.
     edge_counts_t c = {.ndev = count.ndev, .npts = count.npts, .nlinks = cJSON_GetArraySize(links),
-                       .tcb_bytes = sizeof(StaticTask_t), .nlocks = 1 + count.neth, .lock_bytes = sizeof(StaticSemaphore_t)};
+                       .tcb_bytes = sizeof(StaticTask_t), .nlocks = 1 + count.neth, .lock_bytes = sizeof(StaticSemaphore_t),
+                       .acc_bytes = R.remote && R.channel > 0 ? bridge_edge_acc_bytes() : 0};
     for (int p = 1; p <= SERIAL_PORTS; p++)
         if (count.nbus[p])
             c.stack_bytes[c.ntasks++] = BUS_STACK;
@@ -863,15 +871,17 @@ void edge_start(void)
     if (R.reporting) {
         cJSON *r = store_get("edgeReport");
         const char *tmpl = r ? text(r, "template") : NULL;
-        s_tmpl = tmpl ? edge_tmpl_compile(tmpl, resolve, &s_index, R.quote, R.placeholder_on ? R.placeholder : NULL) : NULL;
+        int st = r ? edge_tmpl_check(tmpl, resolve, &s_index, R.quote, R.placeholder_on ? R.placeholder : NULL, REPORT_MAX, &s_tmpl)
+                   : EDGE_TMPL_NO_MEMORY;
         cJSON_Delete(r);
         s_report_max = s_tmpl ? edge_tmpl_size(s_tmpl) : 0;
-        if (!s_tmpl) {
+        if (st == EDGE_TMPL_NO_MEMORY) {  // never a running Edge whose reports silently went missing
+            give_up("NO MEMORY", "the report template");
+            return;
+        } else if (st == EDGE_TMPL_NOT_OBJECT) {
             SLOG_W("edge", "the report template is not a JSON object: reports are off");
-        } else if (s_report_max > REPORT_MAX) {
-            SLOG_E("edge", "the report template needs %u bytes, over %u: reports are off", (unsigned)s_report_max, REPORT_MAX);
-            edge_tmpl_free(s_tmpl);
-            s_tmpl = NULL;
+        } else if (st == EDGE_TMPL_TOO_LARGE) {
+            SLOG_E("edge", "the report template needs more than %u bytes: reports are off", REPORT_MAX);
             s_note = "TEMPLATE TOO LARGE";
         } else if (!(s_report = malloc(s_report_max))) {
             give_up("NO MEMORY", "the report buffer");
@@ -895,7 +905,8 @@ void edge_start(void)
         d->link = t;
     }
     if (R.remote && R.channel > 0)
-        bridge_set_edge(R.channel, remote, R.format == FMT_TCP ? BRIDGE_EDGE_MBAP : R.format == FMT_RTU ? BRIDGE_EDGE_RTU : BRIDGE_EDGE_JSON);
+        bridge_set_edge(R.channel, remote, R.format == FMT_TCP ? BRIDGE_EDGE_MBAP : R.format == FMT_RTU ? BRIDGE_EDGE_RTU : BRIDGE_EDGE_JSON,
+                        M.accs);
     int task = 0, nbus = 0, ntcp = 0, nlocal = 0;
     char name[24];
     for (int p = 1; p <= SERIAL_PORTS; p++) {
@@ -964,14 +975,10 @@ void edge_status(char *state, size_t len)
     snprintf(state, len, "RUNNING %d/%d%s%s%s", ok, s_npts, note ? " (" : "", note ? s_note : "", note ? ")" : "");
 }
 
-bool edge_template_fits(const char *tmpl, bool quote, const char *placeholder)
+int edge_template_check(const char *tmpl, bool quote, const char *placeholder)
 {
     if (!s_running)
-        return true;  // the boot decides
-    edge_tmpl_t *t = edge_tmpl_compile(tmpl, resolve, &s_index, quote, placeholder);
-    if (!t)
-        return true;  // not a template the boot compiles: reports off then, as on the ESP32
-    bool fits = edge_tmpl_size(t) <= REPORT_MAX;
-    edge_tmpl_free(t);
-    return fits;
+        return EDGE_TMPL_OK;  // the boot decides
+    int st = edge_tmpl_check(tmpl, resolve, &s_index, quote, placeholder, REPORT_MAX, NULL);
+    return st == EDGE_TMPL_NOT_OBJECT ? EDGE_TMPL_OK : st;  // not a template the boot compiles: reports off then, as on the ESP32
 }

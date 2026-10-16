@@ -198,7 +198,7 @@ export function MqttPage(props: { path?: string; tab?: string }) {
       )}
       {tab === 'publish' && (
         <>
-          <Panel>
+          {enabled && <Panel>
             <Fields defs={custom} values={base.values} errors={base.errors} onChange={base.set} />
             {customOn && (
               <p class="pb-2 text-[13px] text-muted">
@@ -207,7 +207,7 @@ export function MqttPage(props: { path?: string; tab?: string }) {
                 <code class="font-mono">/site/temp</code> with QoS 0, not retained.
               </p>
             )}
-          </Panel>
+          </Panel>}
           {!customOn && (
             <Panel title="Publish: serial data to the broker" flush>
               <TopicEditor sub={false} rows={pub} defs={pubDefs} onChange={setPub} />

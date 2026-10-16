@@ -1,6 +1,6 @@
 // In-memory gateway for `npm run dev:mock`. Never included in production
-// builds (api.ts only imports it when MODE === 'mock'). Values mirror the
-// state observed on the surveyed unit (docs/, §2).
+// builds (api.ts only imports it when MODE === 'mock'). Values follow the
+// firmware's defaults and sample data (components/cfgmodel/cfgmodel.c), with a few turned on.
 
 import type { ConsoleSocket } from './api';
 import type { DeviceInfo, EdgeSlave, IoState, LinkageEvent, StatusInfo, Values } from './types';
@@ -12,13 +12,13 @@ const device: DeviceInfo = {
 
 const port = (n: number): Values => ({
   baudRate: 115200, dataBits: 8, parity: 0, stopBits: 1, flowControl: 0, packetLength: 0, packetInterval: 0,
-  serialHeartbeat: false, serialHeartbeatContent: 0, serialHeartbeatHex: 1, serialHeartbeatData: '', serialHeartbeatInterval: 30,
+  serialHeartbeat: false, serialHeartbeatContent: 0, serialHeartbeatHex: 1, serialHeartbeatData: '5342494F54', serialHeartbeatInterval: 30,
   workMode: n === 1 ? 3 : 1, socketMode: 0, remoteHost: 'data.example.net', remotePort: 9000, localPort: 0, listenPort: 23,
-  maxClients: 8, clientLimitAction: 0, allowedClients: '', udpAnyRemotePort: 0, httpHost: '', httpPort: 80, httpLocalPort: 0, httpMethod: 0,
-  httpPath: '/', httpHeaders: '', httpStripHeaders: false, httpTimeout: 10, reconnectInterval: 5, shortConnectionTime: 10,
+  maxClients: 8, clientLimitAction: 0, allowedClients: '0.0.0.0/0', udpAnyRemotePort: 0, httpHost: '192.168.0.201', httpPort: 80, httpLocalPort: 0, httpMethod: 0,
+  httpPath: '/', httpHeaders: 'User-Agent: SBIOT-GW', httpStripHeaders: false, httpTimeout: 10, reconnectInterval: 5, shortConnectionTime: 10,
   modbusPoll: false, modbusPollTimeout: 200, modbusException: false,
-  netHeartbeat: false, netHeartbeatContent: 0, netHeartbeatHex: 1, netHeartbeatData: '', netHeartbeatInterval: 60,
-  registration: 0, registrationSend: 0, registrationHex: 1, registrationData: '', tls: 0, tlsVerify: 0,
+  netHeartbeat: false, netHeartbeatContent: 0, netHeartbeatHex: 1, netHeartbeatData: '5342494F54', netHeartbeatInterval: 60,
+  registration: 0, registrationSend: 0, registrationHex: 1, registrationData: '5342494F54', tls: 0, tlsVerify: 0,
 });
 
 const ioConfig: Values = {
@@ -32,17 +32,17 @@ const ioConfig: Values = {
 
 const slaves: EdgeSlave[] = [
   {
-    name: 'device01', source: 'uart', uart: 1, ip: '', ethPort: 502, protocol: 'modbus', addr: '1', poll: 1000,
+    name: 'Device1', source: 'uart', uart: 1, ip: '192.168.0.201', ethPort: 502, protocol: 'modbus', addr: '1', poll: 1000,
     mapEn: false, mapAddr: 1, merge: false,
     nodes: [
-      { name: 'node0101', fc: 3, reg: 0, di: '', dtype: 'uint16', timeout: 200, onChange: false, range: 1, mapEn: false, mapAddr: 0, formula: '', ioPoint: '', ioReport: 0, upper: 0, lower: 0 },
-      { name: 'node0102', fc: 3, reg: 1, di: '', dtype: 'uint16', timeout: 200, onChange: false, range: 1, mapEn: false, mapAddr: 0, formula: '=%s*0.1', ioPoint: '', ioReport: 0, upper: 0, lower: 0 },
+      { name: 'Temperature', fc: 3, reg: 0, di: '00000000', dtype: 'int16', timeout: 200, onChange: false, range: 1, mapEn: false, mapAddr: 0, formula: '=%s*0.1', ioPoint: '', ioReport: 0, upper: 0, lower: 0 },
+      { name: 'Humidity', fc: 3, reg: 1, di: '00000000', dtype: 'uint16', timeout: 200, onChange: false, range: 1, mapEn: false, mapAddr: 0, formula: '=%s*0.1', ioPoint: '', ioReport: 0, upper: 0, lower: 0 },
     ],
   },
 ];
 
 const topic = (t: string): Values => ({
-  enabled: true, mode: 0, topic: t, ports: 1, qos: 1, retain: false, ioControl: false, identifier: '', delimiter: ',',
+  enabled: true, mode: 0, topic: t, ports: 1, qos: 1, retain: false, ioControl: false, identifier: 'sbiot', delimiter: ',',
 });
 
 /** Keyed like /api/config/<name>, plus "device" for /api/device. */
@@ -50,19 +50,20 @@ const store: Record<string, unknown> = {
   device,
   network: {
     priority: 1, ipMode: 1, dnsMode: 1, ip: '192.168.0.7', netmask: '255.255.255.0', gateway: '192.168.0.1',
-    dns1: '119.29.29.29', dns2: '8.8.8.8', apn: '', apnUser: '', apnPassword: '', apnAuth: 0,
-    cellDnsMode: 0, cellDns1: '', cellDns2: '',
+    dns1: '119.29.29.29', dns2: '8.8.8.8', apn: 'internet', apnUser: 'user', apnPassword: 'password', apnAuth: 0,
+    cellDnsMode: 0, cellDns1: '8.8.8.8', cellDns2: '1.1.1.1',
   },
   port1: port(1),
   port2: port(2),
   mqtt: {
-    enabled: 0, version: 1, clientId: 'gw-line-01', host: 'broker.example.net', port: 1883, keepAlive: 60,
-    reconnectIfSilent: 0, retryInterval: 5, cleanSession: true, auth: false, username: '', password: '', will: false,
-    willTopic: '', willMessage: '', willQos: 0, willRetain: false, tls: 0, tlsVerify: 0, sni: false, sniHost: '',
+    enabled: 0, version: 1, clientId: 'SBIOT-GW', host: 'broker.emqx.io', port: 1883, keepAlive: 60,
+    reconnectIfSilent: 0, retryInterval: 5, cleanSession: true, auth: false, username: 'admin', password: 'admin', will: false,
+    willTopic: 'sbiot/gw/status', willMessage: 'offline', willQos: 1, willRetain: true, tls: 0, tlsVerify: 0, sni: false,
+    sniHost: 'broker.emqx.io',
     customMode: 0, customModePorts: 1,
   },
-  mqttPublish: [topic('site/gw-line-01/up')],
-  mqttSubscribe: [topic('site/gw-line-01/down')],
+  mqttPublish: [topic('sbiot/gw/up')],
+  mqttSubscribe: [topic('sbiot/gw/down')],
   system: {
     hostname: 'gw-line-01', websocketPort: 6432, websocketTarget: 2, webPort: 80, username: 'admin', password: 'admin',
     bufferOffline: 0, idleRestart: 3600, ntp: 1, ntpServer: 'pool.ntp.org', timezone: 7,
@@ -72,12 +73,15 @@ const store: Record<string, unknown> = {
   edge: { enabled: true },
   edgeDevices: slaves,
   edgeReport: {
-    channel: 1, remoteAccess: 0, remoteWrite: false, remoteFormat: 2, requestTopic: '', requestQos: 0, replyTopic: '', replyQos: 0,
-    replyRetain: false, reporting: 1, reportTopic: '', reportQos: 0, reportRetain: false, periodic: true, interval: 5,
+    channel: 1, remoteAccess: 0, remoteWrite: false, remoteFormat: 2, requestTopic: 'sbiot/gw/request', requestQos: 0, replyTopic: 'sbiot/gw/reply', replyQos: 0,
+    replyRetain: false, reporting: 1, reportTopic: 'sbiot/gw/report', reportQos: 0, reportRetain: false, periodic: true, interval: 5,
     scheduled: false, schedule: 0, scheduleHour: 0, scheduleMinute: 0, failurePlaceholder: false, placeholder: 'null',
-    quoteValues: false, template: '{"Current":"node0101","Voltage":"node0102"}',
+    quoteValues: false, template: '{"sn":"sys_sn","time":"sys_time","temperature":"Temperature","humidity":"Humidity"}',
   },
-  edgeLinkage: [] as LinkageEvent[],
+  edgeLinkage: [
+    { name: 'HighTemp', enable: false, cond: 2, point: 'Temperature', cycle: 1000, minInterval: 1000, upper: 60, lower: 50,
+      output: 'DO1', action: 2, desc: 'DO1 closes at 50 degrees or more' },
+  ] as LinkageEvent[],
 };
 
 const io: IoState = { do: [false, true], di: [true, false], ai: [12500, 8000], ao: [] };

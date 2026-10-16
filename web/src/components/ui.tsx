@@ -66,7 +66,7 @@ export function Tabs(props: { base: string; active: string; tabs: [id: string, l
             href={`#${props.base}/${id}`}
             aria-current={on ? 'page' : undefined}
             class={`border-b-2 px-3.5 py-2 whitespace-nowrap ${
-              on ? 'border-accent font-semibold text-ink' : 'border-transparent text-muted hover:text-ink'
+              on ? 'border-brand-mark font-semibold text-ink' : 'border-transparent text-muted hover:border-line hover:text-ink'
             }`}
           >
             {label}
@@ -130,7 +130,7 @@ export function SaveBar(props: {
         : 'Fix the highlighted fields before saving.'
       : undefined);
   return (
-    <div class="sticky bottom-0 z-10 -mx-4 mt-2 flex flex-wrap items-center justify-end gap-3 border-t border-line bg-canvas/95 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
+    <div class="sticky bottom-0 z-10 -mx-4 mt-2 flex flex-wrap items-center justify-end gap-3 border-t border-line bg-surface px-4 py-3 shadow-[0_-4px_12px_-6px_rgb(26_34_51/0.15)] sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
       {note && <p class="mr-auto text-[13px] text-led-err">{note}</p>}
       {props.children}
       <Button variant="primary" onClick={props.onSave} disabled={props.busy || props.invalid || props.disabled}>

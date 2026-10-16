@@ -712,8 +712,13 @@ static void lte_task(void *arg)
         snprintf(cmd, sizeof cmd, "AT+CGDCONT=1,\"IP\",\"%s\"", s_cfg.apn);
         at_cmd(cmd, 2000, NULL, NULL);
         int mux = open_mux();
+        int plain = mux == 0 ? plain_ppp() : -1;
+        if (plain == PLAIN_NO_SIM) {  // the module answers: no reset (spec §7.2); the SIM asked again in 60 s
+            wait_events(0, LTE_RETRY_MS);  // then from ON: AT, CMUX asked again, the plain UART, the SIM (Plan 10c task 8)
+            continue;
+        }
         if (mux <= 0) {
-            if (mux == 0 && plain_ppp() == PLAIN_NO_ADDR) {  // the backoff's step, as over CMUX
+            if (plain == PLAIN_NO_ADDR) {  // the backoff's step, as over CMUX
                 s_info.recoveries++;
                 if (lte_backoff_step(&s_backoff) == LTE_ACT_POWER_CYCLE) {
                     SLOG_W("lte", "plain UART, attempt %lu: a soft power cycle", (unsigned long)s_info.recoveries);

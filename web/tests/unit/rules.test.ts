@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EDGE_BODY_MAX, REPORT_MAX, body, edgeBodyError, listenClash, systemPortClash, templateError26k, templateSize } from '../../src/lib/rules.js';
+import { reportModeError, templateError } from '../../src/lib/edge.js';
 import { convertData, fieldError } from '../../src/lib/validate.js';
 
 const server = (port: number) => ({ workMode: 3, listenPort: port });
@@ -99,4 +100,23 @@ test('bytes that are not printable text cannot become ASCII: null, the switch is
 
 test('a round trip keeps every byte, a BOM too (Codex)', () => {
   for (const hex of ['EFBBBF41', '5342494F54', 'E1BBA9']) assert.equal(convertData(convertData(hex, false)!, true), hex);
+});
+
+test('a template nested past 16 levels is refused, as the firmware refuses it (Plan 10c)', () => {
+  const nest = (d: number) => '{"a":'.repeat(d) + '"node1"' + '}'.repeat(d);
+  assert.equal(templateError(nest(16), ['node1']), null);
+  assert.match(templateError(nest(17), ['node1']) ?? '', /16 levels/);
+});
+
+test('the WebSocket console on the web port clashes while the console is on (Plan 10c, Codex Minor 11)', () => {
+  assert.equal(systemPortClash({ webPort: 80, websocketPort: 80, websocketTarget: 3 }, null, null).websocketPort,
+    'The web interface uses TCP port 80: choose another port for the WebSocket console.');
+  assert.equal(systemPortClash({ webPort: 80, websocketPort: 80, websocketTarget: 0 }, null, null).websocketPort, undefined);
+});
+
+test('reporting only on change is allowed when a point reports on change (Plan 10c, Codex Minor 13)', () => {
+  const v = { reporting: 1, periodic: false, scheduled: false };
+  assert.match(reportModeError(v, false) ?? '', /periodic or scheduled/);
+  assert.equal(reportModeError(v, true), null);
+  assert.equal(reportModeError({ ...v, periodic: true }, false), null);
 });

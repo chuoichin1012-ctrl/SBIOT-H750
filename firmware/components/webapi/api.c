@@ -126,16 +126,6 @@ static void add_pool(cJSON *arr, const char *name, unsigned used, unsigned size)
     push(arr, p);
 }
 
-// Whether a saved config enables its service: `enabled` is 1 (mqtt) or true (edge).
-static bool enabled(const char *name)
-{
-    cJSON *o = store_get(name);
-    const cJSON *v = cJSON_GetObjectItemCaseSensitive(o, "enabled");
-    bool r = cJSON_IsTrue(v) || (cJSON_IsNumber(v) && v->valueint == 1);
-    cJSON_Delete(o);
-    return r;
-}
-
 static void status_get(struct mg_connection *c)
 {
     static net_status_t ns;  // the web task only
@@ -207,12 +197,12 @@ static void status_get(struct mg_connection *c)
         push(ports, x);
     }
     cJSON *mq = cJSON_AddObjectToObject(o, "mqtt");  // Plan 09
-    cJSON_AddBoolToObject(mq, "enabled", enabled("mqtt"));
+    cJSON_AddBoolToObject(mq, "enabled", mqttgw_enabled());  // as running since the boot (Plan 10c)
     char mstate[24];
     mqttgw_status(mstate, sizeof mstate);
     cJSON_AddStringToObject(mq, "state", mstate);
     cJSON *ed = cJSON_AddObjectToObject(o, "edge");  // Plan 08
-    cJSON_AddBoolToObject(ed, "enabled", enabled("edge"));
+    cJSON_AddBoolToObject(ed, "enabled", edge_enabled());
     char est[48];
     edge_status(est, sizeof est);
     cJSON_AddStringToObject(ed, "state", est);

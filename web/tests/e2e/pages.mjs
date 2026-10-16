@@ -78,6 +78,7 @@ try {
       check(got === value, `${hash}: "${label}" saved and found after a reload (${got})`);
     } catch (e) {
       check(false, `${hash}: "${label}": ${e.message.split('\n')[0]}`);
+      if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/fail-${hash.replace(/\W/g, '')}.png` });  // what was on screen
     }
   }
 } finally {

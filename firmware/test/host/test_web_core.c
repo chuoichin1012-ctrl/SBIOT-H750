@@ -105,8 +105,32 @@ static void test_pem(void)
     CHECK(web_pem_check("dh", S(CERT)) == -1, "an unknown kind");
 }
 
+// Plan 10c task 9 (Codex review, Important 9): a client that stops reading its answer loses the slot.
+// The clock starts when the send queue fills, restarts at each write that sent bytes, stops when it empties.
+static void test_send_stall(void)
+{
+    web_send_t t = {0};
+    uint64_t now = 3600000;  // an hour idle: nothing queued, nothing counted
+    CHECK(!web_send_poll(&t, 0, false, now), "idle: not stalled");
+    CHECK(!web_send_poll(&t, 500, false, now), "the first answer after an hour: not stalled at once");
+    CHECK(!web_send_poll(&t, 500, false, now + WEB_STALL_MS - 1), "nor before the stall time");
+    CHECK(web_send_poll(&t, 500, false, now + WEB_STALL_MS), "nothing written for the stall time: stalled");
+    web_send_t m = {0};
+    bool cut = false;
+    web_send_poll(&m, 4000, false, now);
+    for (uint64_t ms = 1000; ms <= 2 * WEB_STALL_MS; ms += 1000)
+        cut |= web_send_poll(&m, 4000, true, now + ms);  // a write every second
+    CHECK(!cut, "a write every second for twice the stall time: never stalled");
+    web_send_t e = {0};
+    web_send_poll(&e, 100, false, now);
+    web_send_poll(&e, 0, true, now + 1000);  // emptied
+    CHECK(!web_send_poll(&e, 100, false, now + WEB_STALL_MS + 5000), "filled again later: counted from the new fill");
+    CHECK(web_send_poll(&e, 100, false, now + 2 * WEB_STALL_MS + 5000), "and stalled a stall time after it");
+}
+
 int main(void)
 {
+    test_send_stall();
     test_token();
     test_decode();
     test_names();

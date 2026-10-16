@@ -2,6 +2,23 @@
 #include <string.h>
 #include "flashmap.h"
 
+static const void *s_owner;  // compare-and-swap: web and UART7 run in different tasks
+static bool s_done;           // an owner's image is staged: the slot stays taken until the reboot
+
+int ota_stage_claim(const void *who)
+{
+    const void *none = NULL;
+    return __atomic_compare_exchange_n(&s_owner, &none, who, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE) ? OTA_OK : OTA_EBUSY;
+}
+
+void ota_stage_release(const void *who)
+{
+    if (__atomic_load_n(&s_done, __ATOMIC_ACQUIRE))
+        return;
+    const void *mine = who;
+    __atomic_compare_exchange_n(&s_owner, &mine, NULL, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+
 static int fail(ota_stage_t *st, int e)
 {
     if (!st->error)
@@ -98,5 +115,7 @@ int ota_stage_finish(ota_stage_t *st)
         return fail(st, OTA_EIMAGE);
     if (r != IMG_OK || memcmp(back.raw, st->hdr.raw, IMG_CORE))
         return fail(st, OTA_EFLASH);
+    if (__atomic_load_n(&s_owner, __ATOMIC_ACQUIRE))
+        __atomic_store_n(&s_done, true, __ATOMIC_RELEASE);
     return OTA_OK;
 }

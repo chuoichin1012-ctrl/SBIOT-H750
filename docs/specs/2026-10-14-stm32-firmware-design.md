@@ -486,7 +486,7 @@ Quy tắc riêng của bản STM32:
 - deadline chờ UART sẵn sàng đặt là **10 s** (2 lần giá trị đo, không dưới 10 s, theo quy tắc ở bảng dưới).
 
 Những gì Plan 10 thêm so với thiết kế dưới đây:
-- **NO SIM:** `AT+CPIN?` không `READY` thì không quay số, không RESET_N, không CFUN; hỏi lại mỗi 60 s.
+- **NO SIM:** `AT+CPIN?` không `READY` thì không quay số, không RESET_N, không CFUN; hỏi lại mỗi 60 s. Trên UART thường (CMUX bị từ chối) cũng vậy (Plan 10c).
 - **Chỉ quay số khi đã đăng ký mạng** (`+CEREG`/`+CGREG` là 1 hoặc 5); chưa thì ghi trạng thái đăng ký vào log.
 - **Sau `AT+CFUN=1,1`**, `AT` trên DLC2 không phản hồi trong 5 s thì vào RECOVER ngay.
 - **Tắt có chủ đích:** đóng mux (CLD) rồi gửi `AT+QPOWD=1` trên UART thường.
@@ -767,6 +767,7 @@ Với 100 điểm, đỉnh vẫn khoảng 235 KB. H750 không có PSRAM, nên kh
 ### 9.3 Arena JSON và buffer văn bản Edge
 
 **Plan 09c:** cả hai vùng đã bỏ.
+- **Độ sâu JSON** (Plan 10c, Codex review Critical 1): `CJSON_NESTING_LIMIT` = 16 cho firmware và test host. cJSON từ chối văn bản lồng sâu hơn, cả khi parse lẫn khi in. Mỗi tầng tốn khoảng 48 byte stack, mà `mqtt_io` chỉ có 4 KB; tài liệu thật lồng tối đa 4 tầng (`edgeDevices`). UI cũng từ chối template sâu quá 16 tầng.
 - cJSON cấp phát từ heap qua allocator đếm lỗi (`json_alloc_install`, cài trước `store_init`). Không còn scope arena, nên mọi handler phải tự giải phóng cây và chuỗi của mình; bench `heap_loop` kiểm điều đó.
 - Body `edgeDevices` đi thẳng vào record của store (16.000 B từ Plan 09d) (`store_edge_begin`, `store_edge_write`, `store_edge_commit`, `store_edge_abort`; mỗi lúc một phiên; chỉ request đã `begin` mới sở hữu phiên). Cú pháp được kiểm bằng scanner theo luồng `js_stream_*`, cho cùng kết quả với `js_parse_root` dù body bị cắt thành chunk thế nào.
 - Lúc boot, model được đọc vào một buffer heap tạm (96.001 B từ Plan 09d; 49.153 B ở 09c), giải phóng trước khi các task Edge chạy.
@@ -900,6 +901,7 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
 ### 10.1 Mongoose
 
 - `MG_ARCH` là FreeRTOS kèm socket lwIP, `MG_TLS` = none. Hai `mg_mgr` chạy trong hai task (§6.1).
+- **Client ngừng đọc** (Plan 10c): kết nối có phản hồi đang chờ gửi mà `WEB_STALL_MS` (30 s) không ghi được byte nào thì bị đóng, kể cả khi đang giữ pin của Edge. Đồng hồ bắt đầu khi hàng gửi có dữ liệu, chạy lại sau mỗi lần ghi được, dừng khi hàng rỗng; tải chậm mà vẫn tiến thì không bị cắt.
 - **Body:**
   - Với `/api/ota`, `/api/cert` và `POST edgeDevices`: xử lý ở `MG_EV_HTTP_HDRS`, tự đọc `c->recv` theo luồng.
     - Các endpoint này bắt buộc có `Content-Length`. Request dùng chunked thì trả 411.
@@ -1062,6 +1064,7 @@ Logic quyết định và chép viết trong `boot/install.c` bằng C thuần, 
 - Kết thúc mà SHA khớp: ghi magic, là lần ghi cuối cùng. Sau đó staging đọc lại phải qua được `img_check`, rồi trả 200 và khởi động lại. Bootloader cài image mới ở lần boot đó.
 - Body dở hoặc sai SHA: trả 400. Staging lúc đó không hợp lệ nên bootloader bỏ qua, image đang chạy giữ nguyên.
 - Không có xác nhận hay rollback tự động. Firmware mới có lỗi thì người dùng khôi phục firmware gốc bằng nút Reload (§11.2).
+- **Một chủ của staging** (Plan 10c): web và upload qua UART7 nhận quyền bằng `ota_stage_claim` trước khi đụng vào staging. Upload thứ hai trả 409. Upload thành công giữ quyền tới lần restart, nên image đã báo 200 không bị một upload sau xóa mất.
 
 ### 11.4 Các cơ chế an toàn khác
 

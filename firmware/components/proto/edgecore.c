@@ -1,4 +1,5 @@
 #include "edgecore.h"
+#include "jsonscan.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -393,9 +394,11 @@ edge_tmpl_t *edge_tmpl_compile(const char *tmpl, edge_resolve_fn resolve, void *
     if (!ph) {
         strcpy(t->ph, "null");
     } else {
-        cJSON *lit = cJSON_Parse(ph);
-        bool literal = lit && !cJSON_IsObject(lit) && !cJSON_IsArray(lit);
-        cJSON_Delete(lit);
+        // A literal only when all of it is one by RFC 8259 (jsonscan): cJSON would take "1abc", "01" or "1."
+        // (Plan 10c task 10, Codex review).
+        js_span_t root;
+        js_type_t k = js_parse_root(ph, strlen(ph), &root) ? js_type(root) : JS_INVALID;
+        bool literal = k == JS_NUMBER || k == JS_TRUE || k == JS_FALSE || k == JS_NULL;
         if (literal) snprintf(t->ph, sizeof t->ph, "%s", ph);
         else if (!json_string(ph, t->ph, sizeof t->ph)) strcpy(t->ph, "null");
     }

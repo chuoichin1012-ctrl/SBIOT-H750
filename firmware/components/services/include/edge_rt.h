@@ -7,4 +7,6 @@
  * before webapi_start (it borrows the web's Edge text buffer). Off with a status when memory runs out. */
 void edge_start(void);
 /** /api/status edge.state: "NOT RUNNING", "NO MEMORY", "RUNNING ok/total", with notes. */
+/** Edge was on at boot (edge_start ran): what /api/status reports until the restart (Plan 10c, Codex Minor 12). */
+bool edge_enabled(void);
 void edge_status(char *state, size_t len);

@@ -928,8 +928,7 @@ int bridge_start(int port, const cJSON *pcfg, const cJSON *sys)
     b->mb = xMessageBufferCreateStatic(size, s_mb_store[port - 1], &b->mb_mem);
     b->rpt_done = xSemaphoreCreateBinaryStatic(&b->rpt_done_mem);
     serial_subscribe(port, on_serial, b);
-    static const char *const MODES[] = {"UDP client", "TCP client", "UDP server", "TCP server", "HTTP client"};
-    SLOG_I("bridge", "UART%d socket: %s%s%s%s", port, MODES[b->C.work % 5], b->C.modbus_gw ? ", Modbus TCP gateway" : "",
+    SLOG_I("bridge", "UART%d socket: %s%s%s%s", port, bridge_mode_name(b->C.work), b->C.modbus_gw ? ", Modbus TCP gateway" : "",
            b->C.short_conn ? ", short connection" : "", b->C.keep_offline ? ", bufferOffline" : "");
     char name[12];
     snprintf(name, sizeof name, "bridge%d", port);

@@ -520,6 +520,10 @@ static void mqtt_task(void *arg)
 
 // ---- start --------------------------------------------------------------------------------------------
 
+static bool s_enabled;  // on at boot (Plan 10c)
+
+bool mqttgw_enabled(void) { return s_enabled; }
+
 void mqttgw_start(const cJSON *sys)
 {
     cJSON *c = store_get("mqtt");
@@ -529,6 +533,7 @@ void mqttgw_start(const cJSON *sys)
         return;
     }
     bool on = num(c, "enabled") == 1;
+    s_enabled = on;
     if (on)
         read_cfg(c);
     cJSON_Delete(c);

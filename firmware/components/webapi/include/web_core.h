@@ -32,6 +32,16 @@ web_ep_t web_endpoint(bool post, const char *uri, size_t len);
 int web_body_check(web_ep_t ep, bool has_length, bool chunked, size_t length, size_t slot_max);
 /** True when a streamed body has sent nothing for WEB_STALL_MS. */
 bool web_stalled(uint64_t last_byte_ms, uint64_t now_ms);
+
+/** A connection's answer waiting to be sent (Plan 10c task 9, Codex review Important 9). */
+typedef struct {
+    uint64_t since;  // when the queue filled, or the last write that sent bytes
+    bool on;         // the queue holds bytes
+} web_send_t;
+/** At each poll (wrote false) and each write (wrote: bytes went out): true when `queued` bytes have waited
+ *  WEB_STALL_MS without a write, a client that stopped reading. The clock starts when the queue fills,
+ *  restarts at each write, stops when it is empty. */
+bool web_send_poll(web_send_t *t, size_t queued, bool wrote, uint64_t now_ms);
 /**
  * Plan 06b's check of an uploaded PEM, until mbedTLS parses it (Plan 08): one BEGIN/END pair of the
  * kind's label (CERTIFICATE for ca and cert; PRIVATE KEY, RSA PRIVATE KEY or EC PRIVATE KEY for key),

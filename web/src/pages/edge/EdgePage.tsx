@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'preact/hooks';
 import * as api from '../../lib/api';
 import { useDevice } from '../../lib/device';
 import { session } from '../../lib/auth';
-import { allNodeNames } from '../../lib/edge';
+import { allNodeNames, anyOnChange } from '../../lib/edge';
 import { useAsync } from '../../lib/hooks';
 import { edgeBodyError } from '../../lib/rules';
 import { useSaver } from '../../lib/save';
@@ -33,7 +33,7 @@ export function EdgePage(props: { path?: string; tab?: string }) {
   useEffect(() => {
     if (!src.data) return;
     if (draftToken !== session.get().token) draft = null;
-    const loaded = { ...src.data, report: coerce(src.data.report, reportDefs(dev, allNodeNames(src.data.slaves))) };
+    const loaded = { ...src.data, report: coerce(src.data.report, reportDefs(dev, allNodeNames(src.data.slaves), anyOnChange(src.data.slaves))) };
     setCfg(draft ?? loaded);
     setDirty(!!draft);
   }, [src.data]);
@@ -44,7 +44,8 @@ export function EdgePage(props: { path?: string; tab?: string }) {
   };
 
   const names = useMemo(() => (cfg ? allNodeNames(cfg.slaves) : []), [cfg]);
-  const rDefs = useMemo(() => reportDefs(dev, names), [dev, names]);
+  const onChange = useMemo(() => (cfg ? anyOnChange(cfg.slaves) : false), [cfg]);
+  const rDefs = useMemo(() => reportDefs(dev, names, onChange), [dev, names, onChange]);
 
   // Closing or reloading the tab would lose the draft; the browser asks first.
   useEffect(() => {

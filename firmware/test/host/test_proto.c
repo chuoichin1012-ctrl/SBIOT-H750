@@ -100,6 +100,45 @@ static uint8_t wbit(void *ctx, uint16_t a, bool on)
 }
 static bool exists(void *ctx, uint8_t fc, uint16_t a) { return a < 4; }
 
+// Plan 10c task 5 (Codex review, Important 5): one snapshot per register read. begin/end wrap the whole
+// FC3/FC4 loop, so a 32-bit value is never made of two samples.
+static int s_begins, s_ends, s_inside_reads, s_outside_reads, s_fail_reg = -1;
+static bool s_begin_ok = true, s_in;
+static bool hbegin(void *ctx) { s_begins++; if (s_begin_ok) s_in = true; return s_begin_ok; }
+static void hend(void *ctx) { s_ends++; s_in = false; }
+static uint8_t hreg(void *ctx, uint8_t fc, uint16_t a, uint16_t *v)
+{
+    if (s_in) s_inside_reads++; else s_outside_reads++;
+    if ((int)a == s_fail_reg) return MB_EX_ILLEGAL_ADDRESS;
+    *v = (uint16_t)(a * 10);
+    return 0;
+}
+
+static void test_serve_snapshot(void)
+{
+    const mb_map_t map = {.read_reg = hreg, .begin = hbegin, .end = hend};
+    uint8_t out[64];
+    const uint8_t rd4[] = {7, 3, 0, 0, 0, 4};
+    size_t n = mb_serve(&map, rd4, sizeof rd4, out, sizeof out);
+    CHECK(n == 11 && s_begins == 1 && s_ends == 1 && s_inside_reads == 4 && s_outside_reads == 0,
+          "4 registers: begin once, 4 reads inside, end once (%d %d %d %d)", s_begins, s_ends, s_inside_reads, s_outside_reads);
+    s_begins = s_ends = s_inside_reads = s_outside_reads = 0;
+    s_begin_ok = false;
+    n = mb_serve(&map, rd4, sizeof rd4, out, sizeof out);
+    CHECK(n == 3 && out[1] == 0x83 && out[2] == MB_EX_DEVICE_FAILURE && s_ends == 0 && s_inside_reads + s_outside_reads == 0,
+          "begin fails: device failure, nothing read, no end (%u %d)", out[2], s_ends);
+    s_begin_ok = true;
+    s_begins = s_ends = s_inside_reads = s_outside_reads = 0;
+    s_fail_reg = 2;
+    n = mb_serve(&map, rd4, sizeof rd4, out, sizeof out);
+    CHECK(n == 3 && out[2] == MB_EX_ILLEGAL_ADDRESS && s_begins == 1 && s_ends == 1, "a read fails on the 3rd: exception, end once (%d)", s_ends);
+    s_fail_reg = -1;
+    const mb_map_t plain = {.read_reg = hreg};
+    s_in = false;
+    n = mb_serve(&plain, rd4, sizeof rd4, out, sizeof out);
+    CHECK(n == 11 && out[4] == 0 && out[6] == 10, "a map without hooks reads as before");
+}
+
 static void test_serve(void)
 {
     const mb_map_t map = {.read_bit = rbit, .read_reg = rreg, .write_bit = wbit, .exists = exists};
@@ -300,6 +339,18 @@ static void test_edge(void)
     tmpl("{\"c\":\"a\\u0001b\",\"q\":\"quoted\"}", false, NULL, "{\"c\":\"a\\u0001b\",\"q\":\"say \\\"hi\\\"\\n\"}", 1);
     // NaN from a float register would not be JSON: the placeholder instead.
     tmpl("{\"f\":\"broken\"}", false, "-1", "{\"f\":-1}", 1);
+    // Plan 10c task 10 (Codex review, Important 10): a placeholder is a literal only when all of it parses;
+    // "1abc" copied raw made the whole report invalid JSON.
+    tmpl("{\"d\":\"dead\"}", false, "1abc", "{\"d\":\"1abc\"}", 1);
+    tmpl("{\"d\":\"dead\"}", false, "null-device", "{\"d\":\"null-device\"}", 1);
+    tmpl("{\"d\":\"dead\"}", false, "truex", "{\"d\":\"truex\"}", 1);
+    tmpl("{\"d\":\"dead\"}", false, "2.5", "{\"d\":2.5}", 1);
+    tmpl("{\"d\":\"dead\"}", false, "true", "{\"d\":true}", 1);
+    tmpl("{\"d\":\"dead\"}", false, "null", "{\"d\":null}", 1);
+    // Codex 10c code review: numbers cJSON takes but JSON does not (RFC 8259) are text too.
+    tmpl("{\"d\":\"dead\"}", false, "01", "{\"d\":\"01\"}", 1);
+    tmpl("{\"d\":\"dead\"}", false, "1.", "{\"d\":\"1.\"}", 1);
+    tmpl("{\"d\":\"dead\"}", false, "-0.5e3", "{\"d\":-0.5e3}", 1);
 
     edge_index_t ix;
     CHECK(edge_index_init(&ix, 300) && ix.cap >= 600, "index init");
@@ -337,6 +388,86 @@ static void rw(const char *req, const char *want, rwprot_write_fn w)
     char *got = rwprot_handle(req, strlen(req), rd, w, NULL);
     CHECK(want ? got && strcmp(got, want) == 0 : !got, "rw_prot\n  req  %s\n  got  %s\n  want %s", req, got, want);
     free(got);
+}
+
+// Plan 10c task 1 (Codex review, Critical 1): JSON nested past 16 levels is refused before it can overflow a
+// task's stack (cJSON recurses about 48 B a level; mqtt_io has 4 KB). A valid request plus a deep member "z":
+// the whole document `depth` levels deep.
+static char *deep_request(int depth)
+{
+    static char buf[2048];
+    int k = depth - 1, n = snprintf(buf, sizeof buf, "{\"rw_prot\":{\"ver\":\"1.0\",\"dir\":\"down\",\"id\":\"7\","
+                                                     "\"r_data\":[{\"name\":\"temperature\"}]},\"z\":");
+    for (int i = 0; i < k; i++) buf[n++] = '[';
+    buf[n++] = '0';
+    for (int i = 0; i < k; i++) buf[n++] = ']';
+    buf[n++] = '}';
+    buf[n] = 0;
+    return buf;
+}
+
+// Plan 10c task 7 (Codex review, Important 7): rw_prot out of memory at any allocation answers NULL or valid
+// JSON, and leaks nothing (LeakSanitizer at exit).
+static int s_fail_at = -1;
+static void *failing_malloc(size_t n)
+{
+    if (s_fail_at >= 0 && s_fail_at-- == 0)
+        return NULL;
+    return malloc(n);
+}
+
+static void test_rwprot_oom(void)
+{
+    const char *req = "{\"rw_prot\":{\"ver\":\"1.0\",\"dir\":\"down\",\"id\":\"9\",\"r_data\":[{\"name\":\"temperature\"},"
+                      "{\"name\":\"humidity\"},{\"name\":\"nope\"}],\"w_data\":[{\"name\":\"humidity\",\"value\":\"40\"},"
+                      "{\"name\":\"nope\",\"value\":1}]}}";
+    cJSON_Hooks hooks = {failing_malloc, free};
+    cJSON_InitHooks(&hooks);
+    int answers = 0, nulls = 0;
+    for (int n = 0; n < 1000; n++) {
+        s_fail_at = n;
+        char *got = rwprot_handle(req, strlen(req), rd, wr, NULL);
+        bool hit = s_fail_at < 0;
+        s_fail_at = -1;
+        if (got) {
+            cJSON *back = cJSON_Parse(got);
+            CHECK(back != NULL, "allocation %d failed: the answer is JSON (%s)", n, got);
+            cJSON_Delete(back);
+            answers++;
+        } else {
+            nulls++;
+        }
+        free(got);
+        if (!hit) break;
+    }
+    cJSON_InitHooks(NULL);
+    CHECK(nulls > 0 && answers > 0, "the sweep met failures (%d) and an answer (%d)", nulls, answers);
+}
+
+static void test_depth_limit(void)
+{
+    const char *r16 = deep_request(16);
+    char *got = rwprot_handle(r16, strlen(r16), rd, wr, NULL);
+    CHECK(got && strstr(got, "25.3"), "16 levels: answered (%s)", got);
+    free(got);
+    const int too_deep[] = {17, 300};
+    for (int i = 0; i < 2; i++) {
+        const char *r = deep_request(too_deep[i]);
+        got = rwprot_handle(r, strlen(r), rd, wr, NULL);
+        CHECK(!got, "%d levels: refused, not answered (%s)", too_deep[i], got);
+        free(got);
+    }
+    char t[256];
+    for (int d = 16; d <= 17; d++) {  // {"a":{"a":...{"a":"temperature"}}}: d objects
+        int n = 0;
+        for (int i = 0; i < d; i++) n += snprintf(t + n, sizeof t - n, "{\"a\":");
+        n += snprintf(t + n, sizeof t - n, "\"temperature\"");
+        for (int i = 0; i < d; i++) t[n++] = '}';
+        t[n] = 0;
+        edge_tmpl_t *c = edge_tmpl_compile(t, resolve, NULL, false, NULL);
+        CHECK(d == 16 ? c != NULL : c == NULL, "a %d-level template: %s", d, d == 16 ? "compiled" : "refused");
+        edge_tmpl_free(c);
+    }
 }
 
 static void test_rwprot(void)
@@ -391,11 +522,14 @@ int main(void)
 {
     test_ipacl();
     test_rwprot();
+    test_depth_limit();
+    test_rwprot_oom();
     test_edge();
     test_mqtt();
     test_crc();
     test_tcp();
     test_serve();
+    test_serve_snapshot();
     printf(failures ? "%d FAILED\n" : "proto: all tests passed\n", failures);
     return failures != 0;
 }

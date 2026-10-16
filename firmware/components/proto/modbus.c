@@ -169,12 +169,15 @@ size_t mb_serve(const mb_map_t *m, const uint8_t *req, size_t len, uint8_t *out,
     case 4: {
         if (!m->read_reg) return exception(req, MB_EX_ILLEGAL_FUNCTION, out);
         if (count < 1 || count > 125 || 3 + 2 * (size_t)count > max) return exception(req, MB_EX_ILLEGAL_VALUE, out);
-        for (uint16_t i = 0; i < count; i++) {
+        if (m->begin && !m->begin(m->ctx)) return exception(req, MB_EX_DEVICE_FAILURE, out);
+        uint8_t ex = 0;
+        for (uint16_t i = 0; i < count && !ex; i++) {
             uint16_t v = 0;
-            uint8_t ex = m->read_reg(m->ctx, fc, (uint16_t)(addr + i), &v);
-            if (ex) return exception(req, ex, out);
+            ex = m->read_reg(m->ctx, fc, (uint16_t)(addr + i), &v);
             put16(out + 3 + 2 * i, v);
         }
+        if (m->end) m->end(m->ctx);
+        if (ex) return exception(req, ex, out);
         out[2] = (uint8_t)(2 * count);
         return 3 + 2 * (size_t)count;
     }

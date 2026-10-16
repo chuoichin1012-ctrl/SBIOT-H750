@@ -150,13 +150,24 @@ static bool cache_fits(const char *name, size_t len)
     return s_used - (i >= 0 ? s_cache[i].len : 0) + len <= sizeof s_pool;
 }
 
-/** Replaces (or adds) name's text; the caller checked cache_fits. */
+/** cfgmodel's own copy of a known config name (static for the whole run), else NULL. */
+static const char *canonical(const char *name)
+{
+    const char *names[MAX_CONFIGS];
+    size_t n = cfg_names(&s_env, names, MAX_CONFIGS);
+    for (size_t i = 0; i < n; i++)
+        if (!strcmp(names[i], name))
+            return names[i];
+    return NULL;
+}
+
+/** Replaces (or adds) name's text; the caller checked cache_fits and that the name is known. */
 static void cache_put(const char *name, const char *text, size_t len)
 {
     int i = cache_find(name);
     if (i < 0) {
         i = (int)s_ncache++;
-        s_cache[i].name = name;
+        s_cache[i].name = canonical(name);  // never the caller's buffer: an HTTP request's stack (Plan 10c task 2)
     } else {  // close the gap of the old text
         size_t end = s_cache[i].off + s_cache[i].len;
         memmove(s_pool + s_cache[i].off, s_pool + end, s_used - end);

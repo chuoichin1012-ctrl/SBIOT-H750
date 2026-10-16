@@ -141,6 +141,8 @@ export function blankNode(slave: EdgeSlave, used: string[] = []): EdgeNode {
 }
 
 export const allNodeNames = (slaves: EdgeSlave[]) => slaves.flatMap((s) => s.nodes.map((n) => n.name));
+/** Some point reports on change (Plan 10c). */
+export const anyOnChange = (slaves: EdgeSlave[]) => slaves.some((s) => s.nodes.some((n) => n.onChange));
 export const nodeCount = (slaves: EdgeSlave[]) => slaves.reduce((n, s) => n + s.nodes.length, 0);
 
 /**
@@ -195,6 +197,21 @@ export const SYSTEM_FIELDS = ['sys_sn', 'sys_mac', 'sys_ver', 'sys_time', 'sys_n
  * text is a constant (e.g. "user_define": "bedroom"). Only unknown sys_*
  * names are refused, since they are almost certainly typos.
  */
+/** The firmware's cJSON refuses JSON nested deeper (CJSON_NESTING_LIMIT, Plan 10c). */
+export const JSON_DEPTH_MAX = 16;
+const depth = (v: unknown): number =>
+  v && typeof v === 'object' ? 1 + Math.max(0, ...Object.values(v as Record<string, unknown>).map(depth)) : 0;
+
+/**
+ * Reporting on, but neither periodic nor scheduled: nothing would ever be sent, unless a point reports on change
+ * (`onChange`), which the runtime sends by itself (Plan 10c, Codex Minor 13).
+ */
+export function reportModeError(v: Record<string, unknown>, anyOnChange: boolean): string | null {
+  return Number(v.reporting) === 1 && !v.periodic && !v.scheduled && !anyOnChange
+    ? 'Choose periodic or scheduled reporting below, or set a point to report on change.'
+    : null;
+}
+
 export function templateError(template: string, names: string[]): string | null {
   if (!template.trim()) return 'Enter a template, e.g. {"temp":"node0101"}.';
   let parsed: unknown;
@@ -204,6 +221,7 @@ export function templateError(template: string, names: string[]): string | null 
     return `Not valid JSON: ${(e as Error).message}`;
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 'The template must be a JSON object.';
+  if (depth(parsed) > JSON_DEPTH_MAX) return `The template nests more than ${JSON_DEPTH_MAX} levels.`;
   const bytes = new TextEncoder().encode(template).length;
   if (bytes > 2048) return `The template is ${bytes} bytes; the limit is 2048.`;
   const typos = templateNames(template).filter((n) => n.startsWith('sys_') && !SYSTEM_FIELDS.includes(n) && !names.includes(n));

@@ -703,6 +703,9 @@ Những gì Plan 10b thêm (mất mạng lâu):
   - log TSDB đánh khóa bằng số thứ tự tăng dần.
 - **Luồng cấu hình (Plan 09b, người dùng, 2026-10-16):**
   - **Web UI validate toàn bộ** và gửi JSON đầy đủ, đã minify. Gateway lưu nguyên từng byte nhận được, và GET trả lại đúng các byte đó.
+    - **GET của một cấu hình object không bao giờ thiếu key** (người dùng, 2026-10-17): key nào bản lưu không có (bản lưu từ firmware ít trường hơn, hay một body thiếu key) thì GET điền giá trị mặc định của `cfgmodel`. Flash vẫn giữ nguyên bytes đã gửi; body đầy đủ (như UI gửi) vẫn đọc lại đúng từng byte.
+  - **Mặc định không có trường rỗng, và có dữ liệu mẫu** (người dùng, 2026-10-17): broker `broker.emqx.io`, Client ID `SBIOT-GW`, topic `sbiot/gw/...`, Last will điền sẵn nhưng tắt; một topic publish, một topic subscribe, một device Modbus RTU trên UART1 với hai point (`Temperature`, `Humidity`, `=%s*0.1`), một linkage. MQTT, Edge, topic và linkage mẫu đều tắt, nên gateway mới không làm gì với chúng. Chỉ rỗng khi rỗng có nghĩa riêng: `formula` của point mới (không quy đổi), `ioPoint` của point không thuộc IO, `point`/`output` của linkage mới (UI bắt chọn). Mục mới trong UI theo `ITEM_*` của firmware, tên tự đánh số (`Device2`, `Node3`, `Event2`).
+  - **Khi lưu, gateway chỉ kiểm:** xác thực, tên cấu hình, kích thước (10.240 byte; `edgeDevices` 49.152 byte), cú pháp JSON (`jsonscan`), kiểu gốc (object hoặc array) và lỗi ghi. Không merge với bản cũ, không chuẩn hóa, không kiểm quy tắc nghiệp vụ.
   - **Lúc khởi động, bộ nạp (`cfg_load`) chỉ kiểm kiểu JSON của từng trường** và giữ nguyên mọi giá trị đã gửi: không kiểm giới hạn, độ dài hay quy tắc chéo.
     - Trường sai kiểu thì lấy giá trị mặc định của trường đó, có ghi log; key thiếu thì điền mặc định.
     - Danh sách topic và event giữ tối đa 16 và 10 phần tử, để giới hạn bộ nhớ.

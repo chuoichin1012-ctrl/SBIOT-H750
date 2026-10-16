@@ -4,7 +4,7 @@ import type { EdgeConfig } from '../../lib/api';
 import { useAsync } from '../../lib/hooks';
 import { ioPoints, uartOptions, useDevice } from '../../lib/device';
 import {
-  DATA_TYPES, MAX_ETH, MAX_NODES, FUNCTION_CODES, SOURCES, allNodeNames, blankNode, blankSlave, dataTypesFor, exposedSpan, exposedUnit,
+  DATA_TYPES, MAX_ETH, MAX_NODES, FUNCTION_CODES, SOURCES, allNodeNames, blankNode, blankSlave, nextName, dataTypesFor, exposedSpan, exposedUnit,
   VIRTUAL_FC, fixedName, formulaError, fromCsv, ioRegister, isReserved, modbusAddress, nameError, nodeCount, readText, referencesTo, sourceLabel, toCsv, regsOf,
 } from '../../lib/edge';
 import type { DeviceInfo, EdgeNode, EdgeSlave, Values } from '../../lib/types';
@@ -335,7 +335,7 @@ export function Acquisition(props: { cfg: EdgeConfig; onChange: (cfg: EdgeConfig
       {editing?.kind === 'slave' && (
         <EditDialog<EdgeSlave>
           title={editing.index === null ? 'Add device' : 'Edit device'}
-          initial={editing.index === null ? blankSlave()
+          initial={editing.index === null ? blankSlave(cfg.slaves.map((x) => x.name))
             : cfg.slaves[editing.index].source === 'io' ? { ...cfg.slaves[editing.index], addr: String(ioAddr) }
             : cfg.slaves[editing.index]}
           defs={(d) => slaveDefs(dev, d, cfg.slaves.filter((_, i) => i !== editing.index), ioAddr)}
@@ -343,7 +343,7 @@ export function Acquisition(props: { cfg: EdgeConfig; onChange: (cfg: EdgeConfig
             if (id !== 'source') return {};
             const src = v as EdgeSlave['source'];
             // The built-in IO and virtual devices carry fixed names; leaving them frees the name field.
-            const name = fixedName(src) ?? (isReserved(d.name) ? '' : d.name);
+            const name = fixedName(src) ?? (isReserved(d.name) ? nextName('Device', cfg.slaves.map((x) => x.name)) : d.name);
             if (src === 'eth') return { protocol: 'modbus', name };
             if (src === 'io') return { protocol: 'modbus', addr: String(ioAddr), name };
             // A slave ID unlikely to clash with a real device on the bus
@@ -367,7 +367,7 @@ export function Acquisition(props: { cfg: EdgeConfig; onChange: (cfg: EdgeConfig
       {editing?.kind === 'node' && slave && (
         <EditDialog<EdgeNode>
           title={editing.index === null ? `Add point to ${slave.name}` : 'Edit point'}
-          initial={editing.index === null ? blankNode(slave) : slave.nodes[editing.index]}
+          initial={editing.index === null ? blankNode(slave, allNodeNames(cfg.slaves)) : slave.nodes[editing.index]}
           defs={(n) => {
             const self = editing.index === null ? null : slave.nodes[editing.index].name;
             const siblings = slave.nodes.filter((_, i) => i !== editing.index);

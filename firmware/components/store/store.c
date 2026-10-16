@@ -179,9 +179,31 @@ static bool body_ok(const char *name, const char *text, size_t len)
     return js_parse_root(text, len, &root) && js_type(root) == (cfg_is_list(&s_env, name) ? JS_ARRAY : JS_OBJECT);
 }
 
-// The cache holds each config's stored bytes, as GET serves them (Plan 09b ruling 4): a key this DB
-// lacks is its default, from cfgmodel; a stored copy that no save could have made (not JSON, from
-// outside this firmware) is served as the default, so the UI can still open it.
+/** An object config's text with each key of its default that it lacks added, as the default has it (malloc'd,
+ *  its length in *n); NULL when nothing is missing, or for a list. So the UI never opens a field without a value:
+ *  a copy from a firmware with fewer fields, or a body sent without some keys. Flash keeps the bytes as sent. */
+static char *with_defaults(const char *name, const char *text, size_t len, size_t *n)
+{
+    if (cfg_is_list(&s_env, name))
+        return NULL;
+    cJSON *doc = cJSON_ParseWithLength(text, len), *def = cfg_default(&s_env, name);
+    bool added = false;
+    for (const cJSON *d = def ? def->child : NULL; doc && d; d = d->next)
+        if (!cJSON_GetObjectItemCaseSensitive(doc, d->string)) {
+            cJSON_AddItemToObject(doc, d->string, cJSON_Duplicate(d, true));
+            added = true;
+        }
+    char *out = added ? cJSON_PrintUnformatted(doc) : NULL;
+    cJSON_Delete(doc);
+    cJSON_Delete(def);
+    if (out)
+        *n = strlen(out);
+    return out;
+}
+
+// The cache holds each config's stored bytes, as GET serves them (Plan 09b ruling 4), with the keys
+// they lack added from cfgmodel's default (with_defaults); a stored copy that no save could have made
+// (not JSON, from outside this firmware) is served as the default, so the UI can still open it.
 static void load(const char *name)
 {
     size_t n = 0;
@@ -191,6 +213,9 @@ static void load(const char *name)
         store_port_log("%s: the stored copy is not JSON of its kind; its default is served", name);
         text = NULL;
     }
+    char *full = text ? with_defaults(name, text, n, &n) : NULL;
+    if (full)
+        text = full;
     if (!text) {
         text = cfg_default_text(&s_env, name);
         n = text ? strlen(text) : 0;
@@ -199,6 +224,7 @@ static void load(const char *name)
         cache_put(name, text, n);
     else
         store_port_log("%s: no memory for its text", name);
+    free(full);
     free(raw);
 }
 
@@ -568,23 +594,28 @@ store_err_t store_set_text(const char *name, const char *text, size_t len, char 
     store_err_t e = body_check(name, text, len, CFG_SMALL_MAX, err, errlen);
     if (e != STORE_OK)
         return e;
+    size_t clen = len;
+    char *full = with_defaults(name, text, len, &clen);  // what GET serves: the keys the body lacks added
+    const char *ctext = full ? full : text;
     LOCK();
     if (read_only() || s_resetting) {
         UNLOCK();
+        free(full);
         snprintf(err, errlen, s_resetting ? "A factory reset is in progress; the gateway restarts."
                                           : "The settings storage is read-only after a flash error; restart the gateway.");
         return STORE_EFLASH;
     }
-    if (!cache_fits(name, len)) {
+    if (!cache_fits(name, clen)) {
         snprintf(err, errlen, "The settings do not fit in the gateway's memory.");
         e = STORE_ETOOLARGE;
     } else if (!kv_write(&s_cfg_db, name, text, len)) {
         snprintf(err, errlen, "The settings could not be written to flash.");
         e = STORE_EFLASH;
     } else {
-        cache_put(name, text, len);  // the bytes as sent: GET serves them (Plan 09b ruling 4)
+        cache_put(name, ctext, clen);  // the bytes as sent, with the keys they lack (Plan 09b ruling 4)
     }
     UNLOCK();
+    free(full);
     if (e == STORE_OK) {
         store_port_log("%s saved", name);
         notify(name);

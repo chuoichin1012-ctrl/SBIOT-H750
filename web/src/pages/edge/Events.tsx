@@ -113,7 +113,7 @@ export function Linkage(props: { cfg: EdgeConfig; onChange: (cfg: EdgeConfig) =>
       {edit !== null && (
         <EditDialog<LinkageEvent>
           title={edit === 'new' ? 'Add linkage event' : 'Edit linkage event'}
-          initial={edit === 'new' ? blankLinkage() : cfg.linkage[edit]}
+          initial={edit === 'new' ? blankLinkage(cfg.linkage.map((x) => x.name)) : cfg.linkage[edit]}
           defs={(e) => linkageDefs(e, names, cfg.linkage.filter((_, i) => i !== edit).map((x) => x.name), outputs)}
           onCancel={() => setEdit(null)}
           onSave={(raw) => {

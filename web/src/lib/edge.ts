@@ -118,17 +118,23 @@ export const isReserved = (name: string) => name === IO_DEVICE || name === VIRTU
 export const sourceLabel = (s: EdgeSlave) =>
   s.source === 'uart' ? `UART${s.uart}` : s.source === 'eth' ? `${s.ip}:${s.ethPort}` : s.source === 'io' ? 'Built-in IO' : 'Calculated';
 
-export function blankSlave(): EdgeSlave {
+/** The first of prefix1, prefix2, … not in `used`: a new item never starts without a name. */
+export function nextName(prefix: string, used: string[]): string {
+  for (let i = 1; ; i++) if (!used.includes(`${prefix}${i}`)) return `${prefix}${i}`;
+}
+
+// New items mirror the firmware's ITEM_* defaults (components/cfgmodel/cfgmodel.c): no field starts empty.
+export function blankSlave(used: string[] = []): EdgeSlave {
   return {
-    name: '', source: 'uart', uart: 1, ip: '', ethPort: 502, protocol: 'modbus', addr: '1',
+    name: nextName('Device', used), source: 'uart', uart: 1, ip: '192.168.0.201', ethPort: 502, protocol: 'modbus', addr: '1',
     poll: 1000, mapEn: false, mapAddr: 1, merge: false, nodes: [],
   };
 }
 
-export function blankNode(slave: EdgeSlave): EdgeNode {
+export function blankNode(slave: EdgeSlave, used: string[] = []): EdgeNode {
   const bitOnly = slave.source === 'io';
   return {
-    name: '', fc: slave.source === 'virtual' ? VIRTUAL_FC : 3, reg: 0, di: '', dtype: bitOnly ? 'bool' : slave.source === 'virtual' ? 'float32_abcd' : 'uint16',
+    name: nextName('Node', used), fc: slave.source === 'virtual' ? VIRTUAL_FC : 3, reg: 0, di: '00000000', dtype: bitOnly ? 'bool' : slave.source === 'virtual' ? 'float32_abcd' : 'uint16',
     timeout: 200, onChange: false, range: 1, mapEn: false, mapAddr: 0, formula: '', ioPoint: '',
     ioReport: 0, upper: 0, lower: 0,
   };
@@ -221,8 +227,9 @@ export const usesLower = (c: number) => [2, 4, 5, 6].includes(c);
 export const usesUpper = (c: number) => [3, 4, 5, 7].includes(c);
 export const isFollow = (c: number) => c === 0 || c === 1;
 
-export const blankLinkage = (): LinkageEvent => ({
-  name: '', enable: true, cond: 2, point: '', cycle: 1000, minInterval: 1000, upper: 0, lower: 0, output: '', action: 1, desc: '',
+export const blankLinkage = (used: string[] = []): LinkageEvent => ({
+  name: nextName('Event', used), enable: true, cond: 2, point: '', cycle: 1000, minInterval: 1000, upper: 0, lower: 0, output: '',
+  action: 1, desc: 'Linkage event',
 });
 
 

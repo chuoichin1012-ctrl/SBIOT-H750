@@ -311,7 +311,11 @@ static void test_set_get(void)
 {
     flash_new(2);
     reboot();
-    const char *in = "{\"hostname\":\"plant-7\"}";
+    // a complete body, as the UI sends it: the default with the hostname changed
+    char *def = default_text("system"), in[1024];
+    const char *tail = strstr(def, "\"bufferOffline\"");
+    snprintf(in, sizeof in, "{\"hostname\":\"plant-7\",%s", tail);
+    free(def);
     char err[200];
     const char *names[32];
     size_t nn = cfg_names(&ENV, names, 32);
@@ -343,12 +347,20 @@ static void test_set_get(void)
         CHECK(store_set_text(odd[i][0], odd[i][1], strlen(odd[i][1]), err, sizeof err) == STORE_OK, "%s: business-invalid accepted (%s)",
               odd[i][0], err);
         got = store_get_json(odd[i][0]);
-        CHECK(got && !strcmp(got, odd[i][1]), "%s: stored byte for byte", odd[i][0]);
+        cJSON *g = got ? cJSON_Parse(got) : NULL, *sent = cJSON_Parse(odd[i][1]);
+        bool same = g && sent;
+        for (const cJSON *k = sent ? sent->child : NULL; same && k; k = k->next)
+            same = cJSON_Compare(k, cJSON_GetObjectItem(g, k->string), true);
+        CHECK(same && cJSON_GetArraySize(g) > cJSON_GetArraySize(sent), "%s: every value as sent, the missing keys added (%s)",
+              odd[i][0], got);
+        cJSON_Delete(g), cJSON_Delete(sent);
         free(got);
     }
     reboot();
     got = store_get_json("port1");
-    CHECK(got && !strcmp(got, odd[0][1]), "a business-invalid config reads back after a reboot too");
+    cJSON *g = got ? cJSON_Parse(got) : NULL;
+    CHECK(g && cJSON_GetNumberValue(cJSON_GetObjectItem(g, "listenPort")) == 70000, "a business-invalid config reads back after a reboot too");
+    cJSON_Delete(g);
     free(got);
 
     // What a save still checks: the name, the syntax, the root type, the size; each keeps the stored copy.
@@ -384,13 +396,37 @@ static void test_set_get(void)
     cJSON_Delete(tree);
 }
 
+static bool str_is(const cJSON *o, const char *k, const char *want)
+{
+    const char *v = cJSON_GetStringValue(cJSON_GetObjectItem(o, k));
+    return v && !strcmp(v, want);
+}
+
 static void test_revalidate_at_boot(void)
 {
     flash_new(3);
     reboot();
     raw_put("cfg", "system", "{\"hostname\":\"old-fw\"}");  // written by an older firmware: keys missing
     char *got = store_get_json("system");
-    CHECK(got && !strcmp(got, "{\"hostname\":\"old-fw\"}"), "GET serves the stored bytes, missing keys not added (%s)", got);
+    cJSON *g = got ? cJSON_Parse(got) : NULL;
+    CHECK(g && str_is(g, "hostname", "old-fw") &&
+              str_is(g, "username", "admin") &&
+              cJSON_GetNumberValue(cJSON_GetObjectItem(g, "webPort")) == 80,
+          "GET serves the stored values, a missing key as its default (%s)", got);
+    cJSON_Delete(g);
+    free(got);
+    // a body that lacks keys (a newer firmware's fields, an old script): the same for GET right after the save
+    char err[200];
+    const char *part = "{\"ipMode\":1,\"ip\":\"192.168.0.77\",\"priority\":2}";
+    CHECK(store_set_text("network", part, strlen(part), err, sizeof err) == STORE_OK, "a network body without the LTE keys (%s)", err);
+    got = store_get_json("network");
+    g = got ? cJSON_Parse(got) : NULL;
+    CHECK(g && str_is(g, "ip", "192.168.0.77") &&
+              cJSON_GetNumberValue(cJSON_GetObjectItem(g, "priority")) == 2 &&
+              cJSON_IsNumber(cJSON_GetObjectItem(g, "apnAuth")) && cJSON_GetNumberValue(cJSON_GetObjectItem(g, "apnAuth")) == 0 &&
+              cJSON_IsString(cJSON_GetObjectItem(g, "apn")) && cJSON_IsNumber(cJSON_GetObjectItem(g, "cellDnsMode")),
+          "GET after the save: apnAuth, apn, cellDnsMode from the defaults (%s)", got);
+    cJSON_Delete(g);
     free(got);
     cJSON *doc = store_get("system");
     CHECK(doc && cJSON_GetObjectItem(doc, "username"), "store_get fills the missing keys for the runtime");
@@ -761,7 +797,7 @@ static void test_reset_unmounted(void)
 }
 
 #if STORE_CACHE_SIZE < 5000
-// Built with a 3800-byte cache (test_store_small): the defaults take most of it. A body replaces its
+// Built with a 4800-byte cache (test_store_small): the defaults take most of it. A body replaces its
 // config's text, so what has to fit is the free room plus that config's own stored text.
 static void test_cache_full(void)
 {
@@ -779,7 +815,10 @@ static void test_cache_full(void)
     size_t room = STORE_CACHE_SIZE - used;  // free bytes besides mqtt's own text
     char *in = malloc(own + room + 100), *a = malloc(own + room + 100);
     memset(a, 'a', own + room + 100);
-    snprintf(in, own + room + 100, "{\"host\":\"%.*s\"}", (int)(own + room + 1 - 11), a);  // one byte over
+    // the complete mqtt (as the UI sends it), its host grown by k bytes: own + k in all
+    const char *h = strstr(was, "\"host\":\"") + 8;
+#define MQTT_WITH(k) snprintf(in, own + room + 100, "%.*s%.*s%s", (int)(h - was), was, (int)(k), a, h)
+    MQTT_WITH(room + 1);  // one byte over
     CHECK(store_set_text("mqtt", in, strlen(in), err, sizeof err) == STORE_ETOOLARGE &&
               !strcmp(err, "The settings do not fit in the gateway's memory."),
           "more than the room left: 413 (%s)", err);
@@ -790,7 +829,8 @@ static void test_cache_full(void)
     now = store_get_json("mqtt");
     CHECK(now && !strcmp(now, was), "and nothing was written to flash");
     free(now);
-    snprintf(in, own + room + 100, "{\"host\":\"%.*s\"}", (int)(own + room - 11), a);  // exactly the room
+    MQTT_WITH(room);  // exactly the room
+#undef MQTT_WITH
     CHECK(store_set_text("mqtt", in, strlen(in), err, sizeof err) == STORE_OK, "exactly the room left: fits (%s)", err);
     BALANCED("cache full");
     free(in), free(a), free(was);

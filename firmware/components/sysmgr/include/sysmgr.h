@@ -10,6 +10,8 @@
 /** Reads ntp, ntpServer and timezone from `system` once (spec §9.1), starts SNTP when ntp is 1. */
 void sysmgr_start(const cJSON *system);
 bool sysmgr_clock_set(void);
+/** system.timezone in whole hours (-12..12), as read by sysmgr_start. */
+int sysmgr_timezone(void);
 /** Unix time in ms, 0 while the clock is not set. */
 int64_t sysmgr_utc_ms(void);
 /** Local "YYYY-MM-DD hh:mm:ss", or "" while the clock is not set (out holds 20 bytes). */

@@ -613,8 +613,18 @@ static int int_of(const cJSON *o, const char *k, int dflt)
     return cJSON_IsNumber(v) ? v->valueint : dflt;
 }
 
+static bool s_web_started;
+
+char *web_edge_buffer_for_boot(size_t *cap)
+{
+    configASSERT(!s_web_started);  // one owner at a time (spec §9.3): init, until the web starts
+    *cap = sizeof s_edge_body;
+    return s_edge_body;
+}
+
 int webapi_start(const cJSON *system)
 {
+    s_web_started = true;
     char user[17], pass[17];
     str_into(user, sizeof user, system, "username");
     str_into(pass, sizeof pass, system, "password");

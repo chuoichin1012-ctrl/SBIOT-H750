@@ -103,6 +103,20 @@ typedef bool (*cfg_emit_fn)(void *ctx, const char *text, size_t len);
 cfg_result_t cfg_edge_text(const cfg_env_t *env, const char *text, size_t len, bool strict, size_t max_out,
                            cfg_emit_fn emit, void *ctx, char *err, size_t errlen);
 
+/** cfg_edge_load's visitors: a normalised device header (without its nodes) and each normalised node,
+ * with the device's index. Copy what is needed; false stops the walk (CFG_NO_MEMORY). */
+typedef bool (*cfg_edge_dev_fn)(void *ctx, const cJSON *dev, int index);
+typedef bool (*cfg_edge_node_fn)(void *ctx, const cJSON *node, int dev);
+
+/**
+ * edgeDevices as the boot loads it (Plan 08c, spec §9.4): cfg_load's rules (phases 1 and 2, lenient),
+ * one header and one node at a time through the visitors, the same walk as cfg_edge_text (which it
+ * leaves unchanged). Nothing is emitted. A failed allocation is CFG_NO_MEMORY, never a partial visit
+ * reported as CFG_OK.
+ */
+cfg_result_t cfg_edge_load(const cfg_env_t *env, const char *text, size_t len, cfg_edge_dev_fn on_dev, cfg_edge_node_fn on_node,
+                           void *ctx, char *err, size_t errlen);
+
 #ifdef __cplusplus
 }
 #endif

@@ -4,6 +4,7 @@
 #include "bridge.h"
 #include "bridge_core.h"
 #include "cfgmodel.h"
+#include "edge_rt.h"
 #include "now_us.h"
 #include "serial.h"
 #include "store.h"
@@ -59,6 +60,10 @@ void services_start(const cJSON *sys)
         bridge_start(port, pc, sys);
         cJSON_Delete(pc);
     }
+    cJSON *edge = store_get("edge");  // Plan 08c: after the bridges (it hooks into them), before the web
+    if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(edge, "enabled")))
+        edge_start();
+    cJSON_Delete(edge);
     const cJSON *idle = cJSON_GetObjectItemCaseSensitive(sys, "idleRestart");
     if (cJSON_IsNumber(idle) && idle->valueint > 0) {
         static StaticTask_t tcb;

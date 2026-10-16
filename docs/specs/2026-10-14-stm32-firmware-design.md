@@ -146,7 +146,7 @@ Mọi thao tác trên slot **xóa** theo sector 4 KB và **ghi** theo page 256 B
 |---|---|---|---|
 | ITCM | 64 KB | Code nóng chép từ QSPI lúc khởi động: kernel FreeRTOS, các ISR (ETH, USART, DMA, TIM), `memcpy`/`memset`, lõi bignum của mbedTLS | Section `.itcm_text` |
 | DTCM | 128 KB | MSP 4 KB, `.data`/`.bss` nhỏ, stack tĩnh của mọi task **trừ** `web` và `edge_tcpN` (khoảng 95 KB theo §6.1, kể cả `init`, timer và `cmux_rx`), TCB. Tổng DTCM ≤ 120 KB, kiểm bằng file map của linker | ETH và DMA1/2 không truy cập được vùng này. §5.4 bảo đảm không DMA nào đọc hay ghi trực tiếp ở đây |
-| AXI SRAM (D1) | 512 KB | **Tĩnh** (các section, tổng khoảng 193 KB): arena JSON 64 KB (§9.3), buffer văn bản Edge 48 KB (§9.3), mô hình Edge lúc chạy và cache giá trị khoảng 20 KB, cache văn bản cấu hình của `store` 20 KB cộng bộ đệm bản ghi Edge 8 KB, stack của `web` và `edge_tcpN` khoảng 33 KB, stack của `bridge[n]` 2 × 6 KB (Plan 08a). **Heap** (`heap_5`, vùng heap duy nhất) **256 KB**, dự kiến dùng bên trong như sau: 3 phiên TLS khoảng 105 KB cộng đỉnh lúc handshake khoảng 30 KB, Mongoose khoảng 40 KB, buffer report ≤ 26 KB (§9.4), buffer mạng coreMQTT 2 × 4 KB, các cấp phát nhỏ lúc chạy khoảng 20 KB, tổng khoảng 229 KB. **Mỗi allocation chỉ tính một lần**, hoặc ở phần tĩnh, hoặc ở phần heap | Cacheable (write-back). Các pool memp và `PBUF_POOL` của lwIP chiếm 26 KB tĩnh (§5.6), nên phần AXI chưa cấp còn khoảng 37 KB. Phần heap còn dư khoảng 27 KB, kiểm bằng §12.3. Đo trên bench (Plan 08b): một phiên TLS 27,9 KB; port1 trong phiên cộng các request HTTPS của port2 dùng tối đa 58,7 KB trên mức nghỉ (heap thấp nhất còn 200 KB) |
+| AXI SRAM (D1) | 512 KB | **Tĩnh** (các section, tổng khoảng 193 KB): arena JSON 64 KB (§9.3), buffer văn bản Edge 48 KB (§9.3), cache văn bản cấu hình của `store` 20 KB cộng bộ đệm bản ghi Edge 8 KB, stack của `web` 8 KB, stack của `bridge[n]` 2 × 6 KB (Plan 08a). **Heap** (`heap_5`, vùng heap duy nhất) **256 KB**, dự kiến dùng bên trong như sau: 3 phiên TLS khoảng 105 KB cộng đỉnh lúc handshake khoảng 30 KB, Mongoose khoảng 40 KB, buffer report ≤ 26 KB (§9.4), mô hình Edge lúc chạy (216 B mỗi điểm, 96 B mỗi thiết bị) và stack các task Edge (tối đa khoảng 45 KB, chỉ khi Edge bật; Plan 08c: AXI và DTCM không còn chỗ cho phương án tĩnh), buffer mạng coreMQTT 2 × 4 KB, các cấp phát nhỏ lúc chạy khoảng 20 KB, tổng khoảng 229 KB. **Mỗi allocation chỉ tính một lần**, hoặc ở phần tĩnh, hoặc ở phần heap | Cacheable (write-back). Các pool memp và `PBUF_POOL` của lwIP chiếm 26 KB tĩnh (§5.6), nên phần AXI chưa cấp còn khoảng 37 KB. Phần heap còn dư khoảng 27 KB, kiểm bằng §12.3. Đo trên bench (Plan 08b): một phiên TLS 27,9 KB; port1 trong phiên cộng các request HTTPS của port2 dùng tối đa 58,7 KB trên mức nghỉ (heap thấp nhất còn 200 KB) |
 | SRAM1 (D2) | 128 KB | Chỉ những gì DMA chạm tới, cộng heap `MEM` của lwIP 64 KB: descriptor, buffer RX và buffer TX của ETH, ring DMA RX và buffer TX của USART1/2/3, buffer trung chuyển SPI4. Các pool memp của lwIP chỉ CPU dùng nên nằm ở AXI (Plan 06a). Sau 06a đã dùng 99 KB, còn khoảng 29 KB cho USART (14 KB, Plan 07). Số lượng và kích thước chốt trong bảng pool lwIP (§5.6) | **Non-cacheable qua MPU.** Startup bật clock SRAM D2 trước khi khởi tạo `.data` |
 | SRAM2+3 (D2) | 160 KB | Hàng đợi serial → mạng của mỗi cổng, 8 KB hoặc 32 KB khi bật `bufferOffline`, cấp tĩnh 2 × 32 KB. Trạng thái và buffer của hai bridge khoảng 24 KB (Plan 08a). Outbox MQTT 64 KB. Còn khoảng 8 KB cho metadata và căn lề | Cacheable |
 | SRAM4 (D3) | 64 KB | Ring syslog 32 KB, ring của `mqtt_io` 2 × 12 KB, **buffer BDMA của ADC3** (800 B) trong region non-cacheable 1 KB riêng ở 0x3800FC00 (§6.6). Còn khoảng 7 KB | Region 1 KB của ADC đặt non-cacheable qua MPU, phần còn lại cacheable |
@@ -274,13 +274,15 @@ Thang ưu tiên của FreeRTOS là 0–31 (`configMAX_PRIORITIES` = 32). `n` là
 | `mqtt_io` | 1 | 4 KB | 5 | Hai chiều: subscribe → serial, serial → outbox |
 | `web` | 1 | 8 KB | 5 | `mg_mgr` của `webPort` |
 | `console` | 1 | 4 KB | 5 | `mg_mgr` riêng của `websocketPort` |
-| `edge_bus[n]` | 2 | 6 KB | 5 | Poll thiết bị trên bus của cổng n |
+| `edge_bus[n]` | 0–2 | 6 KB | 5 | Poll thiết bị trên bus của cổng n (chỉ tạo khi cổng có thiết bị) |
 | `edge_tcpN` | ≤ 5 | 5 KB | 5 | Mỗi thiết bị Modbus TCP một task |
 | `lte` | 1 | 6 KB | 5 | EC600U: nguồn, AT, CMUX, PPP, tín hiệu, phục hồi |
 | `edge_rpt` | 1 | 4 KB | 4 | Report theo chu kỳ, theo lịch, khi thay đổi |
 | `serial_hb[n]` | 2 | 2 KB | 4 | Heartbeat serial khi bus im lặng |
 | `reload` | 1 | 2 KB | 3 | Nút Reload |
 | `syslog`, `idle` | 1 mỗi loại | 3 / 2 KB | 2 | Log, `idleRestart` |
+
+Stack của các task Edge (`edge_bus[n]`, `edge_tcpN`, `edge_ctl`, `edge_rpt`) cấp từ heap lúc boot, chỉ khi Edge bật và đúng theo cấu hình (Plan 08c), không nằm trong DTCM hay AXI tĩnh.
 
 Ngoài bảng trên còn có:
 - task `init` (6 KB, prio 7), tự xóa sau khi khởi động xong;
@@ -379,7 +381,10 @@ Quy tắc riêng của bản STM32:
   - Topic bind cổng qua bitmask `ports`.
   - `websocketTarget` nhận giá trị 0 (tắt), 1, 2 (UART) hoặc 3 (LOG).
   - Thiết bị Edge chọn bus qua trường `uart`.
+  - **Polling interval** (`poll` của thiết bị) là thời gian nghỉ sau **mỗi** block (Modbus) hoặc point (DL/T645) đọc xong, rồi mới đọc block kế tiếp của thiết bị đó (định nghĩa của người dùng, như USR; Plan 08c). Bản ESP32 đọc hết các block liên tiếp rồi mới nghỉ cả vòng. Đọc lại sau một lệnh ghi từ xa thì đọc cả thiết bị một lượt.
   - `edgeReport.channel` nhận giá trị 0 (MQTT), 1 hoặc 2 (socket của cổng).
+    - Report tới socket đi qua **slot report** của bridge (`bridge_send`), không qua hàng đợi serial (MessageBuffer không chuyển được message lớn hơn frame 1,5 KB của bridge). Report không kèm registration prefix; `bufferOffline` giữ frame serial, không giữ report (Plan 08c).
+    - Truy cập từ xa của Edge trên socket của cổng `channel` đi **trước** các đường của bridge: Edge chỉ trả lời unit nó expose, phần còn lại đi tiếp như cũ (Modbus gateway, IO slave, polling, cổng RS485). Mẩu request dang dở im lặng 200 ms thì được chuyển tiếp.
   - Modbus gateway của cổng n chỉ chuyển tiếp ra bus n. IO slave (`io.modbusAddress`) trả lời trên cả hai cổng.
 
 ### 6.5 Driver serial

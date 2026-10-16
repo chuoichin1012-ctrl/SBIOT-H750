@@ -57,6 +57,7 @@ int bridge_reg_content(int registration);
 typedef struct {
     uint8_t buf[MBTCP_MAX];
     size_t len;
+    uint64_t last_us;  // when the newest held byte came (acc_stamp, Plan 08c)
 } mbtcp_acc_t;
 typedef void (*mbtcp_fn)(void *ctx, const uint8_t *adu, size_t len);
 /** Feeds bytes from the stream; calls fn with each whole ADU. Bytes that are not Modbus TCP resynchronise. */
@@ -111,3 +112,29 @@ static inline bool accept_allowed(int netconn_free, int reserve) { return netcon
 /** What the bridge's wait() returns (Plan 08b): select's count, plus the TLS clients whose bytes are already
  * inside mbedTLS (`pending`, not counted by select), so read_clients runs even when the socket is silent. */
 static inline int wait_ready(int selected, int pending) { return (selected > 0 ? selected : 0) + pending; }
+
+// ---- Edge remote access and reports (Plan 08c) --------------------------------------------------
+
+#define ACC_STALE_US 200000u  // a partial request held this long without a byte was not one (the ESP32's)
+/** After bytes were added to a: the time of the newest one. */
+static inline void acc_stamp(mbtcp_acc_t *a, uint64_t now_us)
+{
+    if (a->len)
+        a->last_us = now_us;
+}
+/** Held bytes with no newer byte for ACC_STALE_US: they go on as they are. */
+static inline bool acc_stale(const mbtcp_acc_t *a, uint64_t now_us) { return a->len && now_us - a->last_us >= ACC_STALE_US; }
+
+/** True: Edge answered the request. */
+typedef bool (*frame_req_fn)(void *ctx, const uint8_t *req, size_t len);
+typedef void (*frame_pass_fn)(void *ctx, const uint8_t *data, size_t len);
+/** Edge remote access over a TCP stream: requests cut out by their MBAP length (mbap) or RTU function code
+ * (mb_rtu_request_len) go to req; one req did not answer, and bytes that are not a request, go to pass whole. */
+void frame_push(mbtcp_acc_t *a, const uint8_t *data, size_t len, bool mbap, frame_req_fn req, frame_pass_fn pass, void *ctx);
+
+/** bridge_send's rule: the bridge runs, it is not a Modbus TCP client, and it has a peer or dials on demand
+ * (an HTTP client; a TCP client with a short connection). */
+bool report_accept(const bridge_cfg_t *c, bool running, bool online);
+enum { RPT_NONE, RPT_OFFERED, RPT_SENDING };
+/** The report slot is taken when offered and no frame is in flight, once. */
+static inline bool report_take(int state, bool have) { return state == RPT_OFFERED && !have; }

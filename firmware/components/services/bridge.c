@@ -12,6 +12,7 @@
 #include "FreeRTOS.h"
 #include "io_mb.h"
 #include "message_buffer.h"
+#include "semphr.h"
 #include "netmgr.h"
 #include "now_us.h"
 #include "serial.h"
@@ -33,6 +34,7 @@
 #define PASS_READS 8
 #define PASS_ACCEPTS 8
 #define REPLY_MS 2000u  // a reply to a request (Modbus, polling) has this long to go out
+#define REPORT_WAIT_MS 10000u  // bridge_send withdraws a report not taken by then
 
 typedef struct {
     conn_t c;
@@ -40,6 +42,7 @@ typedef struct {
     bool pend;  // the current frame is still to be sent to it
     uint64_t since;
     mbtcp_acc_t acc;
+    mbtcp_acc_t *eacc;  // Edge remote access framing (Plan 08c), apart from the gateway's acc; NULL without Edge
     uint16_t tid;             // Modbus TCP client: the transaction id of the request in flight
     uint64_t mb_deadline_us;  // ... awaited until then
     uint8_t mb_unit, mb_fc;
@@ -60,6 +63,21 @@ typedef struct {
     uint8_t frame[FRAME_MAX];
     size_t frame_len;
     bool have;
+    const uint8_t *out;  // the current frame: b->frame, or a report (Plan 08c)
+    size_t out_len;
+    bool out_report;
+    // The report slot (bridge_send): Edge's buffer, offered whole; never through the MessageBuffer, which
+    // keeps one writer (on_serial) and cannot pass a message larger than b->frame.
+    const uint8_t *volatile rpt;
+    volatile size_t rpt_len;
+    volatile int rpt_state;  // RPT_NONE, RPT_OFFERED, RPT_SENDING
+    volatile bool rpt_ok;
+    SemaphoreHandle_t rpt_done;
+    StaticSemaphore_t rpt_done_mem;
+    volatile bridge_edge_fn edge;  // Edge remote access on this port (Plan 08c), or NULL
+    volatile int edge_framing;
+    mbtcp_acc_t *volatile eaccs;   // BR_MAX_CLIENTS accumulators from Edge's reservation
+    uint32_t eacc_used;
     int udp;
     struct sockaddr_in peer;
     bool peer_ok;
@@ -100,11 +118,26 @@ static void on_serial(int port, const uint8_t *data, size_t len, void *ctx)
         b->dropped++;
 }
 
-// The next frame into b->frame (with the registration prefix where configured); false when none.
+// The next frame: an offered report first (no registration prefix: it is the gateway's own message), else
+// the next serial frame into b->frame (with the prefix where configured). b->out points at it; false when none.
 static bool take_frame(bridge_t *b, bool reg_prefix)
 {
     if (b->have)
         return true;
+    if (report_take(b->rpt_state, b->have)) {
+        taskENTER_CRITICAL();
+        bool taken = b->rpt_state == RPT_OFFERED;
+        if (taken)
+            b->rpt_state = RPT_SENDING;
+        taskEXIT_CRITICAL();
+        if (taken) {
+            b->out = b->rpt;
+            b->out_len = b->rpt_len;
+            b->out_report = true;
+            b->have = true;
+            return true;
+        }
+    }
     size_t pre = 0;
     if (reg_prefix && b->C.reg && (b->C.reg_send == BR_REG_PREFIX || b->C.reg_send == BR_REG_BOTH))
         pre = sysmgr_payload(bridge_reg_content(b->C.reg), b->C.reg_data, b->C.reg_hex, b->frame, 48);
@@ -112,8 +145,25 @@ static bool take_frame(bridge_t *b, bool reg_prefix)
     if (!n)
         return false;
     b->frame_len = pre + n;
+    b->out = b->frame;
+    b->out_len = b->frame_len;
+    b->out_report = false;
     b->have = true;
     return true;
+}
+
+// The current frame is through (ok) or given up: a report's sender learns which.
+static void frame_done(bridge_t *b, bool ok)
+{
+    if (b->have && b->out_report) {
+        b->out_report = false;
+        b->rpt_ok = ok;
+        taskENTER_CRITICAL();
+        b->rpt_state = RPT_NONE;
+        taskEXIT_CRITICAL();
+        xSemaphoreGive(b->rpt_done);
+    }
+    b->have = false;
 }
 
 static size_t registration(bridge_t *b, uint8_t *out, size_t max)
@@ -155,7 +205,7 @@ static void reply_tcp(void *ctx, const uint8_t *data, size_t len)
     tcp_reply_t *t = ctx;
     client_t *cl = t->cl;
     if (cl->pend && cl->tx.busy) {
-        if (tx_finish(&cl->tx, t->b->frame, t->b->frame_len, send_cl, cl, now_ms, wait_writable, REPLY_MS) != TX_DONE) {
+        if (tx_finish(&cl->tx, t->b->out, t->b->out_len, send_cl, cl, now_ms, wait_writable, REPLY_MS) != TX_DONE) {
             conn_close(&cl->c);  // the caller drops it
             return;
         }
@@ -203,6 +253,14 @@ static void on_adu(void *ctx, const uint8_t *adu, size_t len)
     adu_ctx_t *a = ctx;
     client_t *cl = a->cl;
     if (!a->b->C.modbus_client) {
+        bridge_edge_fn edge = a->b->edge;
+        if (edge && a->b->edge_framing == BRIDGE_EDGE_MBAP) {  // Edge's mapped units first (Plan 08c)
+            size_t n = edge(adu, len, a->b->buf.io.ans, NET_BUF);
+            if (n) {
+                a->reply(a->ctx, a->b->buf.io.ans, n);
+                return;
+            }
+        }
         modbus_request(a->b, adu, len, a->reply, a->ctx);
         return;
     }
@@ -217,12 +275,10 @@ static void on_adu(void *ctx, const uint8_t *adu, size_t len)
     }
 }
 
-// Data from a network peer. `cl` carries the per-connection state (NULL for UDP).
-static void from_network(bridge_t *b, client_t *cl, const uint8_t *data, size_t len, reply_fn reply, void *ctx)
+// 08a's path for data from a network peer: the Modbus gateway, polling, or the port.
+static void pass_on(bridge_t *b, client_t *cl, const uint8_t *data, size_t len, reply_fn reply, void *ctx)
 {
     uint8_t *answer = b->buf.io.ans;
-    svc_net_activity();
-    b->last_io_us = now_us();
     if (b->C.modbus_gw) {
         if (cl) {
             adu_ctx_t a = {b, cl, reply, ctx};
@@ -246,6 +302,76 @@ static void from_network(bridge_t *b, client_t *cl, const uint8_t *data, size_t 
     serial_write(b->n, data, len, 2000);
 }
 
+typedef struct {
+    bridge_t *b;
+    client_t *cl;
+    reply_fn reply;
+    void *ctx;
+} edge_ctx_t;
+
+static bool edge_req(void *ctx, const uint8_t *req, size_t len)
+{
+    edge_ctx_t *e = ctx;
+    size_t n = e->b->edge(req, len, e->b->buf.io.ans, NET_BUF);
+    if (n)
+        e->reply(e->ctx, e->b->buf.io.ans, n);
+    return n > 0;
+}
+
+static void edge_pass(void *ctx, const uint8_t *data, size_t len)
+{
+    edge_ctx_t *e = ctx;
+    pass_on(e->b, e->cl, data, len, e->reply, e->ctx);
+}
+
+// Data from a network peer. `cl` carries the per-connection state (NULL for UDP). Edge remote access, when
+// this port carries it, comes first; what is not Edge's goes on unchanged (Plan 08c ruling 3).
+static void eacc_attach(bridge_t *b, client_t *cl);
+
+static void from_network(bridge_t *b, client_t *cl, const uint8_t *data, size_t len, reply_fn reply, void *ctx)
+{
+    svc_net_activity();
+    b->last_io_us = now_us();
+    bridge_edge_fn edge = b->edge;
+    int framing = b->edge_framing;
+    if (edge && !(b->C.modbus_gw && framing == BRIDGE_EDGE_MBAP)) {  // a gateway's ADUs: on_adu
+        edge_ctx_t e = {b, cl, reply, ctx};
+        if (cl && !cl->eacc)  // on its first data: also for a client that connected before Edge set the hook (Codex r2)
+            eacc_attach(b, cl);
+        if (cl && cl->eacc && framing != BRIDGE_EDGE_JSON) {  // a TCP stream: requests cut out, on any port
+            frame_push(cl->eacc, data, len, framing == BRIDGE_EDGE_MBAP, edge_req, edge_pass, &e);
+            acc_stamp(cl->eacc, now_us());
+            return;
+        }
+        if (edge_req(&e, data, len))  // a segment or datagram is one request
+            return;
+    }
+    pass_on(b, cl, data, len, reply, ctx);
+}
+
+static void drop_client(bridge_t *b, int i);
+static void eacc_attach(bridge_t *b, client_t *cl);
+
+// Held bytes of a partial request with nothing new for 200 ms were not one: they go on (the ESP32's
+// edge_flush_stale). Clients whose reply failed are dropped.
+static void edge_flush_stale(bridge_t *b)
+{
+    if (!b->edge || b->edge_framing == BRIDGE_EDGE_JSON)
+        return;
+    uint64_t now = now_us();
+    for (int i = b->ncli - 1; i >= 0; i--) {
+        client_t *cl = &b->cli[i];
+        if (!cl->eacc || !acc_stale(cl->eacc, now))
+            continue;
+        size_t n = cl->eacc->len;
+        cl->eacc->len = 0;
+        tcp_reply_t rc = {b, cl};
+        pass_on(b, cl, cl->eacc->buf, n, reply_tcp, &rc);
+        if (cl->c.fd < 0)
+            drop_client(b, i);
+    }
+}
+
 // ---- sending a frame to TCP connections --------------------------------------------------------
 
 static int send_cl(void *ctx, const uint8_t *data, size_t len) { return conn_send_some(&((client_t *)ctx)->c, data, len); }
@@ -264,11 +390,33 @@ static bool frame_to_adu(bridge_t *b, client_t *cl)
     cl->mb_deadline_us = now_us() + (uint64_t)(b->C.poll ? b->C.poll_timeout_ms : 1000) * 1000u;
     memcpy(b->frame, adu, n);
     b->frame_len = n;
+    b->out_len = n;
     return n > 0;
+}
+
+// A client's own Edge accumulator (Codex 08c code review: a Modbus gateway port frames RTU for Edge too).
+static void eacc_attach(bridge_t *b, client_t *cl)
+{
+    cl->eacc = NULL;
+    for (int k = 0; b->eaccs && k < BR_MAX_CLIENTS; k++)
+        if (!(b->eacc_used & 1u << k)) {
+            b->eacc_used |= 1u << k;
+            cl->eacc = &b->eaccs[k];
+            memset(cl->eacc, 0, sizeof *cl->eacc);
+            return;
+        }
+}
+
+static void eacc_detach(bridge_t *b, client_t *cl)
+{
+    if (cl->eacc)
+        b->eacc_used &= ~(1u << (cl->eacc - b->eaccs));
+    cl->eacc = NULL;
 }
 
 static void drop_client(bridge_t *b, int i)
 {
+    eacc_detach(b, &b->cli[i]);
     conn_close(&b->cli[i].c);
     b->cli[i] = b->cli[--b->ncli];
 }
@@ -278,6 +426,7 @@ static void abort_client(bridge_t *b, int i)
 {
     struct linger lg = {.l_onoff = 1, .l_linger = 0};
     lwip_setsockopt(b->cli[i].c.fd, SOL_SOCKET, SO_LINGER, &lg, sizeof lg);
+    eacc_detach(b, &b->cli[i]);
     conn_close(&b->cli[i].c);
     b->cli[i] = b->cli[--b->ncli];
 }
@@ -291,7 +440,7 @@ static bool send_frames(bridge_t *b, bool reg_prefix)
             if (!take_frame(b, reg_prefix))
                 break;
             if (b->C.modbus_client && !frame_to_adu(b, &b->cli[0])) {
-                b->have = false;
+                frame_done(b, false);
                 continue;
             }
             for (int i = 0; i < b->ncli; i++)
@@ -304,7 +453,7 @@ static bool send_frames(bridge_t *b, bool reg_prefix)
             if (!cl->pend)
                 continue;
             work = true;
-            int r = tx_progress(&cl->tx, b->frame, b->frame_len, send_cl, cl, now);
+            int r = tx_progress(&cl->tx, b->out, b->out_len, send_cl, cl, now);
             if (r == TX_DONE) {
                 cl->pend = false;
                 svc_net_activity();
@@ -318,10 +467,10 @@ static bool send_frames(bridge_t *b, bool reg_prefix)
         }
         if (!all)
             break;
-        b->have = false;
+        frame_done(b, b->ncli > 0);
     }
     if (!b->ncli)
-        b->have = false;  // nobody left to send it to
+        frame_done(b, false);  // nobody left to send it to
     return work;
 }
 
@@ -470,6 +619,7 @@ static void tcp_server(bridge_t *b)
         }
         if (n > 0 && read_clients(b, &rd))
             work = true;
+        edge_flush_stale(b);
         if (work)
             vTaskDelay(1);  // bounded work done: give way (Codex r2)
     }
@@ -486,7 +636,7 @@ static void tcp_client(bridge_t *b)
     for (;;) {
         if (b->ncli == 0) {
             b->online = false;
-            if (b->C.short_conn && xMessageBufferIsEmpty(b->mb) == pdTRUE) {  // short connection: dial only on data
+            if (b->C.short_conn && xMessageBufferIsEmpty(b->mb) == pdTRUE && b->rpt_state != RPT_OFFERED) {  // short connection: dial only on data or a report
                 set_state(b, "WAITING");
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
@@ -516,7 +666,7 @@ static void tcp_client(bridge_t *b)
             cl->c.fd = fd;
             cl->c.tls = tls;
             b->ncli = 1;
-            b->have = false;
+            frame_done(b, false);
             SLOG_I("bridge", "UART%d: connected to %s:%u", b->n, b->C.host, b->C.remote_port);
             set_state(b, "CONNECTED");
             b->online = true;
@@ -536,6 +686,7 @@ static void tcp_client(bridge_t *b)
         int n = wait(b, -1, &rd, work ? 0 : 10);
         if (n > 0 && read_clients(b, &rd))
             work = true;
+        edge_flush_stale(b);
         if (b->ncli == 0)
             goto lost;
         if (b->C.hb && !b->have && now_ms() - last_hb >= (uint32_t)b->C.hb_interval_s * 1000u) {
@@ -565,7 +716,7 @@ static void tcp_client(bridge_t *b)
         SLOG_W("bridge", "UART%d: connection to %s:%u lost", b->n, b->C.host, b->C.remote_port);
         if (b->ncli)
             drop_client(b, 0);
-        b->have = false;
+        frame_done(b, false);
         next_try = now_us() + (uint64_t)(b->C.reconnect_s > 0 ? b->C.reconnect_s : 1) * 1000000u;
     }
 }
@@ -620,11 +771,11 @@ static void udp(bridge_t *b)
         b->online = b->peer_ok;
         set_state(b, b->peer_ok ? "CONNECTED" : server ? "LISTEN" : "CONNECTING");
         for (int k = 0; k < PASS_FRAMES && b->peer_ok && take_frame(b, !server); k++) {
-            int r = lwip_sendto(b->udp, b->frame, b->frame_len, MSG_DONTWAIT, (struct sockaddr *)&b->peer, sizeof b->peer);
+            int r = lwip_sendto(b->udp, b->out, b->out_len, MSG_DONTWAIT, (struct sockaddr *)&b->peer, sizeof b->peer);
             work = true;
             if (r < 0 && net_classify(errno) == NET_AGAIN)
                 break;  // kept for the next pass, however long (spec §5.6)
-            b->have = false;
+            frame_done(b, r > 0);
             if (r > 0) {
                 svc_net_activity();
                 last_hb = now_ms();  // heartbeats only fill silences
@@ -673,8 +824,9 @@ static void udp(bridge_t *b)
 
 // ---- HTTP client -------------------------------------------------------------------------------
 
-// One request per serial frame; the response (the body only, or all of it) goes to the port.
-static void http_request(bridge_t *b)
+// One request per frame (a serial frame or a report); the response (the body only, or all of it) goes to
+// the port. True when the request went out whole.
+static bool http_request(bridge_t *b)
 {
     uint8_t *rb = b->buf.http;
     set_state(b, "CONNECTING");
@@ -688,11 +840,11 @@ static void http_request(bridge_t *b)
     if (c.fd < 0) {
         SLOG_W("bridge", "UART%d: HTTP server %s:%u unreachable", b->n, b->C.http_host, b->C.http_port);
         set_state(b, "WAITING");
-        return;
+        return false;
     }
     char head[512], tail[256];
-    size_t hn = http_head(&b->C, b->frame_len, head, sizeof head), tn = http_tail(&b->C, tail, sizeof tail);
-    bool ok = hn && conn_send_all(&c, head, hn, timeout_ms) && conn_send_all(&c, b->frame, b->frame_len, timeout_ms) &&
+    size_t hn = http_head(&b->C, b->out_len, head, sizeof head), tn = http_tail(&b->C, tail, sizeof tail);
+    bool ok = hn && conn_send_all(&c, head, hn, timeout_ms) && conn_send_all(&c, b->out, b->out_len, timeout_ms) &&
               (!tn || conn_send_all(&c, tail, tn, timeout_ms));
     size_t got = 0;
     uint64_t deadline = now_us() + (uint64_t)timeout_ms * 1000u;
@@ -712,7 +864,7 @@ static void http_request(bridge_t *b)
     if (!got) {
         SLOG_W("bridge", "UART%d: no HTTP response from %s", b->n, b->C.http_host);
         set_state(b, "WAITING");
-        return;
+        return ok;
     }
     svc_net_activity();
     size_t blen;
@@ -720,6 +872,7 @@ static void http_request(bridge_t *b)
     if (blen)
         serial_write(b->n, body, blen, 2000);
     set_state(b, "CONNECTED");
+    return ok;
 }
 
 static void http_client(bridge_t *b)
@@ -727,12 +880,11 @@ static void http_client(bridge_t *b)
     set_state(b, "WAITING");
     b->online = true;  // requests are made on demand
     for (;;) {
-        size_t n = xMessageBufferReceive(b->mb, b->frame, sizeof b->frame, pdMS_TO_TICKS(1000));
-        if (!n)
+        if (!take_frame(b, false)) {  // a serial frame or a report (Plan 08c)
+            vTaskDelay(pdMS_TO_TICKS(20));
             continue;
-        b->frame_len = n;
-        if (netmgr_online())
-            http_request(b);
+        }
+        frame_done(b, netmgr_online() && http_request(b));
     }
 }
 
@@ -774,6 +926,7 @@ int bridge_start(int port, const cJSON *pcfg, const cJSON *sys)
     b->on = true;
     size_t size = b->C.keep_offline ? RB_OFFLINE : RB_ONLINE;
     b->mb = xMessageBufferCreateStatic(size, s_mb_store[port - 1], &b->mb_mem);
+    b->rpt_done = xSemaphoreCreateBinaryStatic(&b->rpt_done_mem);
     serial_subscribe(port, on_serial, b);
     static const char *const MODES[] = {"UDP client", "TCP client", "UDP server", "TCP server", "HTTP client"};
     SLOG_I("bridge", "UART%d socket: %s%s%s%s", port, MODES[b->C.work % 5], b->C.modbus_gw ? ", Modbus TCP gateway" : "",
@@ -798,3 +951,51 @@ void bridge_state(int port, char *out, size_t len)
 uint32_t bridge_dropped(int port) { return port >= 1 && port <= SERIAL_PORTS ? s_br[port - 1].dropped : 0; }
 
 void bridge_set_accept_reserve(int n) { s_reserve = n; }
+
+// ---- Edge (Plan 08c) ----------------------------------------------------------------------------
+
+bool bridge_send(int port, const uint8_t *data, size_t len)
+{
+    if (port < 1 || port > SERIAL_PORTS)
+        return false;
+    bridge_t *b = &s_br[port - 1];
+    if (!report_accept(&b->C, b->on && b->rpt_done, b->online))
+        return false;
+    taskENTER_CRITICAL();
+    bool free_slot = b->rpt_state == RPT_NONE;
+    if (free_slot) {
+        b->rpt = data;
+        b->rpt_len = len;
+        b->rpt_state = RPT_OFFERED;
+    }
+    taskEXIT_CRITICAL();
+    if (!free_slot)
+        return false;
+    for (;;) {
+        if (xSemaphoreTake(b->rpt_done, pdMS_TO_TICKS(REPORT_WAIT_MS)) == pdTRUE)
+            return b->rpt_ok;
+        taskENTER_CRITICAL();
+        int st = b->rpt_state;
+        if (st == RPT_OFFERED)
+            b->rpt_state = RPT_NONE;  // never taken: withdrawn, the bridge will not touch it
+        taskEXIT_CRITICAL();
+        if (st == RPT_OFFERED)
+            return false;
+        if (st == RPT_NONE)  // done just now: its give is on the way
+            return xSemaphoreTake(b->rpt_done, pdMS_TO_TICKS(1000)) == pdTRUE && b->rpt_ok;
+        // In flight: a connection takes it or is dropped within 10 s (TX_STALL_MS), an HTTP request within its timeout.
+        SLOG_E("bridge", "UART%d: a report is still going out after %u s", b->n, (unsigned)(REPORT_WAIT_MS / 1000));
+    }
+}
+
+size_t bridge_edge_acc_bytes(void) { return BR_MAX_CLIENTS * sizeof(mbtcp_acc_t); }
+
+void bridge_set_edge(int port, bridge_edge_fn fn, int framing, void *accs)
+{
+    if (port < 1 || port > SERIAL_PORTS)
+        return;
+    bridge_t *b = &s_br[port - 1];
+    b->edge_framing = framing;
+    b->eaccs = accs;  // clients connected from now on get one; earlier ones are answered one segment at a time
+    b->edge = fn;
+}

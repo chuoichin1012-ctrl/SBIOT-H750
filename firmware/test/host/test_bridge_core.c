@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "bridge_core.h"
+#include "modbus.h"
 
 static int failures;
 #define CHECK(cond, ...)                                \
@@ -278,8 +279,104 @@ static void test_tx_finish(void)
           "a peer that takes nothing: lost after the reply's 2 s (%u ms)", (unsigned)s_fake_ms);
 }
 
+// ---- Plan 08c: Edge remote access framing, the report slot ---------------------------------------
+typedef struct {
+    uint8_t reqs[8][64];
+    size_t req_len[8];
+    int nreq;
+    uint8_t passed[256];
+    size_t npassed;
+    bool answer;  // what req answers
+} fp_t;
+
+static bool fp_req(void *ctx, const uint8_t *req, size_t len)
+{
+    fp_t *f = ctx;
+    memcpy(f->reqs[f->nreq], req, len);
+    f->req_len[f->nreq++] = len;
+    return f->answer;
+}
+
+static void fp_pass(void *ctx, const uint8_t *data, size_t len)
+{
+    fp_t *f = ctx;
+    memcpy(f->passed + f->npassed, data, len);
+    f->npassed += len;
+}
+
+static void test_frame_push(void)
+{
+    uint8_t rtu[8] = {5, 3, 0, 10, 0, 2};
+    size_t n = 6 + 2;
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < 6; i++) {
+        crc ^= rtu[i];
+        for (int k = 0; k < 8; k++)
+            crc = crc & 1 ? (uint16_t)(crc >> 1 ^ 0xA001) : (uint16_t)(crc >> 1);
+    }
+    rtu[6] = (uint8_t)crc, rtu[7] = (uint8_t)(crc >> 8);
+    mbtcp_acc_t a = {0};
+    fp_t f = {.answer = true};
+    frame_push(&a, rtu, 3, false, fp_req, fp_pass, &f);
+    frame_push(&a, rtu + 3, 3, false, fp_req, fp_pass, &f);
+    CHECK(f.nreq == 0 && a.len == 6, "an RTU request in pieces: held");
+    frame_push(&a, rtu + 6, 2, false, fp_req, fp_pass, &f);
+    CHECK(f.nreq == 1 && f.req_len[0] == n && !memcmp(f.reqs[0], rtu, n) && a.len == 0 && f.npassed == 0, "then given whole");
+    uint8_t two[16];
+    memcpy(two, rtu, 8), memcpy(two + 8, rtu, 8);
+    fp_t g = {.answer = true};
+    frame_push(&a, two, 16, false, fp_req, fp_pass, &g);
+    CHECK(g.nreq == 2 && a.len == 0, "two in one segment: both");
+    fp_t h = {.answer = false};
+    frame_push(&a, rtu, 8, false, fp_req, fp_pass, &h);
+    CHECK(h.nreq == 1 && h.npassed == 8 && !memcmp(h.passed, rtu, 8), "not Edge's: it goes on whole");
+    fp_t j = {.answer = true};
+    frame_push(&a, (const uint8_t *)"hello", 5, false, fp_req, fp_pass, &j);
+    CHECK(j.nreq == 0 && j.npassed == 5 && a.len == 0, "not a request: it goes on as it is");
+    uint8_t mb[12];
+    const uint8_t pdu[] = {1, 3, 0, 0, 0, 1};
+    size_t m = mb_tcp_wrap(pdu, sizeof pdu, 1, mb, sizeof mb);
+    fp_t k = {.answer = true};
+    frame_push(&a, mb, 5, true, fp_req, fp_pass, &k);
+    frame_push(&a, mb + 5, m - 5, true, fp_req, fp_pass, &k);
+    CHECK(k.nreq == 1 && k.req_len[0] == m, "an MBAP request in two pieces");
+}
+
+static void test_acc_stale(void)
+{
+    mbtcp_acc_t a = {0};
+    CHECK(!acc_stale(&a, 10000000), "empty: never stale");
+    a.len = 3;
+    acc_stamp(&a, 1000000);
+    CHECK(!acc_stale(&a, 1000000 + 199000) && acc_stale(&a, 1000000 + 200000), "200 ms after its byte, not 199");
+    acc_stamp(&a, 1000000 + 150000);  // more bytes at 150 ms
+    CHECK(!acc_stale(&a, 1000000 + 210000) && acc_stale(&a, 1000000 + 350000), "silence counts from the last byte");
+}
+
+static void test_report_accept(void)
+{
+    bridge_cfg_t c = cfg_of("{\"workMode\":3}", NULL);
+    CHECK(!report_accept(&c, false, true), "a bridge that does not run");
+    CHECK(!report_accept(&c, true, false) && report_accept(&c, true, true), "TCP server: only with a client");
+    c = cfg_of("{\"workMode\":1}", NULL);
+    CHECK(!report_accept(&c, true, false), "TCP client: not while away");
+    c = cfg_of("{\"workMode\":1,\"socketMode\":2}", NULL);
+    CHECK(report_accept(&c, true, false), "TCP client, short connection: it dials for the report");
+    c = cfg_of("{\"workMode\":4}", NULL);
+    CHECK(report_accept(&c, true, false), "HTTP client: a request for the report");
+    c = cfg_of("{\"workMode\":1,\"socketMode\":1}", NULL);
+    CHECK(!report_accept(&c, true, true), "a Modbus TCP client: never");
+    c = cfg_of("{\"workMode\":0}", NULL);
+    CHECK(!report_accept(&c, true, false) && report_accept(&c, true, true), "UDP: with its peer");
+    CHECK(report_take(1, false) && !report_take(1, true) && !report_take(2, false) && !report_take(0, false),
+          "the report goes when offered and nothing is in flight, once");
+}
+
 int main(void)
 {
+    test_frame_push();
+    test_acc_stale();
+    test_report_accept();
     test_wait_ready();
     test_tx_finish();
     test_cfg();

@@ -481,6 +481,9 @@ static void init_task(void *arg)
         case 'J':
             bench_io_cmd((char)c, "");
             break;
+        case 'C':  // the factory record read back, both copies (bench_io.c, Plan 11a task 4)
+            bench_io_cmd('C', "");
+            break;
         case 'A': {  // bench: "A <g1> <o1> <g2> <o2>": the factory record (bench_io.c)
             char l[80];
             read_line(l, sizeof l);

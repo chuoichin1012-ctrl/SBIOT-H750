@@ -2,7 +2,7 @@
 CJSON := ../../third_party/cjson
 INC := -I../../components/cfgmodel/include -I../../components/proto/include -I../../components/arena/include -I$(CJSON) -I../../components/board/include -I../../boot -I../../components/ota/include -I.
 # UBSan findings stop the test (-fno-sanitize-recover), so a NULL dereference can never pass unnoticed.
-CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all $(INC)
+CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -DCJSON_NESTING_LIMIT=16 $(INC)  # as the firmware (Plan 10c)
 BUILD := build
 CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c ../../components/proto/jsonscan.c
 

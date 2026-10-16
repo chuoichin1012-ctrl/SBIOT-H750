@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EDGE_BODY_MAX, REPORT_MAX, body, edgeBodyError, listenClash, systemPortClash, templateError26k, templateSize } from '../../src/lib/rules.js';
+import { templateError } from '../../src/lib/edge.js';
 import { convertData, fieldError } from '../../src/lib/validate.js';
 
 const server = (port: number) => ({ workMode: 3, listenPort: port });
@@ -99,4 +100,10 @@ test('bytes that are not printable text cannot become ASCII: null, the switch is
 
 test('a round trip keeps every byte, a BOM too (Codex)', () => {
   for (const hex of ['EFBBBF41', '5342494F54', 'E1BBA9']) assert.equal(convertData(convertData(hex, false)!, true), hex);
+});
+
+test('a template nested past 16 levels is refused, as the firmware refuses it (Plan 10c)', () => {
+  const nest = (d: number) => '{"a":'.repeat(d) + '"node1"' + '}'.repeat(d);
+  assert.equal(templateError(nest(16), ['node1']), null);
+  assert.match(templateError(nest(17), ['node1']) ?? '', /16 levels/);
 });

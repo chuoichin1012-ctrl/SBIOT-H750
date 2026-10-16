@@ -14,6 +14,9 @@ set(SYSTEM_C ${HAL}/CMSIS/Device/ST/STM32H7xx/Source/Templates/system_stm32h7xx.
 set(CPU -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb)
 add_compile_options(${CPU} -ffunction-sections -fdata-sections -g3)
 add_compile_definitions(STM32H750xx USE_HAL_DRIVER USE_PWR_LDO_SUPPLY)
+# JSON nested deeper than this is refused by cJSON (parse and print): its recursion costs about 48 B of stack a
+# level, and mqtt_io has 4 KB (Plan 10c task 1, Codex review Critical 1). Real documents nest 4 levels (edgeDevices).
+add_compile_definitions(CJSON_NESTING_LIMIT=16)
 add_link_options(${CPU} --specs=nano.specs --specs=nosys.specs -Wl,--gc-sections -Wl,--print-memory-usage
                  -Wl,--no-warn-rwx-segments)
 # Our own code is warning-free; vendored and generated code builds with the defaults.

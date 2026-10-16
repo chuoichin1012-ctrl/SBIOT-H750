@@ -339,6 +339,48 @@ static void rw(const char *req, const char *want, rwprot_write_fn w)
     free(got);
 }
 
+// Plan 10c task 1 (Codex review, Critical 1): JSON nested past 16 levels is refused before it can overflow a
+// task's stack (cJSON recurses about 48 B a level; mqtt_io has 4 KB). A valid request plus a deep member "z":
+// the whole document `depth` levels deep.
+static char *deep_request(int depth)
+{
+    static char buf[2048];
+    int k = depth - 1, n = snprintf(buf, sizeof buf, "{\"rw_prot\":{\"ver\":\"1.0\",\"dir\":\"down\",\"id\":\"7\","
+                                                     "\"r_data\":[{\"name\":\"temperature\"}]},\"z\":");
+    for (int i = 0; i < k; i++) buf[n++] = '[';
+    buf[n++] = '0';
+    for (int i = 0; i < k; i++) buf[n++] = ']';
+    buf[n++] = '}';
+    buf[n] = 0;
+    return buf;
+}
+
+static void test_depth_limit(void)
+{
+    const char *r16 = deep_request(16);
+    char *got = rwprot_handle(r16, strlen(r16), rd, wr, NULL);
+    CHECK(got && strstr(got, "25.3"), "16 levels: answered (%s)", got);
+    free(got);
+    const int too_deep[] = {17, 300};
+    for (int i = 0; i < 2; i++) {
+        const char *r = deep_request(too_deep[i]);
+        got = rwprot_handle(r, strlen(r), rd, wr, NULL);
+        CHECK(!got, "%d levels: refused, not answered (%s)", too_deep[i], got);
+        free(got);
+    }
+    char t[256];
+    for (int d = 16; d <= 17; d++) {  // {"a":{"a":...{"a":"temperature"}}}: d objects
+        int n = 0;
+        for (int i = 0; i < d; i++) n += snprintf(t + n, sizeof t - n, "{\"a\":");
+        n += snprintf(t + n, sizeof t - n, "\"temperature\"");
+        for (int i = 0; i < d; i++) t[n++] = '}';
+        t[n] = 0;
+        edge_tmpl_t *c = edge_tmpl_compile(t, resolve, NULL, false, NULL);
+        CHECK(d == 16 ? c != NULL : c == NULL, "a %d-level template: %s", d, d == 16 ? "compiled" : "refused");
+        edge_tmpl_free(c);
+    }
+}
+
 static void test_rwprot(void)
 {
     // The reference manual's read and write examples
@@ -391,6 +433,7 @@ int main(void)
 {
     test_ipacl();
     test_rwprot();
+    test_depth_limit();
     test_edge();
     test_mqtt();
     test_crc();

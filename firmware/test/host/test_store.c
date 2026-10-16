@@ -832,6 +832,30 @@ static void test_reset_unmounted(void)
 #if STORE_CACHE_SIZE < 5000
 // Built with a 4800-byte cache (test_store_small): the defaults take most of it. A body replaces its
 // config's text, so what has to fit is the free room plus that config's own stored text.
+// Plan 10c task 2 (Codex review, Important 2): a config skipped at boot (no room in the cache), then saved
+// with its name in the caller's buffer: the cache keeps a name of its own, not the caller's.
+static void test_cache_name_owned(void)
+{
+    flash_new(43);
+    reboot();
+    char big[1200];
+    int n = snprintf(big, sizeof big, "[{\"name\":\"E1\",\"desc\":\"");
+    memset(big + n, 'x', 900);
+    snprintf(big + n + 900, sizeof big - n - 900, "\"}]");
+    raw_put("cfg", "edgeLinkage", big);  // too large beside the defaults: skipped at this boot
+    char *got = store_get_json("edgeLinkage");
+    CHECK(!got, "edgeLinkage skipped at boot (no room)");
+    free(got);
+    char name[16], err[200];
+    snprintf(name, sizeof name, "edgeLinkage");  // as api.c's name[16] on the HTTP task's stack
+    CHECK(store_set_text(name, "[]", 2, err, sizeof err) == STORE_OK, "saved small (%s)", err);
+    memset(name, 'Z', sizeof name - 1);  // the next request reuses that stack
+    got = store_get_json("edgeLinkage");
+    CHECK(got && !strcmp(got, "[]"), "GET by name after the caller's buffer changed (%s)", got);
+    free(got);
+    BALANCED("cache name owned");
+}
+
 static void test_cache_full(void)
 {
     flash_new(6);
@@ -1983,6 +2007,7 @@ int main(void)
         test_log();
 #if STORE_CACHE_SIZE < 5000
         test_cache_full();
+        test_cache_name_owned();
 #endif
     }
     store_deinit();

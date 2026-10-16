@@ -49,6 +49,7 @@
 #define IO_STACK_WORDS 1024          // 4 KB
 #define PRIO 5
 #define LOCK_MS 2000u
+#define REST_EVERY 8  // loop turns between two one-tick rests, in both tasks
 
 typedef struct {
     char topic[129];
@@ -108,10 +109,13 @@ static void set_state(const char *s)
     taskEXIT_CRITICAL();
 }
 
-static void lock(void)
+/** False when not taken in time (never expected: no holder waits); the caller then does nothing (Codex code review). */
+static bool lock(void)
 {
-    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(LOCK_MS)) != pdTRUE)
-        SLOG_E("mqtt", "the outbox stayed locked for %u ms", (unsigned)LOCK_MS);
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(LOCK_MS)) == pdTRUE)
+        return true;
+    SLOG_E("mqtt", "the outbox stayed locked for %u ms", (unsigned)LOCK_MS);
+    return false;
 }
 static void unlock(void) { xSemaphoreGive(s_lock); }
 
@@ -155,9 +159,14 @@ static bool flag(const cJSON *o, const char *k)
 }
 static void copy(char *d, size_t n, const char *s) { snprintf(d, n, "%s", s); }
 
+/** The enabled topics, or -1 when the list cannot be read (store_get gives a known name's default, so NULL is no memory). */
 static int load_topics(const char *name, topic_t *out)
 {
     cJSON *list = store_get(name);
+    if (!cJSON_IsArray(list)) {
+        cJSON_Delete(list);
+        return -1;
+    }
     int n = 0;
     const cJSON *t;
     cJSON_ArrayForEach(t, list)
@@ -215,7 +224,8 @@ static bool enqueue(const char *topic, size_t tlen, const void *data, size_t len
 {
     if (!s_running || (!s_online && !s_keep_offline))
         return false;  // with bufferOffline it waits for the broker, QoS 0 too
-    lock();
+    if (!lock())
+        return false;
     bool ok = ob_push(&s_ob, topic, tlen, data, len, qos, retain, now_ms());
     unlock();
     if (!ok) {
@@ -241,7 +251,8 @@ bool mqttgw_add_listener(const char *topic, int qos, mqttgw_rx_fn fn)
 {
     if (!s_running || !topic || !*topic)
         return false;
-    lock();
+    if (!lock())
+        return false;
     bool ok = s_nlisten < MAX_LISTENERS && subs_add(&s_subs, topic, qos, 100 + s_nlisten);
     if (ok) {
         copy(s_listen[s_nlisten].topic, sizeof s_listen[0].topic, topic);
@@ -333,7 +344,9 @@ static void io_task(void *arg)
 {
     (void)arg;
     uint32_t seen_up = 0, seen_down = 0;
-    for (;;) {
+    for (unsigned turn = 1;; turn++) {
+        if (turn % REST_EVERY == 0)
+            vTaskDelay(1);  // as `mqtt`: rings that are never empty must not starve lower tasks
         size_t n = xMessageBufferReceive(s_down, s_io_buf, IO_BUF_BYTES, pdMS_TO_TICKS(10));
         if (n > 2) {
             uint16_t tl = (uint16_t)(s_io_buf[0] | s_io_buf[1] << 8);
@@ -476,8 +489,10 @@ static void mqtt_task(void *arg)
             retry_wait();
             continue;
         }
-        for (;;) {
+        for (unsigned turn = 1;; turn++) {
             ulTaskNotifyTake(pdTRUE, 0);
+            if (turn % REST_EVERY == 0)
+                vTaskDelay(1);  // a broker that never pauses, or an outbox always fed, must not starve lower tasks
             if (ms_subscribe(&s_sess) != MQTTSuccess || ms_feed(&s_sess) != MQTTSuccess)
                 break;
             MQTTStatus_t r = MQTT_ProcessLoop(&s_ctx);  // waits up to MQTT_WAIT_MS in the transport when idle
@@ -501,7 +516,12 @@ static void mqtt_task(void *arg)
 void mqttgw_start(const cJSON *sys)
 {
     cJSON *c = store_get("mqtt");
-    bool on = c && num(c, "enabled") == 1;
+    if (!c) {
+        set_state("NO MEMORY");
+        SLOG_E("mqtt", "its config cannot be read (no memory): MQTT stays off");
+        return;
+    }
+    bool on = num(c, "enabled") == 1;
     if (on)
         read_cfg(c);
     cJSON_Delete(c);
@@ -522,11 +542,12 @@ void mqttgw_start(const cJSON *sys)
     }
     s_npub = load_topics("mqttPublish", s_pub);
     s_nsub = load_topics("mqttSubscribe", s_sub);
-    uint8_t *netbuf = malloc(NETBUF_BYTES);
-    s_io_buf = malloc(IO_BUF_BYTES);
-    if (!netbuf || !s_io_buf) {
-        free(netbuf), free(s_io_buf);
+    uint8_t *netbuf = s_npub >= 0 && s_nsub >= 0 ? malloc(NETBUF_BYTES) : NULL;
+    s_io_buf = netbuf ? malloc(IO_BUF_BYTES) : NULL;
+    if (!s_io_buf) {  // never a gateway CONNECTED without its topics
+        free(netbuf);
         set_state("NO MEMORY");
+        SLOG_E("mqtt", "no memory for %s: MQTT stays off", s_npub < 0 || s_nsub < 0 ? "its topic lists" : "its buffers");
         return;
     }
     s_lock = xSemaphoreCreateMutexStatic(&s_lock_mem);

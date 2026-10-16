@@ -10,7 +10,7 @@ typedef struct {
     MQTTContext_t *ctx;
     ob_t *ob;
     subs_t *subs;
-    void (*lock)(void);  // the outbox's and the list's mutex
+    bool (*lock)(void);  // the outbox's and the list's mutex: false when not taken in time (nothing is done then)
     void (*unlock)(void);
     uint32_t (*now_ms)(void);
     uint32_t resent;  // PUBLISHes resent with DUP (diagnostics)
@@ -19,7 +19,8 @@ typedef struct {
 /** After MQTT_Connect: a new session sends everything in flight again as QUEUED (fresh ids); a kept one resends the
  * PUBLISHes waiting for PUBACK/PUBREC with DUP and their ids (coreMQTT resent the PUBRELs). Then every subscription. */
 MQTTStatus_t ms_resume(mqtt_sess_t *s, bool kept);
-/** QUEUED messages to the broker while fewer than OB_MAX_IN_FLIGHT are in flight, straight from their records. */
+/** QUEUED messages to the broker while fewer than OB_MAX_IN_FLIGHT are in flight, straight from their records; at most
+ * 8 a call. Every function here gives MQTTIllegalState, having done nothing more, when the mutex is not taken. */
 MQTTStatus_t ms_feed(mqtt_sess_t *s);
 /** What this session has not subscribed yet (a listener added while connected, too). */
 MQTTStatus_t ms_subscribe(mqtt_sess_t *s);

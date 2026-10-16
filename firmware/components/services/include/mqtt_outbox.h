@@ -40,7 +40,9 @@ void ob_sent(ob_t *o, ob_msg_t *m, uint16_t id);
 /** An ack from the broker: PUBACK and PUBCOMP delete, PUBREC moves on to WAIT_PUBCOMP. False when no message waits for it. */
 bool ob_ack(ob_t *o, uint16_t id, int type);
 /** After a connect: a new session sends everything in flight again as QUEUED (new ids); a kept one leaves it. */
-void ob_session(ob_t *o, bool kept);
+void ob_session(ob_t *o, bool kept, uint32_t now_ms);
+/** A packet id held by a message waiting for an ack: not to be given to another (MQTT 3.1.1 §2.3.1). */
+bool ob_id_used(const ob_t *o, uint16_t id);
 /** A kept session's PUBLISH resends (WAIT_PUBACK, WAIT_PUBREC), in order: after `prev` (NULL: the first). */
 ob_msg_t *ob_next_resend(ob_t *o, ob_msg_t *prev);
 int ob_in_flight(const ob_t *o);

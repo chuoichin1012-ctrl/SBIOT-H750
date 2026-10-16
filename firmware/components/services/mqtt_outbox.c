@@ -158,20 +158,32 @@ bool ob_ack(ob_t *o, uint16_t id, int type)
     return true;
 }
 
+static bool in_flight(const ob_msg_t *m)
+{
+    return m->state == OB_WAIT_PUBACK || m->state == OB_WAIT_PUBREC || m->state == OB_WAIT_PUBCOMP;
+}
+
 static bool requeue(ob_msg_t *m, void *ctx)
 {
-    (void)ctx;
-    if (m->state != OB_QUEUED) {
+    if (in_flight(m)) {  // not a deleted record waiting to be reclaimed
         m->state = OB_QUEUED;
         m->id = 0;
+        m->t_ms = *(uint32_t *)ctx;  // its hour starts again: it was never given up (Codex code review)
     }
     return false;
 }
 
-void ob_session(ob_t *o, bool kept)
+void ob_session(ob_t *o, bool kept, uint32_t now_ms)
 {
     if (!kept)
-        walk(o, requeue, NULL);
+        walk(o, requeue, &now_ms);
+}
+
+static bool holds_id(ob_msg_t *m, void *ctx) { return in_flight(m) && m->id == *(uint16_t *)ctx; }
+
+bool ob_id_used(const ob_t *o, uint16_t id)
+{
+    return id && walk(o, holds_id, &id);
 }
 
 typedef struct {

@@ -137,11 +137,11 @@ static void test_session(void)
     ob_msg_t *c = ob_next_queued(&o, 0);
     ob_sent(&o, c, 13);
     ob_ack(&o, 13, OB_PUBREC);  // c waits for PUBCOMP: coreMQTT resends its PUBREL
-    ob_session(&o, true);
+    ob_session(&o, true, 0);
     ob_msg_t *r1 = ob_next_resend(&o, NULL), *r2 = ob_next_resend(&o, r1), *r3 = ob_next_resend(&o, r2);
     CHECK(r1 == a && r2 == b && !r3 && a->id == 11 && b->id == 12, "a kept session: the PUBLISHes to resend, with their ids");
     CHECK(c->state == OB_WAIT_PUBCOMP && c->id == 13, "WAIT_PUBCOMP stays for coreMQTT's PUBREL");
-    ob_session(&o, false);
+    ob_session(&o, false, 0);
     CHECK(a->state == OB_QUEUED && b->state == OB_QUEUED && c->state == OB_QUEUED && !a->id && !c->id,
           "a new session: everything in flight is queued again, no ids");
     ob_msg_t *q = ob_next_queued(&o, 0);
@@ -162,6 +162,28 @@ static void test_expiry(void)
     CHECK(ob_used(&o) == 0, "and the space is back");
     push(&o, "c", "3", 0, 0xFFFFF000u);
     CHECK(ob_next_queued(&o, 0x00001000u), "the uptime counter wrapping is not an expiry");
+}
+
+static void test_requeue(void)
+{
+    ob_t o;
+    ob_init(&o, s_mem, sizeof s_mem);
+    push(&o, "a", "1", 2, 1000);
+    push(&o, "b", "2", 0, 1000);
+    push(&o, "c", "3", 1, 1000);
+    ob_msg_t *a = ob_next_queued(&o, 1000);
+    ob_sent(&o, a, 21);
+    ob_sent(&o, ob_next_queued(&o, 1000), 0);  // b: QoS 0, deleted (a holds the head: not reclaimed yet)
+    ob_msg_t *c = ob_next_queued(&o, 1000);
+    ob_sent(&o, c, 22);
+    ob_ack(&o, 22, OB_PUBACK);  // c: deleted too
+    CHECK(ob_id_used(&o, 21) && !ob_id_used(&o, 22) && !ob_id_used(&o, 0), "ids in use: only the ones waiting for an ack");
+    uint32_t later = 1000 + 2 * OB_EXPIRE_MS;  // the broker came back two hours later, with a new session
+    ob_session(&o, false, later);
+    CHECK(ob_next_queued(&o, later + 1) == a, "a message in flight is queued again with its wait restarted (Codex code review)");
+    ob_sent(&o, a, 23);
+    CHECK(!ob_next_queued(&o, later + 1), "deleted records stay deleted: no QoS 0 or acked message sent again");
+    CHECK(ob_ack(&o, 23, OB_PUBREC) && ob_ack(&o, 23, OB_PUBCOMP) && ob_used(&o) == 0, "and the outbox empties");
 }
 
 static void test_subs(void)
@@ -194,6 +216,7 @@ int main(void)
     test_small_gap();
     test_session();
     test_expiry();
+    test_requeue();
     test_subs();
     printf("test_mqtt_outbox: %s\n", failures ? "FAILED" : "ok");
     return failures ? 1 : 0;

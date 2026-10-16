@@ -629,7 +629,7 @@ Quy tắc riêng của bản STM32:
       - Outbox giữ payload. Outbox tự gửi lại **PUBLISH**: `MQTT_Publish` với `dup = true` và đúng packet id cũ.
       - Hai bên đồng bộ qua callback sự kiện của coreMQTT (PUBACK, PUBREC, PUBCOMP).
     - **Phiên được giữ:** gửi lại PUBLISH của các tin `WAIT_PUBACK` và `WAIT_PUBREC` với DUP và packet id cũ. PUBREL của các tin `WAIT_PUBCOMP` do coreMQTT gửi lại.
-    - **Phiên mới** (clean session, hoặc 3.1.1 trả Session Present = 0): các tin đang dở quay về `QUEUED`, cấp packet id mới, và trạng thái QoS của coreMQTT được xóa.
+    - **Phiên mới** (clean session, hoặc 3.1.1 trả Session Present = 0): các tin đang dở (chỉ các tin `WAIT_*`) quay về `QUEUED`, tính lại hạn 1 giờ từ lúc đó, cấp packet id mới, và trạng thái QoS của coreMQTT được xóa.
     - **Luôn đăng ký lại toàn bộ subscribe** sau mỗi lần kết nối, ở cả hai trường hợp, tương đương bản ESP32. **Tác dụng phụ:** broker gửi lại các retained message khớp với từng topic (OASIS 3.1.1 §3.8.4), và những tin này được chuyển ra cổng serial đã bind như tin bình thường. Bench có kiểm trường hợp này.
   - `retryInterval` vẫn chỉ là **khoảng thời gian giữa hai lần thử kết nối lại**, như ESP32.
   - **Hết hạn sau 1 giờ chỉ áp dụng cho tin `QUEUED`.** Tin đang ở giữa giao dịch QoS không bao giờ bị hết hạn, vì packet id của nó vẫn đang được sử dụng.
@@ -646,6 +646,8 @@ Quy tắc riêng của bản STM32:
 - **Chốt khi làm (Plan 09):**
   - **Hai task.** `mqtt` là nơi duy nhất gọi coreMQTT (connect, gửi từ outbox, gửi lại, `MQTT_ProcessLoop`, `reconnectIfSilent`); `mqttgw_start` chỉ gọi `MQTT_Init` một lần, trước khi task chạy, vì `MQTT_Init` đặt lại bộ đếm packet id. `mqtt_io` chuyển frame serial vào outbox và tin từ broker ra cổng, IO control và Edge; chỉ `mqtt_io` được chờ UART hay thiết bị. Hai task trao dữ liệu qua ring trong SRAM4; subscriber serial chỉ xếp frame vào ring, không chờ. `check_elf` kiểm nơi gọi `MQTT_*`.
   - **Outbox giữ tin tại chỗ.** Bản ghi không bao giờ di chuyển, nên `mqtt` gửi thẳng từ bản ghi mà không giữ mutex (coreMQTT gửi payload bằng I/O vector). Tối đa 16 tin đang dở. Một PUBLISH hỏng giữa chừng vẫn chuyển sang `WAIT_*` với id đã cấp, vì byte của nó có thể đã tới broker. Hết hạn tính theo uptime.
+  - **Packet id** mới bỏ qua các id còn được tin đang chờ ack giữ (bộ đếm của coreMQTT quay vòng ở 65535 mà không kiểm). Chỉ `MQTTBadParameter` làm bỏ tin; lỗi khác trước khi gửi để tin ở `QUEUED` và kết nối lại.
+  - **Mutex của outbox** không lấy được trong 2 s thì bên gọi không làm gì (không bao giờ nhả mutex không giữ). Hai task nghỉ một tick sau mỗi 8 vòng, để broker gửi không ngừng không làm đói các task thấp hơn.
   - **Client ID** rỗng thì là `SBIOT-<6 chữ số hex cuối của MAC>`, như esp-mqtt.
   - **TLS:** tên dùng cho SNI và kiểm chứng chỉ là `sniHost` khi bật `sni` và `sniHost` không rỗng, nếu không là `host`. Chứng chỉ đọc lại ở mỗi lần kết nối; `NO CA CERTIFICATE` / `NO CLIENT CERTIFICATE` quyết định lúc boot, và MQTT khi đó tắt.
   - **IO control chỉ là Modbus RTU** (`io_mb_remote`), như code ESP32; trả lời được publish lên mọi topic publish có `ioControl`.

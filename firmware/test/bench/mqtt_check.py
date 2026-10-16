@@ -7,7 +7,7 @@ and stops the brokers itself. UART1 is the port under test, UART2 the device sid
 
     python3 stm32/firmware/test/bench/mqtt_check.py [case ...]
 
-Cases: connect publish subscribe ioc will custom qos retained oversized silent tls. The NO CA CERTIFICATE and NO CLIENT
+Cases: connect publish subscribe ioc will custom qos retained oversized silent flood tls. The NO CA CERTIFICATE and NO CLIENT
 CERTIFICATE checks need a board without an mqtt CA / client certificate (bench console "Z" then "WIPE"); otherwise they
 are skipped. Ends with MQTT off. Prints one line
 per check and "bench: ok".
@@ -156,11 +156,12 @@ def post(name, body):
     return s == 200
 
 
-def configure(mq, pubs=(), subs=(), sys_extra=None, io_extra=None):
+def configure(mq, pubs=(), subs=(), sys_extra=None, io_extra=None, port1=None):
     """MQTT and its topics, port1 a plain TCP server (no dialling), Edge off, then a restart."""
     ok = post('mqtt', mq) and post('mqttPublish', list(pubs)) and post('mqttSubscribe', list(subs))
     _, p = w.get_json('/api/config/port1')
-    p.update(bc.base())
+    p.update(bc.base(serialHeartbeat=False))
+    p.update(port1 or {})
     _, sysc = w.get_json('/api/config/system')
     sysc.update({'bufferOffline': 0, 'idleRestart': 0, 'ntp': 0})
     sysc.update(sys_extra or {})
@@ -468,6 +469,33 @@ def case_silent(brk):
           'no PINGRESP gets through: the connection is dropped and made again')
 
 
+def case_flood(brk):
+    """The broker sends without a pause: tasks below MQTT's priority keep running (Codex code review). UART1's serial
+    heartbeat (`serial_hb`, priority 4) every second is counted on UART2."""
+    r = relay(60)
+    hb = {'serialHeartbeat': True, 'serialHeartbeatContent': 0, 'serialHeartbeatHex': 1, 'serialHeartbeatData': '4842',
+          'serialHeartbeatInterval': 1}
+    check(configure(mqtt_cfg(), subs=[topic('gw/flood', ports=0)], port1=hb), 'set up: gw/flood (no port), a heartbeat on UART1 every 1 s')
+    check(wait_state('CONNECTED', 15), 'CONNECTED')
+    at_device()
+    t0 = time.time()
+    n, _ = at_device()
+    quiet = n / (time.time() - t0)
+    lines = b''.join(b'%06d\n' % i for i in range(200000))
+    flood = subprocess.Popen(['mosquitto_pub', '-p', str(PLAIN), '-t', 'gw/flood', '-q', '0', '-l'], stdin=subprocess.PIPE)
+    flood.stdin.write(lines)
+    flood.stdin.close()
+    time.sleep(2)
+    t0 = time.time()
+    time.sleep(8)
+    n, _ = at_device()
+    busy = n / (time.time() - t0)
+    flood.wait(120)
+    ev = bc.wait_peer(r, 1)
+    down = sum(1 for e in evs(ev, 'pkt') if e['type'] == 'PUBLISH' and e['dir'] == 'down')
+    check(busy >= 0.7, 'under a flood (%d messages relayed): the heartbeat %.2f/s (quiet %.2f/s)' % (down, busy, quiet))
+
+
 def case_tls(brk):
     tc.make_pki()
     r = relay(50, to=TLSP, port=TLS_RELAY, raw='1')
@@ -520,7 +548,7 @@ def case_tls(brk):
 
 CASES = {'connect': case_connect, 'publish': case_publish, 'subscribe': case_subscribe, 'ioc': case_ioc,
          'will': case_will, 'custom': case_custom, 'qos': case_qos, 'retained': case_retained,
-         'oversized': case_oversized, 'silent': case_silent, 'tls': case_tls}
+         'oversized': case_oversized, 'silent': case_silent, 'flood': case_flood, 'tls': case_tls}
 
 
 def mqtt_off():

@@ -66,7 +66,7 @@ export function SystemPage(_: { path?: string }) {
   const d = useDevice();
   const g = useMemo(() => defs(d), [d]);
   const f = useForm(() => api.getValues('system'), g.all);
-  const ports = useAsync(() => Promise.all([api.getValues('port1').catch(() => null), api.getValues('port2').catch(() => null)]), []);
+  const ports = useAsync(() => Promise.all([api.getValues('port1'), d.portmax > 1 ? api.getValues('port2') : Promise.resolve(null)]), []);
   const save = useSaver();
 
   if (!f.ready) return <Pending error={f.error} retry={f.reload} />;
@@ -91,7 +91,8 @@ export function SystemPage(_: { path?: string }) {
       </Panel>
       <SaveBar
         busy={save.busy}
-        invalid={Object.keys(errors).length > 0}
+        invalid={Object.keys(errors).length > 0 || !ports.data}
+        note={ports.error ? 'The UART settings could not be read to check the ports: reload the page.' : undefined}
         onSave={() => save.run(() => api.saveValues('system', f.values), { restart: true, after: f.reload })}
       />
     </>

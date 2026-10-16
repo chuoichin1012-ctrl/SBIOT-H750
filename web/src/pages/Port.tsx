@@ -172,7 +172,10 @@ export function PortPage(props: { path?: string; n?: string; tab?: string }) {
   const all = useMemo(() => [...serial, ...socket], [serial, socket]);
   const f = useForm(() => api.getValues(`port${n}`), all, [n]);
   // The listen port across configs (Plan 09b): the gateway stores what it is sent, so the UI checks it.
-  const others = useAsync(() => Promise.all([api.getValues(`port${n === 1 ? 2 : 1}`).catch(() => null), api.getValues('system').catch(() => null)]), [n]);
+  const others = useAsync(
+    () => Promise.all([d.portmax > 1 ? api.getValues(`port${n === 1 ? 2 : 1}`) : Promise.resolve(null), api.getValues('system')]),
+    [n],
+  );
   const save = useSaver();
 
   if (!f.ready) return <Pending error={f.error} retry={f.reload} />;
@@ -204,7 +207,8 @@ export function PortPage(props: { path?: string; n?: string; tab?: string }) {
       )}
       <SaveBar
         busy={save.busy}
-        invalid={!f.valid || !!clash}
+        invalid={!f.valid || !!clash || !others.data}
+        note={others.error ? 'The other UART and the system settings could not be read to check the listen port: reload the page.' : undefined}
         tabbed
         onSave={() => save.run(() => api.saveValues(`port${n}`, f.values), { restart: true, after: f.reload })}
       />

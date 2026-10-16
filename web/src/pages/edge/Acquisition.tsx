@@ -7,8 +7,8 @@ import {
   DATA_TYPES, MAX_ETH, MAX_NODES, FUNCTION_CODES, SOURCES, allNodeNames, blankNode, blankSlave, dataTypesFor, exposedSpan, exposedUnit,
   VIRTUAL_FC, fixedName, formulaError, fromCsv, ioRegister, isReserved, modbusAddress, nameError, nodeCount, readText, referencesTo, sourceLabel, toCsv, regsOf,
 } from '../../lib/edge';
-import type { DeviceInfo, EdgeNode, EdgeSlave } from '../../lib/types';
-import type { FieldDef, Options } from '../../lib/validate';
+import type { DeviceInfo, EdgeNode, EdgeSlave, Values } from '../../lib/types';
+import { formErrors, type FieldDef, type Options } from '../../lib/validate';
 import { confirmAction, toast } from '../../components/feedback';
 import { Button, DataTable, Empty, ItemList, Panel } from '../../components/ui';
 import { EditDialog } from './EditDialog';
@@ -165,6 +165,23 @@ type Editing =
   | { kind: 'slave'; index: number | null }
   | { kind: 'node'; index: number | null };
 
+/** The edit dialogs' checks, on every device and point of a whole model (a CSV import): the gateway stores what it
+ * is sent, so nothing the dialogs would refuse may come in through a file (Codex 09b review). */
+function modelErrors(dev: DeviceInfo, slaves: EdgeSlave[], ioAddr: number): string[] {
+  const out: string[] = [];
+  const names = allNodeNames(slaves);
+  slaves.forEach((s, i) => {
+    const sErr = formErrors(slaveDefs(dev, s, slaves.filter((_, k) => k !== i), ioAddr), s as unknown as Values);
+    for (const [id, e] of Object.entries(sErr)) out.push(`${s.name}: ${id}: ${e}`);
+    s.nodes.forEach((n, j) => {
+      const siblings = s.nodes.filter((_, k) => k !== j);
+      const nErr = formErrors(nodeDefs(dev, s, n, names.filter((x) => x !== n.name), siblings), n as unknown as Values);
+      for (const [id, e] of Object.entries(nErr)) out.push(`${s.name}/${n.name}: ${id}: ${e}`);
+    });
+  });
+  return out;
+}
+
 export function Acquisition(props: { cfg: EdgeConfig; onChange: (cfg: EdgeConfig) => void }) {
   const dev = useDevice();
   const { cfg } = props;
@@ -213,7 +230,9 @@ export function Acquisition(props: { cfg: EdgeConfig; onChange: (cfg: EdgeConfig
   };
 
   const importCsv = async (file: File) => {
-    const { slaves, errors } = fromCsv(await readText(file), dev);
+    const parsed = fromCsv(await readText(file), dev);
+    const { slaves } = parsed;
+    const errors = parsed.errors.length ? parsed.errors : modelErrors(dev, slaves, ioAddr);
     if (errors.length) return toast(`Import stopped. ${errors.slice(0, 3).join(' ')}`, 'err');
     const ok = await confirmAction({
       title: 'Replace all devices and points?',

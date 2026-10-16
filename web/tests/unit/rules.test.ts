@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { REPORT_MAX, body, listenClash, systemPortClash, templateError26k, templateSize } from '../../src/lib/rules.js';
+import { fieldError } from '../../src/lib/validate.js';
 
 const server = (port: number) => ({ workMode: 3, listenPort: port });
 const sys = { webPort: 80, websocketPort: 6432 };
@@ -58,4 +59,11 @@ test('a template over 26 624 bytes is refused, at the limit it is not', () => {
 test('bodies are minified JSON: no whitespace outside strings', () => {
   assert.equal(body({ a: 1, b: [1, 2], c: { d: 'x y' } }), '{"a":1,"b":[1,2],"c":{"d":"x y"}}');
   assert.equal(body([{ topic: 'a/b' }]), '[{"topic":"a/b"}]');
+});
+
+test('a text limit counts UTF-8 bytes, as the firmware buffers do', () => {
+  const def = { id: 'username', label: 'User name', kind: 'text', maxLength: 16, required: true } as const;
+  assert.equal(fieldError(def, { username: 'é'.repeat(8) }), null);  // 16 bytes
+  assert.match(fieldError(def, { username: 'é'.repeat(9) }) ?? '', /16 bytes/);  // 18 bytes, 9 characters
+  assert.equal(fieldError(def, { username: 'a'.repeat(16) }), null);
 });

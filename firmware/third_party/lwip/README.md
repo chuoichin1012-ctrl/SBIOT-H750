@@ -14,7 +14,7 @@ TCP/IP stack of the app (spec §5.6, §7.1).
   1. **`contrib/ports/freertos/sys_arch.c`:** `sys_thread_new` calls `LWIP_FREERTOS_STATIC_THREAD` when `lwipopts.h` defines it.
      - Without the patch, the port creates its thread with `xTaskCreate`, which takes its stack from the heap.
      - The app's `tcpip` thread gets a static 4 KB stack in DTCM instead (spec §5.3, §6.1).
-  2. **`src/core/ipv4/dhcp.c`:** `dhcp_handle_ack` sets the DNS servers only when `LWIP_DHCP_DNS_FROM_LEASE(netif)` is true. It defaults to 1; the app makes it "dnsMode is automatic".
+  2. **`src/core/ipv4/dhcp.c`:** `dhcp_handle_ack` hands the lease's whole DNS list (0, 1 or 2 servers) to `LWIP_HOOK_DHCP_DNS(netif, n, servers)`, once per accepted ACK, and does not write lwIP's servers itself (Plan 10 ruling 5: each link keeps its own DNS, and `netmgr` sets the chosen link's). Without the hook, lwIP's own behaviour.
      - Upstream, every ACK, renewals included, overwrites a manual DNS.
      - `dhcp_handle_ack` only runs for an ACK that was parsed in full and accepted.
      - Tested by `test/host/test_dhcp_dns.c`.

@@ -112,12 +112,102 @@ static void test_mac(void)
     CHECK(memcmp(mac, mac2, 6) != 0, "another UID, another MAC");
 }
 
+
+static void test_cell_fields(void)
+{
+    net_cfg_t c = from("{\"priority\":2,\"apn\":\"m-wap\",\"apnUser\":\"u\",\"apnPassword\":\"p\",\"apnAuth\":3,"
+                       "\"cellDnsMode\":1,\"cellDns1\":\"8.8.4.4\",\"cellDns2\":\"9.9.9.9\"}", NULL);
+    CHECK(c.priority == 2 && !strcmp(c.apn, "m-wap") && !strcmp(c.apn_user, "u") && !strcmp(c.apn_pass, "p") && c.apn_auth == 3,
+          "priority and the APN");
+    CHECK(c.cell_dns_manual && c.cell_dns1 == 0x08080404u && c.cell_dns2 == 0x09090909u, "the manual cell DNS");
+    c = from("{\"cellDnsMode\":0,\"cellDns1\":\"8.8.4.4\"}", NULL);
+    CHECK(c.priority == 0 && !strcmp(c.apn, "internet") && c.apn_auth == 0 && !c.cell_dns_manual && c.cell_dns1 == 0,
+          "defaults: priority 0, APN internet, automatic DNS");
+}
+
+static void test_pick(void)
+{
+    CHECK(netcfg_pick(0, true, true) == NET_ROUTE_ETH && netcfg_pick(0, false, true) == NET_ROUTE_NONE, "0: Ethernet only");
+    CHECK(netcfg_pick(1, true, true) == NET_ROUTE_ETH && netcfg_pick(1, false, true) == NET_ROUTE_CELL &&
+              netcfg_pick(1, false, false) == NET_ROUTE_NONE,
+          "1: Ethernet first");
+    CHECK(netcfg_pick(2, true, true) == NET_ROUTE_CELL && netcfg_pick(2, true, false) == NET_ROUTE_ETH &&
+              netcfg_pick(2, false, false) == NET_ROUTE_NONE,
+          "2: LTE first");
+}
+
+static net_dns_t s_d;
+static uint32_t s_globals[2];
+static net_route_t s_route;
+
+static void apply(void) { netcfg_dns(&s_d, s_route, s_globals); }  // what dns_apply does after every event
+
+static void test_dns(void)
+{
+    // manual and automatic, on each link
+    net_dns_t d = {.eth_manual = true, .eth_cfg = {1, 2}, .eth_lease = {3, 4}, .cell_manual = false, .cell_cfg = {5, 6}, .cell_peer = {7, 8}};
+    uint32_t o[2];
+    netcfg_dns(&d, NET_ROUTE_ETH, o);
+    CHECK(o[0] == 1 && o[1] == 2, "Ethernet manual: its config");
+    netcfg_dns(&d, NET_ROUTE_CELL, o);
+    CHECK(o[0] == 7 && o[1] == 8, "cell automatic: PPP's");
+    d.eth_manual = false, d.cell_manual = true;
+    netcfg_dns(&d, NET_ROUTE_ETH, o);
+    CHECK(o[0] == 3 && o[1] == 4, "Ethernet automatic: the lease's");
+    netcfg_dns(&d, NET_ROUTE_CELL, o);
+    CHECK(o[0] == 5 && o[1] == 6, "cell manual: its config");
+    netcfg_dns(&d, NET_ROUTE_NONE, o);
+    CHECK(o[0] == 3 && o[1] == 4, "no route: Ethernet's");
+    d.eth_manual = false, d.eth_lease[0] = d.eth_lease[1] = 0;
+    netcfg_dns(&d, NET_ROUTE_ETH, o);
+    CHECK(o[0] == 0 && o[1] == 0, "an empty automatic pair stays empty");
+
+    // the events in both orders, each link preferred (Codex plan r1, r2)
+    for (int pref = 1; pref <= 2; pref++) {
+        for (int order = 0; order < 2; order++) {
+            memset(&s_d, 0, sizeof s_d);
+            s_route = NET_ROUTE_NONE;
+            for (int step = 0; step < 2; step++) {
+                if ((step == 0) == (order == 0)) {  // PPP up with its DNS
+                    s_d.cell_peer[0] = 0x0A0A0A0Au, s_d.cell_peer[1] = 0;
+                } else {  // a DHCP ACK
+                    s_d.eth_lease[0] = 0x08080808u, s_d.eth_lease[1] = 0x01010101u;
+                }
+                s_route = netcfg_pick(pref, s_d.eth_lease[0] != 0, s_d.cell_peer[0] != 0);
+                apply();
+            }
+            uint32_t want = pref == 1 ? 0x08080808u : 0x0A0A0A0Au;
+            CHECK(s_globals[0] == want, "priority %d, order %d: the chosen link's DNS (%08x)", pref, order, (unsigned)s_globals[0]);
+        }
+    }
+    // PPP up without DNS, Ethernet chosen: Ethernet's stay; the cell pair is empty
+    memset(&s_d, 0, sizeof s_d);
+    s_d.eth_lease[0] = 0x08080808u;
+    s_route = NET_ROUTE_ETH;
+    apply();
+    s_d.cell_peer[0] = s_d.cell_peer[1] = 0;  // IPCP gave none
+    apply();
+    CHECK(s_globals[0] == 0x08080808u, "PPP without DNS: Ethernet's kept");
+    netcfg_dns(&s_d, NET_ROUTE_CELL, o);
+    CHECK(o[0] == 0 && o[1] == 0, "and the cell's pair is empty, not Ethernet's");
+    // PPP down while Ethernet is chosen, both on the same server: PPP's cdns() cleared the global, apply puts it back
+    s_d.cell_peer[0] = 0x08080808u;
+    apply();
+    s_globals[0] = 0;  // cdns(): lwIP removed the server PPP had set, the same as Ethernet's
+    s_d.cell_peer[0] = 0;
+    apply();
+    CHECK(s_globals[0] == 0x08080808u, "PPP down with the same DNS as Ethernet: Ethernet's written again");
+}
+
 int main(void)
 {
     test_modes();
     test_defaults();
     test_ip4();
     test_mac();
+    test_cell_fields();
+    test_pick();
+    test_dns();
     printf("test_netcfg: %s\n", failures ? "FAILED" : "ok");
     return failures ? 1 : 0;
 }

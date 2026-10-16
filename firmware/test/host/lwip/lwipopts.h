@@ -21,9 +21,8 @@
 #define CHECKSUM_CHECK_UDP 0
 #define LWIP_STATS 0
 struct netif;
-int test_dns_from_lease(struct netif *netif);
+struct ip4_addr;
+void test_dhcp_dns(struct netif *netif, int n, const struct ip4_addr *servers);
 #include <stdlib.h>
 #define LWIP_RAND() ((u32_t)rand())
-#ifndef LWIP_DHCP_DNS_FROM_LEASE  // RED: make ... EXTRA='-DLWIP_DHCP_DNS_FROM_LEASE(n)=1'
-#define LWIP_DHCP_DNS_FROM_LEASE(netif) test_dns_from_lease(netif)
-#endif
+#define LWIP_HOOK_DHCP_DNS(netif, n, servers) test_dhcp_dns(netif, n, servers)

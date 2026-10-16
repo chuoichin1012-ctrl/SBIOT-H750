@@ -46,17 +46,26 @@ void netmgr_assert(const char *msg, const char *file, int line)
     configASSERT(0);
 }
 
-int netmgr_dns_from_lease(struct netif *netif)
-{
-    (void)netif;
-    return !s_cfg.dns_manual;  // spec §7.1: a manual DNS stays, renewals included
-}
-
 static void set_dns(int i, uint32_t a)
 {
     ip_addr_t x;
     ip_addr_set_ip4_u32_val(x, lwip_htonl(a));
     dns_setserver((u8_t)i, &x);
+}
+
+static uint32_t s_eth_lease[2];  // the last accepted ACK's DNS servers, 0 for none
+
+// The patched dhcp.c, in the tcpip thread: each accepted ACK's whole DNS list. A manual DNS stays, renewals
+// included (spec §7.1).
+void netmgr_dhcp_dns(struct netif *netif, int n, const struct ip4_addr *servers)
+{
+    (void)netif;
+    for (int i = 0; i < 2; i++)
+        s_eth_lease[i] = i < n ? lwip_ntohl(ip4_addr_get_u32(&servers[i])) : 0;
+    if (!s_cfg.dns_manual) {
+        set_dns(0, s_eth_lease[0]);
+        set_dns(1, s_eth_lease[1]);
+    }
 }
 
 // In the tcpip thread (lwIP's core lock is held). Order (Codex r2): netif_add, the static address and

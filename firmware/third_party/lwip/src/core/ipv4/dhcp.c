@@ -89,8 +89,9 @@
 #ifndef LWIP_HOOK_DHCP_APPEND_OPTIONS
 #define LWIP_HOOK_DHCP_APPEND_OPTIONS(netif, dhcp, state, msg, msg_type, options_len_ptr)
 #endif
-#ifndef LWIP_DHCP_DNS_FROM_LEASE /* SBIOT patch */
-#define LWIP_DHCP_DNS_FROM_LEASE(netif) 1
+#ifndef LWIP_HOOK_DHCP_DNS /* SBIOT patch: without the hook, lwIP's own behaviour */
+#define LWIP_HOOK_DHCP_DNS(netif, n, servers) do { u8_t i_; for (i_ = 0; i_ < (n); i_++) { ip_addr_t a_; \
+    ip_addr_copy_from_ip4(a_, (servers)[i_]); dns_setserver(i_, &a_); } } while (0)
 #endif
 #ifndef LWIP_HOOK_DHCP_PARSE_OPTION
 #define LWIP_HOOK_DHCP_PARSE_OPTION(netif, dhcp, state, msg, msg_type, option, len, pbuf, offset) do { LWIP_UNUSED_ARG(msg); } while(0)
@@ -740,11 +741,14 @@ dhcp_handle_ack(struct netif *netif, struct dhcp_msg *msg_in)
 
 #if LWIP_DHCP_PROVIDE_DNS_SERVERS
   /* DNS servers */
-  /* SBIOT patch: the port may keep DNS servers of its own (a manual DNS with DHCP, spec §7.1). */
-  for (n = 0; LWIP_DHCP_DNS_FROM_LEASE(netif) && (n < LWIP_DHCP_PROVIDE_DNS_SERVERS) && dhcp_option_given(dhcp, DHCP_OPTION_IDX_DNS_SERVER + n); n++) {
-    ip_addr_t dns_addr;
-    ip_addr_set_ip4_u32_val(dns_addr, lwip_htonl(dhcp_get_option_value(dhcp, DHCP_OPTION_IDX_DNS_SERVER + n)));
-    dns_setserver(n, &dns_addr);
+  /* SBIOT patch: the lease's whole DNS list (0, 1 or 2 servers) goes to the port once per accepted ACK; the port
+     keeps each link's servers and sets lwIP's own (spec §7.1, §7.2, Plan 10 ruling 5). */
+  {
+    ip4_addr_t dns_addrs[LWIP_DHCP_PROVIDE_DNS_SERVERS];
+    for (n = 0; (n < LWIP_DHCP_PROVIDE_DNS_SERVERS) && dhcp_option_given(dhcp, DHCP_OPTION_IDX_DNS_SERVER + n); n++) {
+      ip4_addr_set_u32(&dns_addrs[n], lwip_htonl(dhcp_get_option_value(dhcp, DHCP_OPTION_IDX_DNS_SERVER + n)));
+    }
+    LWIP_HOOK_DHCP_DNS(netif, n, dns_addrs);
   }
 #endif /* LWIP_DHCP_PROVIDE_DNS_SERVERS */
 }

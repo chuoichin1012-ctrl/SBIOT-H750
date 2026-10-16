@@ -73,8 +73,9 @@ void *netmgr_static_thread(void (*fn)(void *), const char *name, unsigned words,
 // DHCP takes the DNS servers of an accepted ACK only when dnsMode is automatic: a manual DNS is never
 // overwritten, renewals included (spec §7.1; patch 2 in third_party/patches/lwip-2.2.1-sbiot.patch).
 struct netif;
-int netmgr_dns_from_lease(struct netif *netif);
-#define LWIP_DHCP_DNS_FROM_LEASE(netif) netmgr_dns_from_lease(netif)
+struct ip4_addr;
+void netmgr_dhcp_dns(struct netif *netif, int n, const struct ip4_addr *servers);
+#define LWIP_HOOK_DHCP_DNS(netif, n, servers) netmgr_dhcp_dns(netif, n, servers)  // patched dhcp.c, Plan 10
 #define LWIP_UDP 1
 #define LWIP_TCP 1
 #define TCP_MSS 1460

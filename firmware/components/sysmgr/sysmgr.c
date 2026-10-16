@@ -7,6 +7,7 @@
 #include "lwip/apps/sntp.h"
 #include "lwip/tcpip.h"
 #include "lte.h"
+#include "netcfg.h"
 #include "netmgr.h"
 #include "now_us.h"
 #include "serial_frame.h"
@@ -19,7 +20,7 @@
 static int64_t s_offset_us;  // UTC in us minus now_us(); 0: not set. In a critical section (64 bits).
 static int s_tz;             // hours, from system.timezone at boot
 static char s_ntp_server[129];  // lwIP keeps the pointer: lives for the whole run
-static char s_serial[25];
+static char s_serial[NETCFG_SERIAL_LEN + 1];
 
 static int64_t offset(void)
 {
@@ -169,9 +170,9 @@ uint32_t sysmgr_uptime_s(void)
 const char *sysmgr_serial(void)
 {
     if (!s_serial[0]) {
-        const uint32_t *uid = (const uint32_t *)UID_BASE;
-        snprintf(s_serial, sizeof s_serial, "%08lX%08lX%08lX", (unsigned long)uid[2], (unsigned long)uid[1],
-                 (unsigned long)uid[0]);
+        uint8_t uid[12];  // SB and the MAC's last 5 bytes (the user, 2026-10-17: the 24-digit UID was too long)
+        memcpy(uid, (const void *)UID_BASE, sizeof uid);
+        netcfg_serial(uid, s_serial);
     }
     return s_serial;
 }

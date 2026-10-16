@@ -125,7 +125,7 @@ $(BUILD)/test_store: test_store.c nor_sim.c ../../components/store/store.c ../..
 # The same with a 3800-byte text cache: the "does not fit" path (test_cache_full).
 $(BUILD)/test_store_small: test_store.c nor_sim.c ../../components/store/store.c ../../components/store/fal_nor.c $(CFG) $(CJSON)/cJSON.c $(BUILD)/libflashdb.a
 	mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -DSTORE_CACHE_SIZE=3800u $(STORE_INC) $(filter %.c,$^) $(BUILD)/libflashdb.a -lm -o $@
+	$(CC) $(CFLAGS) -DSTORE_CACHE_SIZE=4800u $(STORE_INC) $(filter %.c,$^) $(BUILD)/libflashdb.a -lm -o $@
 
 $(BUILD)/test_heap: test_heap.c ../../components/board/heap_wrap.c
 	mkdir -p $(BUILD)

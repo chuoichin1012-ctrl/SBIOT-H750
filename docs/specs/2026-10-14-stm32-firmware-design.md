@@ -471,6 +471,7 @@ Quy tắc riêng của bản STM32:
 - IP tĩnh hoặc DHCP, DNS, hostname: lấy từ cấu hình `network` (và `system.hostname`), **đọc một lần lúc khởi động** (§9.1). Quy tắc giữ như ESP32: `ipMode` 1 là tĩnh, địa chỉ tĩnh luôn dùng DNS thủ công, địa chỉ tĩnh thiếu (ip, mask hay gateway không hợp lệ, mask không liên tục, ip 0.0.0.0) thì dùng DHCP và DNS theo `dnsMode`. Địa chỉ đọc chặt: bốn số thập phân 0–255, không dấu, không khoảng trắng, không số 0 đứng đầu.
 - **DNS thủ công khi dùng DHCP:** DHCP chỉ đặt DNS khi `dnsMode` là tự động, và chỉ từ ACK đã được lwIP chấp nhận, kể cả ACK gia hạn (patch `dhcp_handle_ack`, test `test_dhcp_dns`). Bản ESP32 để ACK ghi đè DNS thủ công.
 - **MAC:** `02` (quản lý cục bộ, unicast) cộng 5 byte đầu của SHA-256 trên UID 12 byte. Cùng một board luôn có cùng MAC.
+- **Serial number** (người dùng, 2026-10-17: 24 chữ số hex của UID quá dài): `SB` cộng 5 byte đó, viết hex chữ hoa, 12 ký tự. Ví dụ MAC `02:3F:9A:0C:12:D4` thì SN là `SB3F9A0C12D4`, nên ngoài hiện trường đối chiếu được hai giá trị với nhau.
 - **PHY:** reset bằng PD13 (10 ms thấp, chờ 50 ms), rồi `HAL_ETH_Init` (cần REF_CLK từ PHY), rồi quét MDIO 1–31 rồi 0. Trên bench IP101 trả lời ở địa chỉ 1 hoặc 0 tùy lần boot (0 là địa chỉ broadcast của IP101). Tốc độ và duplex lấy từ `ANAR ∧ ANLPAR`. Không tìm thấy PHY hay ETH init lỗi: ghi log, mạng nằm im, không vòng `Error_Handler`.
 - **RNG** (HSI48, bật trong `HAL_RNG_MspInit`): `board_rng` báo lỗi khi RNG phần cứng lỗi và là nguồn entropy duy nhất cho mbedTLS (§7.3); `board_rand32` chỉ cho `LWIP_RAND`, khi RNG lỗi thì dùng xorshift lấy mầm từ UID và đồng hồ.
 - Bật IGMP để `bridge` dùng multicast.
@@ -703,6 +704,9 @@ Những gì Plan 10b thêm (mất mạng lâu):
   - log TSDB đánh khóa bằng số thứ tự tăng dần.
 - **Luồng cấu hình (Plan 09b, người dùng, 2026-10-16):**
   - **Web UI validate toàn bộ** và gửi JSON đầy đủ, đã minify. Gateway lưu nguyên từng byte nhận được, và GET trả lại đúng các byte đó.
+    - **GET của một cấu hình object không bao giờ thiếu key** (người dùng, 2026-10-17): key nào bản lưu không có (bản lưu từ firmware ít trường hơn, hay một body thiếu key) thì GET điền giá trị mặc định của `cfgmodel`. Flash vẫn giữ nguyên bytes đã gửi; body đầy đủ (như UI gửi) vẫn đọc lại đúng từng byte.
+  - **Mặc định không có trường rỗng, và có dữ liệu mẫu** (người dùng, 2026-10-17): broker `broker.emqx.io`, Client ID `SBIOT-GW`, topic `sbiot/gw/...`, Last will điền sẵn nhưng tắt; một topic publish, một topic subscribe, một device Modbus RTU trên UART1 với hai point (`Temperature`, `Humidity`, `=%s*0.1`), một linkage. MQTT, Edge, topic và linkage mẫu đều tắt, nên gateway mới không làm gì với chúng. Chỉ rỗng khi rỗng có nghĩa riêng: `formula` của point mới (không quy đổi), `ioPoint` của point không thuộc IO, `point`/`output` của linkage mới (UI bắt chọn). Mục mới trong UI theo `ITEM_*` của firmware, tên tự đánh số (`Device2`, `Node3`, `Event2`).
+  - **Khi lưu, gateway chỉ kiểm:** xác thực, tên cấu hình, kích thước (10.240 byte; `edgeDevices` 49.152 byte), cú pháp JSON (`jsonscan`), kiểu gốc (object hoặc array) và lỗi ghi. Không merge với bản cũ, không chuẩn hóa, không kiểm quy tắc nghiệp vụ.
   - **Lúc khởi động, bộ nạp (`cfg_load`) chỉ kiểm kiểu JSON của từng trường** và giữ nguyên mọi giá trị đã gửi: không kiểm giới hạn, độ dài hay quy tắc chéo.
     - Trường sai kiểu thì lấy giá trị mặc định của trường đó, có ghi log; key thiếu thì điền mặc định.
     - Danh sách topic và event giữ tối đa 16 và 10 phần tử, để giới hạn bộ nhớ.

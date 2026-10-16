@@ -49,7 +49,7 @@ function CertRow(props: { scope: string; kind: 'ca' | 'cert' | 'key'; label: str
   return (
     <Row label={props.label} htmlFor={id} help="PEM file. Uploads immediately, separate from Save settings.">
       <div class="flex flex-wrap items-center gap-2">
-        <input id={id} type="file" accept=".pem,.crt,.cer,.key" class="min-w-0 flex-1 text-[13px]"
+        <input id={id} type="file" accept=".pem,.crt,.cer,.key" class="file-input flex-1"
           onChange={(e) => setFile(e.currentTarget.files?.[0] ?? null)} />
         <Button disabled={!file || up.busy} onClick={() => file && up.run(async () => setInfo(await api.uploadCert(props.scope, props.kind, file)), `${props.label} uploaded.`)}>
           {up.busy ? 'Uploading…' : 'Upload'}

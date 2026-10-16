@@ -25,7 +25,7 @@ export function LoginPage(props: { reason?: string }) {
 
   return (
     <main class="flex min-h-screen items-center justify-center px-4 py-10">
-      <div class="w-full max-w-sm overflow-hidden rounded-panel border border-line bg-surface shadow-sm">
+      <div class="w-full max-w-sm overflow-hidden rounded-panel border border-line border-t-4 border-t-brand bg-surface shadow-sm">
         <form class="px-7 pt-7 pb-8" onSubmit={submit} noValidate>
           <img src={logo} alt="SBIOT" width={192} height={48} class="mb-7" />
           <h1 class="text-lg font-semibold">Sign in to the gateway</h1>

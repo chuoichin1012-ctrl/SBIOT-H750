@@ -50,13 +50,17 @@ interface Topic {
   delimiter: string;
 }
 
-const blank = (): Topic => ({ enabled: false, mode: 0, topic: '', ports: 1, qos: 0, retain: false, ioControl: false, identifier: '', delimiter: ',' });
+// A row mirrors the firmware's ITEM_TOPIC, with its sample topic (cfgmodel.c DEF_PUBLISH / DEF_SUBSCRIBE).
+const blank = (sub = false): Topic => ({
+  enabled: false, mode: 0, topic: sub ? 'sbiot/gw/down' : 'sbiot/gw/up', ports: 1, qos: 0, retain: false, ioControl: false,
+  identifier: 'sbiot', delimiter: ',',
+});
 
 const EN: FieldDef = { id: 'enabled', label: '', kind: 'check' };
 
-function normalize(rows: Values[] | undefined, defs: FieldDef[]): Topic[] {
-  const out = (rows ?? []).slice(0, MAX_TOPICS).map((r) => ({ ...blank(), ...(coerce(r, [EN, ...defs]) as unknown as Partial<Topic>) }));
-  while (out.length < MAX_TOPICS) out.push(blank());
+function normalize(rows: Values[] | undefined, defs: FieldDef[], sub: boolean): Topic[] {
+  const out = (rows ?? []).slice(0, MAX_TOPICS).map((r) => ({ ...blank(sub), ...(coerce(r, [EN, ...defs]) as unknown as Partial<Topic>) }));
+  while (out.length < MAX_TOPICS) out.push(blank(sub));
   return out;
 }
 
@@ -151,8 +155,8 @@ export function MqttPage(props: { path?: string; tab?: string }) {
 
   useEffect(() => {
     if (lists.data) {
-      setPub(normalize(lists.data[0], pubDefs));
-      setSub(normalize(lists.data[1], subDefs));
+      setPub(normalize(lists.data[0], pubDefs, false));
+      setSub(normalize(lists.data[1], subDefs, true));
     }
   }, [lists.data]);
 
@@ -194,7 +198,7 @@ export function MqttPage(props: { path?: string; tab?: string }) {
       )}
       {tab === 'publish' && (
         <>
-          <Panel>
+          {enabled && <Panel>
             <Fields defs={custom} values={base.values} errors={base.errors} onChange={base.set} />
             {customOn && (
               <p class="pb-2 text-[13px] text-muted">
@@ -203,7 +207,7 @@ export function MqttPage(props: { path?: string; tab?: string }) {
                 <code class="font-mono">/site/temp</code> with QoS 0, not retained.
               </p>
             )}
-          </Panel>
+          </Panel>}
           {!customOn && (
             <Panel title="Publish: serial data to the broker" flush>
               <TopicEditor sub={false} rows={pub} defs={pubDefs} onChange={setPub} />

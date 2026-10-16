@@ -6,9 +6,10 @@ import { listenClash } from '../lib/rules';
 import { useSaver } from '../lib/save';
 import type { DeviceInfo, Val, Values } from '../lib/types';
 import {
-  HEX_ASCII, IDENTITY, ON_OFF, TLS, TLS_VERIFY, allowListError, isHex, isIpv4, type FieldDef, type Options,
+  HEX_ASCII, IDENTITY, ON_OFF, TLS, TLS_VERIFY, allowListError, convertData, isHex, isIpv4, type FieldDef, type Options,
 } from '../lib/validate';
 import { CertUpload } from '../components/CertUpload';
+import { toast } from '../components/feedback';
 import { PageHeader, Panel, Pending, SaveBar, Tabs } from '../components/ui';
 import { Fields } from '../components/form';
 
@@ -39,6 +40,10 @@ function multicastError(addr: string): string | null {
   return n >= lo && n <= hi ? null : 'Multicast groups are 224.0.0.2–239.255.255.255.';
 }
 
+/** Each HEX/ASCII switch and the data field it formats. */
+const DATA_OF: Record<string, string> = {
+  serialHeartbeatHex: 'serialHeartbeatData', netHeartbeatHex: 'netHeartbeatData', registrationHex: 'registrationData',
+};
 const hexCheck = (fmt: string) => (val: Val, v: Values) =>
   Number(v[fmt]) === 1 && val && !isHex(String(val)) ? 'Enter pairs of hex digits, e.g. 7E 01 FF.' : null;
 
@@ -184,6 +189,16 @@ export function PortPage(props: { path?: string; n?: string; tab?: string }) {
   if (!f.ready) return <Pending error={f.error} retry={f.reload} />;
 
   const onChange = (id: string, v: Val) => {
+    // A HEX/ASCII switch converts its data field, so the same bytes are shown in the new format.
+    const data = DATA_OF[id];
+    if (data && Number(v) !== Number(f.values[id])) {
+      const next = convertData(String(f.values[data] ?? ''), Number(v) === 1);
+      if (next === null) {
+        f.set(id, f.values[id]);  // a render, so the radio shows HEX again
+        return void toast('These bytes are not printable text, so they stay in HEX.', 'err');
+      }
+      f.set(data, next);
+    }
     f.set(id, v);
     // Keep the extra mode valid when the working mode changes.
     if (id === 'workMode' && !(SOCK_MODES[Number(v)] ?? []).some(([m]) => m === sm(f.values))) f.set('socketMode', NONE);

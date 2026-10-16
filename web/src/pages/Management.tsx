@@ -35,7 +35,7 @@ function Firmware() {
         <p class="text-muted">Installed: <span class="num text-ink">{d.firmware}</span></p>
         <div class="mt-3 flex flex-wrap items-center gap-3">
           <input type="file" aria-label="Firmware file" accept=".bin,.img" disabled={pct !== null}
-            onChange={(e) => setFile(e.currentTarget.files?.[0] ?? null)} class="min-w-0 text-[13px]" />
+            onChange={(e) => setFile(e.currentTarget.files?.[0] ?? null)} class="file-input" />
           <Button variant="primary" disabled={!file || pct !== null} onClick={start}>Install firmware</Button>
         </div>
         {pct !== null && (
@@ -80,7 +80,7 @@ function ConfirmPanel(props: {
 export function ManagementPage(_: { path?: string }) {
   return (
     <>
-      <PageHeader title="Maintenance" />
+      <PageHeader title="Maintenance" intro="Install firmware, restart the gateway or return it to its factory settings." />
       <Firmware />
       <ConfirmPanel
         title="Restart"

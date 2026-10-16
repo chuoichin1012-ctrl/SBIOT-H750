@@ -125,26 +125,26 @@ static const field_t linkage_fields[] = {
 
 static const char DEF_NETWORK[] =
     "{\"priority\":1,\"ipMode\":1,\"ip\":\"192.168.0.7\",\"netmask\":\"255.255.255.0\",\"gateway\":\"192.168.0.1\","
-    "\"dnsMode\":1,\"dns1\":\"8.8.8.8\",\"dns2\":\"1.1.1.1\",\"apn\":\"\",\"apnUser\":\"\","
-    "\"apnPassword\":\"\",\"apnAuth\":0,\"cellDnsMode\":0,\"cellDns1\":\"\",\"cellDns2\":\"\"}";
+    "\"dnsMode\":1,\"dns1\":\"8.8.8.8\",\"dns2\":\"1.1.1.1\",\"apn\":\"internet\",\"apnUser\":\"user\","
+    "\"apnPassword\":\"password\",\"apnAuth\":0,\"cellDnsMode\":0,\"cellDns1\":\"8.8.8.8\",\"cellDns2\":\"1.1.1.1\"}";
 
 // The ports' defaults differ only in the TCP server's listen port: both bridges run at once (Plan 08a).
 #define DEF_PORT_JSON(LISTEN) \
     "{\"baudRate\":115200,\"dataBits\":8,\"parity\":0,\"stopBits\":1,\"flowControl\":0,\"packetLength\":0,\"packetInterval\":0,"\
-    "\"serialHeartbeat\":false,\"serialHeartbeatContent\":0,\"serialHeartbeatHex\":1,\"serialHeartbeatData\":\"\",\"serialHeartbeatInterval\":30,"\
+    "\"serialHeartbeat\":false,\"serialHeartbeatContent\":0,\"serialHeartbeatHex\":1,\"serialHeartbeatData\":\"5342494F54\",\"serialHeartbeatInterval\":30,"\
     "\"workMode\":3,\"socketMode\":0,\"remoteHost\":\"192.168.0.201\",\"remotePort\":23,\"localPort\":0,\"udpAnyRemotePort\":0,"\
-    "\"listenPort\":" LISTEN ",\"maxClients\":8,\"clientLimitAction\":0,\"allowedClients\":\"\",\"httpHost\":\"\",\"httpPort\":80,\"httpLocalPort\":0,\"httpMethod\":0,"\
-    "\"httpPath\":\"/\",\"httpHeaders\":\"\",\"httpStripHeaders\":true,\"httpTimeout\":10,\"reconnectInterval\":5,\"shortConnectionTime\":10,"\
+    "\"listenPort\":" LISTEN ",\"maxClients\":8,\"clientLimitAction\":0,\"allowedClients\":\"0.0.0.0/0\",\"httpHost\":\"192.168.0.201\",\"httpPort\":80,\"httpLocalPort\":0,\"httpMethod\":0,"\
+    "\"httpPath\":\"/\",\"httpHeaders\":\"User-Agent: SBIOT-GW\",\"httpStripHeaders\":true,\"httpTimeout\":10,\"reconnectInterval\":5,\"shortConnectionTime\":10,"\
     "\"modbusPoll\":false,\"modbusPollTimeout\":200,\"modbusException\":false,\"netHeartbeat\":false,\"netHeartbeatContent\":0,\"netHeartbeatHex\":1,"\
-    "\"netHeartbeatData\":\"\",\"netHeartbeatInterval\":60,\"registration\":0,\"registrationSend\":0,\"registrationHex\":1,\"registrationData\":\"\","\
+    "\"netHeartbeatData\":\"5342494F54\",\"netHeartbeatInterval\":60,\"registration\":0,\"registrationSend\":0,\"registrationHex\":1,\"registrationData\":\"5342494F54\","\
     "\"tls\":0,\"tlsVerify\":0}"
 static const char DEF_PORT[] = DEF_PORT_JSON("23");
 static const char DEF_PORT2[] = DEF_PORT_JSON("24");
 
 static const char DEF_MQTT[] =
-    "{\"enabled\":0,\"version\":1,\"host\":\"\",\"port\":1883,\"clientId\":\"\",\"keepAlive\":60,\"reconnectIfSilent\":0,"
-    "\"retryInterval\":5,\"cleanSession\":true,\"auth\":false,\"username\":\"\",\"password\":\"\",\"will\":false,\"willTopic\":\"\",\"willMessage\":\"\","
-    "\"willQos\":0,\"willRetain\":false,\"tls\":0,\"tlsVerify\":0,\"sni\":false,\"sniHost\":\"\",\"customMode\":0,\"customModePorts\":1}";
+    "{\"enabled\":0,\"version\":1,\"host\":\"broker.emqx.io\",\"port\":1883,\"clientId\":\"SBIOT-GW\",\"keepAlive\":60,\"reconnectIfSilent\":0,"
+    "\"retryInterval\":5,\"cleanSession\":true,\"auth\":false,\"username\":\"admin\",\"password\":\"admin\",\"will\":false,\"willTopic\":\"sbiot/gw/status\","
+    "\"willMessage\":\"offline\",\"willQos\":1,\"willRetain\":true,\"tls\":0,\"tlsVerify\":0,\"sni\":false,\"sniHost\":\"broker.emqx.io\",\"customMode\":0,\"customModePorts\":1}";
 
 static const char DEF_SYSTEM[] =
     "{\"hostname\":\"sbiot-gw\",\"bufferOffline\":0,\"idleRestart\":0,\"rs485CollisionAvoid\":0,\"rs485IdleTime\":10,\"username\":\"admin\","
@@ -162,10 +162,34 @@ static const char DEF_IO[] =
 static const char DEF_EDGE[] = "{\"enabled\":false}";
 
 static const char DEF_EDGE_REPORT[] =
-    "{\"channel\":0,\"remoteAccess\":0,\"remoteWrite\":false,\"remoteFormat\":2,\"requestTopic\":\"\",\"requestQos\":0,\"replyTopic\":\"\",\"replyQos\":0,"
-    "\"replyRetain\":false,\"reporting\":0,\"reportTopic\":\"\",\"reportQos\":0,\"reportRetain\":false,\"periodic\":true,\"interval\":60,"
+    "{\"channel\":0,\"remoteAccess\":0,\"remoteWrite\":false,\"remoteFormat\":2,\"requestTopic\":\"sbiot/gw/request\",\"requestQos\":0,\"replyTopic\":\"sbiot/gw/reply\",\"replyQos\":0,"
+    "\"replyRetain\":false,\"reporting\":0,\"reportTopic\":\"sbiot/gw/report\",\"reportQos\":0,\"reportRetain\":false,\"periodic\":true,\"interval\":60,"
     "\"scheduled\":false,\"schedule\":0,\"scheduleHour\":0,\"scheduleMinute\":0,\"failurePlaceholder\":false,\"placeholder\":\"null\",\"quoteValues\":false,"
-    "\"template\":\"{}\"}";
+    "\"template\":\"{\\\"sn\\\":\\\"sys_sn\\\",\\\"time\\\":\\\"sys_time\\\",\\\"temperature\\\":\\\"Temperature\\\","
+    "\\\"humidity\\\":\\\"Humidity\\\"}\"}";
+
+// Sample lists (the user: no config without data): each one off until the user turns it on (MQTT and
+// Edge are off too), so a fresh gateway does nothing with them.
+#define DEF_TOPIC_JSON(TOPIC)                                                                                      \
+    "[{\"enabled\":false,\"mode\":0,\"topic\":\"" TOPIC "\",\"ports\":1,\"qos\":0,\"retain\":false,\"ioControl\":false," \
+    "\"identifier\":\"sbiot\",\"delimiter\":\",\"}]"
+static const char DEF_PUBLISH[] = DEF_TOPIC_JSON("sbiot/gw/up");
+static const char DEF_SUBSCRIBE[] = DEF_TOPIC_JSON("sbiot/gw/down");
+
+// One Modbus RTU slave on UART1 with two holding registers in tenths.
+#define DEF_NODE_JSON(NAME, REG, DTYPE)                                                                                \
+    "{\"name\":\"" NAME "\",\"fc\":3,\"reg\":" REG ",\"di\":\"00000000\",\"dtype\":\"" DTYPE "\",\"timeout\":200,"           \
+    "\"onChange\":false,\"range\":1,\"mapEn\":false,\"mapAddr\":0,\"formula\":\"=%s*0.1\",\"ioPoint\":\"\",\"ioReport\":0," \
+    "\"upper\":0,\"lower\":0}"
+static const char DEF_DEVICES[] =
+    "[{\"name\":\"Device1\",\"source\":\"uart\",\"uart\":1,\"ip\":\"192.168.0.201\",\"ethPort\":502,\"protocol\":\"modbus\","
+    "\"addr\":\"1\",\"poll\":1000,\"mapEn\":false,\"mapAddr\":1,\"merge\":false,\"nodes\":["
+    DEF_NODE_JSON("Temperature", "0", "int16") "," DEF_NODE_JSON("Humidity", "1", "uint16") "]}]";
+
+// DO1 closes while Temperature is at least 50, off until enabled.
+static const char DEF_LINKAGE[] =
+    "[{\"name\":\"HighTemp\",\"enable\":false,\"cond\":2,\"point\":\"Temperature\",\"cycle\":1000,\"minInterval\":1000,"
+    "\"upper\":60,\"lower\":50,\"output\":\"DO1\",\"action\":2,\"desc\":\"DO1 closes at 50 degrees or more\"}]";
 
 // ---- Config table ------------------------------------------------------------------
 
@@ -184,14 +208,14 @@ static const cfgdef_t CONFIGS[] = {
     {"port1", K_OBJECT, port_fields, N(port_fields), DEF_PORT},
     {"port2", K_OBJECT, port_fields, N(port_fields), DEF_PORT2},
     {"mqtt", K_OBJECT, mqtt_fields, N(mqtt_fields), DEF_MQTT},
-    {"mqttPublish", K_TOPICS, topic_fields, N(topic_fields), "[]"},
-    {"mqttSubscribe", K_TOPICS, topic_fields, N(topic_fields), "[]"},
+    {"mqttPublish", K_TOPICS, topic_fields, N(topic_fields), DEF_PUBLISH},
+    {"mqttSubscribe", K_TOPICS, topic_fields, N(topic_fields), DEF_SUBSCRIBE},
     {"system", K_OBJECT, system_fields, N(system_fields), DEF_SYSTEM},
     {"io", K_OBJECT, io_fields, N(io_fields), DEF_IO},
     {"edge", K_OBJECT, edge_fields, N(edge_fields), DEF_EDGE},
     {"edgeReport", K_OBJECT, edge_report_fields, N(edge_report_fields), DEF_EDGE_REPORT},
-    {"edgeDevices", K_SLAVES, device_fields, N(device_fields), "[]"},
-    {"edgeLinkage", K_EVENTS, linkage_fields, N(linkage_fields), "[]"},
+    {"edgeDevices", K_SLAVES, device_fields, N(device_fields), DEF_DEVICES},
+    {"edgeLinkage", K_EVENTS, linkage_fields, N(linkage_fields), DEF_LINKAGE},
 };
 
 static const cfgdef_t *find(const cfg_env_t *env, const char *name)
@@ -412,16 +436,16 @@ static cJSON *list(const cfg_env_t *env, const char *cfg, const field_t *fields,
 }
 
 static const char ITEM_TOPIC[] =
-    "{\"enabled\":false,\"mode\":0,\"topic\":\"\",\"ports\":1,\"qos\":0,\"retain\":false,\"ioControl\":false,\"identifier\":\"\","
+    "{\"enabled\":false,\"mode\":0,\"topic\":\"sbiot/gw/data\",\"ports\":1,\"qos\":0,\"retain\":false,\"ioControl\":false,\"identifier\":\"sbiot\","
     "\"delimiter\":\",\"}";
 static const char ITEM_EVENT[] =
-    "{\"name\":\"\",\"enable\":true,\"cond\":2,\"point\":\"\",\"cycle\":1000,\"minInterval\":1000,\"upper\":0,"
-    "\"lower\":0,\"output\":\"\",\"action\":1,\"desc\":\"\"}";
+    "{\"name\":\"Event1\",\"enable\":true,\"cond\":2,\"point\":\"\",\"cycle\":1000,\"minInterval\":1000,\"upper\":0,"
+    "\"lower\":0,\"output\":\"\",\"action\":1,\"desc\":\"Linkage event\"}";
 static const char ITEM_SLAVE[] =
-    "{\"name\":\"\",\"source\":\"uart\",\"uart\":1,\"ip\":\"\",\"ethPort\":502,\"protocol\":\"modbus\","
+    "{\"name\":\"Device1\",\"source\":\"uart\",\"uart\":1,\"ip\":\"192.168.0.201\",\"ethPort\":502,\"protocol\":\"modbus\","
     "\"addr\":\"1\",\"poll\":1000,\"mapEn\":false,\"mapAddr\":1,\"merge\":false}";
 static const char ITEM_NODE[] =
-    "{\"name\":\"\",\"fc\":3,\"reg\":0,\"di\":\"\",\"dtype\":\"uint16\",\"timeout\":200,\"onChange\":false,"
+    "{\"name\":\"Node1\",\"fc\":3,\"reg\":0,\"di\":\"00000000\",\"dtype\":\"uint16\",\"timeout\":200,\"onChange\":false,"
     "\"range\":1,\"mapEn\":false,\"mapAddr\":0,\"formula\":\"\",\"ioPoint\":\"\",\"ioReport\":0,\"upper\":0,"
     "\"lower\":0}";
 

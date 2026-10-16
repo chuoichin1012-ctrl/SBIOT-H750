@@ -2,29 +2,31 @@
 
 /* Design tokens for an equipment admin console: long sessions, dense forms,
    sometimes a laptop in a bright plant room.
-   - Neutral graphite chrome, so nothing competes with the data.
-   - One accent (steel blue) for everything you can act on and for "you are here".
+   - A light console in the SBIOT brand: the blue of the logo for the header and
+     for everything you can act on, its orange only as the "you are here" marker.
    - Colour otherwise appears only as device state (led-*), always next to text.
-   Contrast: text pairs >= 5:1 (AA), state colours >= 3:1 on surface and nav. */
+   Contrast: text pairs >= 5:1 (AA), state colours >= 3:1 on the surfaces. */
 @theme {
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
 
   /* Surfaces and text */
-  --color-canvas: #f3f4f6;   /* page background */
-  --color-surface: #ffffff;  /* panels, inputs, dialogs */
-  --color-line: #dce0e5;     /* borders and dividers */
-  --color-ink: #1b2027;      /* primary text */
-  --color-muted: #5d6875;    /* labels, help text */
+  --color-canvas: #f3f5fa;   /* page background, behind the main content */
+  --color-surface: #ffffff;  /* sidebar, panels, inputs, dialogs */
+  --color-tint: #f7f8fc;     /* panel title bars, table heads */
+  --color-line: #dde2ec;     /* borders and dividers */
+  --color-ink: #1a2233;      /* primary text */
+  --color-muted: #5a6577;    /* labels, help text */
 
-  /* Navigation (sidebar, status strip) */
-  --color-nav: #1f252d;
-  --color-nav-active: #2d3540;
-  --color-nav-accent: #7ea6e0; /* current-item marker on dark */
+  /* Brand (sbiot-logo.svg): the header, and the current-item marker */
+  --color-brand: #1f35ac;
+  --color-brand-strong: #172a8c;
+  --color-brand-mark: #eb6001;
+  --color-select: #e9edfb;   /* the current item's background in the sidebar */
 
   /* Interaction */
-  --color-accent: #2a5db0;
-  --color-accent-strong: #214b8f;
+  --color-accent: #1f35ac;
+  --color-accent-strong: #172a8c;
 
   /* Device state */
   --color-led-ok: #1e9e5a;
@@ -39,6 +41,8 @@
 
 @layer base {
   html { background: var(--color-canvas); color: var(--color-ink); }
+  /* A field scrolled into view (Tab, an error) stops above the sticky save bar, not under it. */
+  html { scroll-padding-top: 4rem; scroll-padding-bottom: 5rem; }
   body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; }
   :focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
   input, select, textarea { font: inherit; }
@@ -53,4 +57,9 @@
       disabled:bg-canvas disabled:text-muted aria-invalid:border-led-err;
   }
   .num { font-variant-numeric: tabular-nums; }
+  /* A file input whose button looks like the other secondary buttons */
+  .file-input {
+    @apply min-w-0 text-[13px] text-muted file:mr-3 file:cursor-pointer file:rounded-control file:border file:border-line
+      file:bg-surface file:px-3 file:py-1.5 file:font-medium file:text-ink hover:file:bg-canvas disabled:file:cursor-default;
+  }
 }

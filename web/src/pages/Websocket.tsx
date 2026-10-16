@@ -77,7 +77,7 @@ export function WebsocketPage(_: { path?: string }) {
           )}
           <Panel title="Received" aside={<Button size="sm" onClick={() => setRx('')}>Clear</Button>}>
             <textarea ref={out} readOnly aria-label="Received data" value={rx}
-              class="my-2 h-80 w-full resize-y rounded-control border border-line bg-ink p-3 font-mono text-[13px] text-white/90" />
+              class="my-2 h-80 w-full resize-y rounded-control border border-line bg-tint p-3 font-mono text-[13px] text-ink" />
           </Panel>
           <Panel title="Send">
             <textarea aria-label="Data to send" maxLength={4000} value={tx} onInput={(e) => setTx(e.currentTarget.value)}

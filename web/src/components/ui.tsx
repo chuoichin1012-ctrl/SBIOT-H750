@@ -45,7 +45,7 @@ export function Panel(props: { title?: string; aside?: ComponentChildren; childr
   return (
     <section class="mb-4 rounded-panel border border-line bg-surface">
       {props.title && (
-        <div class="flex items-center justify-between gap-3 border-b border-line px-4 py-2.5">
+        <div class="flex items-center justify-between gap-3 rounded-t-panel border-b border-line bg-tint px-4 py-2.5">
           <h2 class="font-semibold">{props.title}</h2>
           {props.aside}
         </div>
@@ -66,7 +66,7 @@ export function Tabs(props: { base: string; active: string; tabs: [id: string, l
             href={`#${props.base}/${id}`}
             aria-current={on ? 'page' : undefined}
             class={`border-b-2 px-3.5 py-2 whitespace-nowrap ${
-              on ? 'border-accent font-semibold text-ink' : 'border-transparent text-muted hover:text-ink'
+              on ? 'border-brand-mark font-semibold text-ink' : 'border-transparent text-muted hover:border-line hover:text-ink'
             }`}
           >
             {label}
@@ -130,12 +130,16 @@ export function SaveBar(props: {
         : 'Fix the highlighted fields before saving.'
       : undefined);
   return (
-    <div class="sticky bottom-0 z-10 -mx-4 mt-2 flex flex-wrap items-center justify-end gap-3 border-t border-line bg-canvas/95 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
-      {note && <p class="mr-auto text-[13px] text-led-err">{note}</p>}
-      {props.children}
-      <Button variant="primary" onClick={props.onSave} disabled={props.busy || props.invalid || props.disabled}>
-        {props.busy ? props.busyLabel ?? 'Saving…' : props.label ?? 'Save settings'}
-      </Button>
+    // The bar runs the width of the content column, at its bottom (main is a flex column); its button lines up
+    // with the panels' right edge (the same 64rem as main's other children, padding on top).
+    <div class="save-bar sticky bottom-0 z-10 -mx-4 mt-auto -mb-10 border-t border-line bg-surface shadow-[0_-4px_12px_-6px_rgb(26_34_51/0.15)] sm:-mx-6 lg:-mx-8">
+      <div class="box-content flex max-w-5xl flex-wrap items-center justify-end gap-3 px-4 py-3 sm:px-6 lg:px-8">
+        {note && <p class="mr-auto text-[13px] text-led-err">{note}</p>}
+        {props.children}
+        <Button variant="primary" onClick={props.onSave} disabled={props.busy || props.invalid || props.disabled}>
+          {props.busy ? props.busyLabel ?? 'Saving…' : props.label ?? 'Save settings'}
+        </Button>
+      </div>
     </div>
   );
 }

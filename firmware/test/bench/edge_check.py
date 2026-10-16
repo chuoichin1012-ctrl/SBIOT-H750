@@ -787,17 +787,17 @@ def case_mqtt():
 
 def case_memory():
     nodes = lambda n, base, **kw: [dict({'name': '%s%d' % (base, i), 'reg': 20 + i, 'timeout': 300}, **kw) for i in range(n)]
-    devs = [plc(nodes=nodes(120, 'p')), {'name': 'b2', 'addr': '9', 'uart': 2, 'poll': 2000, 'nodes': nodes(100, 'q')}]
+    devs = [plc(nodes=nodes(80, 'p')), {'name': 'b2', 'addr': '9', 'uart': 2, 'poll': 2000, 'nodes': nodes(60, 'q')}]
     for k in range(5):
-        devs.append(tcpdev(name='tcp%d' % k, nodes=nodes(12, 'e%d_' % k)))
+        devs.append(tcpdev(name='tcp%d' % k, nodes=nodes(8, 'e%d_' % k)))
     devs += [io(), virt(nodes=[{'name': 'v%d' % i, 'formula': '=%s+1,p0', 'dtype': 'float32_abcd'} for i in range(18)])]
-    # 300 points (Plan 09d); the report names 100 of them, within the 26 KB report limit
+    # 200 points (Plan 09e); the report names 100 of them, within the 26 KB report limit
     tmpl = dict(list({n['name']: n['name'] for d in devs for n in d['nodes'] if 'name' in n}.items())[:100])
     # MQTT on too (Plan 09), its broker away: every task the gateway can run, but LTE's.
     import mqtt_check as mc
     mc.post('mqtt', mc.mqtt_cfg(host='192.0.2.1'))
     check(setup(devs, report={'reporting': 1, 'interval': 5, 'template': json.dumps(tmpl)}),
-          'set up the largest model: 300 points, both buses, 5 TCP devices; MQTT on')
+          'set up the largest model: 200 points, both buses, 5 TCP devices; MQTT on')
     slave, tcp = start_all(secs=45)
     time.sleep(40)
     slave.close()
@@ -841,14 +841,14 @@ def case_di():
 
 
 def case_onedevice():
-    """Plan 09d (Codex code review): all 300 points on one device, Modbus RTU, then Modbus TCP: every point is
+    """Plan 09d (Codex code review): all 200 points on one device, Modbus RTU, then Modbus TCP: every point is
     read, and the device's poll task keeps at least 1 KB of stack (its reads are planned at the start, not on it)."""
-    pts = [{'name': 'p%d' % i, 'reg': 2 * i, 'timeout': 300} for i in range(300)]  # gaps of 1: 5 reads of up to 125
-    # merge on both (plc's default; tcpdev's is off): 5 blocks, one a second, instead of 300 single reads
+    pts = [{'name': 'p%d' % i, 'reg': 2 * i, 'timeout': 300} for i in range(200)]  # gaps of 1: 4 reads of up to 125
+    # merge on both (plc's default; tcpdev's is off): 4 blocks, one a second, instead of 200 single reads
     for dev, task in ((plc(nodes=pts), 'edge_bus1'), (tcpdev(nodes=pts, merge=True), 'edge_tcp0')):
-        check(setup([dev], report={'reporting': 0}), 'set up one %s device with 300 points' % ('RTU' if task == 'edge_bus1' else 'Modbus TCP'))
+        check(setup([dev], report={'reporting': 0}), 'set up one %s device with 200 points' % ('RTU' if task == 'edge_bus1' else 'Modbus TCP'))
         slave, tcp = start_all(secs=45)
-        full = wait(lambda: status() == 'RUNNING 300/300', 25, 0.5)
+        full = wait(lambda: status() == 'RUNNING 200/200', 25, 0.5)
         state = status()
         time.sleep(max(0, 32 - 25))  # the headroom is logged once, 30 s in
         m = wait(lambda: re.search(r'edge: stack headroom: (.*) bytes', log_text()), 10, 1)

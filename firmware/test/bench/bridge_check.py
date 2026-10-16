@@ -209,9 +209,15 @@ def case_tcpserver():
     got = [(e['t'] / 1000.0, e['n']) for e in ev if e.get('ev') == 'got']
     gaps = [(a[0], b[0]) for a, b in zip(got, got[1:]) if b[0] - a[0] > 2.0]
     dropped = any('took nothing for 10 s' in l for _, l in lines)
-    check(dropped and len(gaps) == 1 and 9 <= gaps[0][1] - gaps[0][0] <= 13,
-          'a client that never reads: dropped (%s); the other waited %s s once, then got everything (gaps %s, %d bytes)'
-          % (dropped, round(gaps[0][1] - gaps[0][0], 1) if gaps else '-', gaps, got[-1][1] if got else 0))
+    m = sc.find([l for _, l in lines], r'E2 streamed (\d+) bytes')
+    rate = int(m.group(1)) / 32.0 if m else 0  # bytes a second from the device side
+    after = [(t, n) for t, n in got if gaps and t >= gaps[0][1]]
+    dur = after[-1][0] - after[0][0] if len(after) > 1 else 0
+    got_after = after[-1][1] - after[0][1] if len(after) > 1 else 0
+    # Codex code review r2: after the recovery the reader must go on at the stream's rate, to the end.
+    check(dropped and len(gaps) == 1 and 9 <= gaps[0][1] - gaps[0][0] <= 13 and dur >= 15 and got_after >= 0.9 * rate * dur,
+          'a client that never reads: dropped (%s); the other waited %s s once, then got %d of %d bytes over %.1f s'
+          % (dropped, round(gaps[0][1] - gaps[0][0], 1) if gaps else '-', got_after, rate * dur, dur))
 
 
 def case_modbus():

@@ -372,9 +372,10 @@ static void test_mutual_oom(void)
         tls_conn_t *t = tls_open(fd, "port1", "localhost", 2, 3000, NULL);
         bool reached = t_failed;
         t_fail_at = -1;
-        if (t && !strstr(s.peer_cn, "CN=gateway"))
+        bool up = t != NULL;
+        end(&s, t, fd);  // joins the server thread: peer_cn is final
+        if (up && !strstr(s.peer_cn, "CN=gateway"))
             bad++;
-        end(&s, t, fd);
         if (!reached)
             break;  // the whole handshake ran without hitting allocation n
     }

@@ -5,6 +5,7 @@
 // Every streamed answer (UI files, the Edge GET, the log) adds a piece only while c->send holds
 // less than WEB_SEND_HIGH, so a client that stops reading cannot grow the heap (Codex 06b r1).
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "FreeRTOS.h"
 #include "arena.h"
@@ -17,6 +18,7 @@
 #include "syslog.h"
 #include "sysmgr.h"
 #include "task.h"
+#include "tls_core.h"
 #include "web_core.h"
 #include "web_priv.h"
 #include "webapi.h"
@@ -237,6 +239,53 @@ static void upload_end(struct mg_connection *c, slot_t *s)
     c->is_draining = 1;  // HTTP is silenced on this connection: one request, then close
 }
 
+// F20 (spec §10.2, Plan 08b): the PEM parsed by mbedTLS, reported, then stored. A client pair that does not
+// match is reported, not refused (as the ESP32). Ports read their files at each connection; MQTT at boot.
+static void cert_upload(struct mg_connection *c, slot_t *s)
+{
+    bool is_key = !strcmp(s->kind, "key");
+    const char *bad = is_key ? "This is not a PEM private key (encrypted keys are not supported)." : "This is not a PEM certificate.";
+    s_edge_body[s->got] = '\0';  // WEB_CERT_MAX < WEB_EDGE_MAX: there is room
+    if (web_pem_check(s->kind, s_edge_body, s->got)) {
+        api_error(c, 400, bad);
+        return;
+    }
+    char *other = strcmp(s->kind, "ca") ? store_cert_get(s->scope, is_key ? "cert" : "key") : NULL;
+    static cert_info_t info;  // the web task only
+    int r = cert_check(s->kind, s_edge_body, s->got, other, sysmgr_utc_ms() / 1000, tls_port_rng, &info);
+    bool paired = other != NULL;
+    free(other);
+    if (paired) {
+        static bool s_logged;  // the bench reads this once per boot (8 KB stack, an RSA private operation)
+        if (!s_logged) {
+            s_logged = true;
+            SLOG_I("web", "stack headroom after the certificate check: %u bytes",
+                   (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+        }
+    }
+    if (r != 0) {
+        api_error(c, 400, bad);
+        return;
+    }
+    if (store_cert_set(s->scope, s->kind, s_edge_body, s->got) != STORE_OK) {
+        api_error(c, 500, "The certificate could not be stored.");
+        return;
+    }
+    cJSON *o = cJSON_CreateObject();
+    if (info.subject[0])
+        cJSON_AddStringToObject(o, "subject", info.subject);
+    if (info.valid_to[0])
+        cJSON_AddStringToObject(o, "validTo", info.valid_to);
+    if (info.expired >= 0)
+        cJSON_AddBoolToObject(o, "expired", info.expired);
+    if (info.key_type[0])
+        cJSON_AddStringToObject(o, "keyType", info.key_type);
+    if (info.pair >= 0)
+        cJSON_AddBoolToObject(o, "pairMatches", info.pair);
+    cJSON_AddBoolToObject(o, "restartNeeded", !strcmp(s->scope, "mqtt"));
+    api_json(c, 200, o);
+}
+
 static void upload_complete(struct mg_connection *c, slot_t *s)
 {
     char err[160];
@@ -251,13 +300,7 @@ static void upload_complete(struct mg_connection *c, slot_t *s)
                                                                        : "This file is not a valid firmware image for this gateway.");
         }
     } else if (s->ep == WEB_EP_CERT) {
-        if (web_pem_check(s->kind, s_edge_body, s->got))
-            api_error(c, 400, !strcmp(s->kind, "key") ? "This is not a PEM private key (encrypted keys are not supported)."
-                                                       : "This is not a PEM certificate.");
-        else if (store_cert_set(s->scope, s->kind, s_edge_body, s->got) != STORE_OK)
-            api_error(c, 500, "The certificate could not be stored.");
-        else
-            mg_http_reply(c, 200, "Content-Type: application/json\r\nCache-Control: no-store\r\n", "{\"restartNeeded\":true}");
+        cert_upload(c, s);
     } else {
         // One callback, one arena scope (Codex 06b r1): the body is complete, the save is synchronous.
         arena_begin(&s_arena);

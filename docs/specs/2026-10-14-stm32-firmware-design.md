@@ -841,7 +841,7 @@ Mất điện ở bất kỳ bước nào thì manifest vẫn trỏ tới một 
 |---|---|
 | `GET /api/device` | `portmax` = 2. `io` = `{do: 2, di: 2, ai: 2, ao: 0}`. Model và phần cứng là `SBIOT-H750` |
 | `/api/config/port2` | Schema đã có từ ESP32 nhưng bị tắt theo phần cứng. Nay được **bật trên phần cứng STM32**. TLS có trên cả hai cổng |
-| `/api/cert?scope=` | Thêm `port2`. Tới Plan 08 (mbedTLS) chỉ kiểm cấu trúc PEM: một cặp BEGIN/END đúng loại, chỉ ký tự base64 ở giữa, từ chối khóa mã hóa. Trả `{restartNeeded: true}`, chưa có `subject`, `validTo`, `pairMatches` |
+| `/api/cert?scope=` | Thêm `port2`. Kiểm cấu trúc PEM trước (một cặp BEGIN/END đúng loại, chỉ ký tự base64 ở giữa, từ chối khóa mã hóa), rồi mbedTLS parse (F20, Plan 08b). Trả `subject` và `validTo` (chứng chỉ), `expired` (chỉ khi đã có giờ), `keyType` (khóa), `pairMatches` (khi nửa kia của cặp client đã lưu và đọc được; không khớp thì vẫn lưu, chỉ báo), `restartNeeded` (chỉ `mqtt`, vì các cổng đọc file ở mỗi kết nối) |
 | `/api/io` | Trả 503 cho tới khi có `iomgr` (Plan 07) |
 | `port<n>` | Bỏ `rfc2217` |
 | `system` | Bỏ `telnet`, `telnetPort` |

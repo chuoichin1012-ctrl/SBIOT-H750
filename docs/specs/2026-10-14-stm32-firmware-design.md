@@ -192,7 +192,7 @@ Nhờ quy tắc này, stack và buffer trong DTCM hay AXI đều an toàn với 
   - `_sbrk` luôn trả lỗi, nên không cấp phát nào lọt ra ngoài heap.
   - Heap và các hook được khởi tạo trong `board_early()` (§6.3), **trước mọi cấp phát**.
   - Kiểm bằng symbol map: chỉ có một bản `malloc` trong binary, và không có tham chiếu nào tới `_sbrk_r` thật.
-- **mbedTLS** dùng `MBEDTLS_PLATFORM_MEMORY` trỏ về wrapper trên. **Mongoose** cũng vậy. **coreMQTT** không tự cấp phát.
+- **mbedTLS** gọi `calloc`/`free`, vốn đã là wrapper trên, nên không cần `MBEDTLS_PLATFORM_MEMORY` (Plan 08b). **Mongoose** cũng vậy. **coreMQTT** không tự cấp phát.
 - **cJSON:** hook toàn cục `json_malloc`/`json_free` định tuyến **theo chủ sở hữu**.
   - Task đang ở trong một phạm vi arena (`arena_begin()` đặt con trỏ thread-local) thì cấp phát từ arena. Mọi trường hợp khác cấp phát từ heap.
   - `json_free` trả block về đúng nơi đã cấp nó, nhận biết theo khoảng địa chỉ.
@@ -573,11 +573,14 @@ Quy tắc riêng của bản STM32:
   - SNI;
   - deadline cho handshake và cho thao tác ghi;
   - kiểm chứng chỉ khi upload (F20).
-- `mbedtls_config.h`, dùng **mbedTLS 3.6 LTS** (khóa phiên bản cụ thể trong `third_party`):
+- File cấu hình `tls_config.h` (truyền qua `MBEDTLS_CONFIG_FILE`; không được đặt tên `mbedtls_config.h`, vì `build_info.h` sẽ tìm thấy config mặc định của thư viện trong chính thư mục của nó trước), dùng **mbedTLS 3.6 LTS**, khóa ở 3.6.7 trong `third_party/mbedtls` (Plan 08b):
   - `MBEDTLS_SSL_IN_CONTENT_LEN` 16384, `OUT` 4096;
   - `MBEDTLS_HAVE_TIME_DATE`, với hàm giờ trả về giờ hệ thống;
   - entropy từ RNG phần cứng (`MBEDTLS_ENTROPY_HARDWARE_ALT`);
-  - cipher suite: chỉ ECDHE kèm AES-GCM/CHACHA20 và RSA kèm AES-GCM, chỉ TLS 1.2.
+  - cipher suite: chỉ ECDHE kèm AES-GCM/CHACHA20 và RSA kèm AES-GCM, chỉ TLS 1.2;
+  - các hàm port (`tls_port.c`, `tls_core.c`) đúng là những gì thư viện để trống với cấu hình này: `mbedtls_hardware_poll` (RNG phần cứng), `tls_port_time` (giờ hệ thống, 0 khi chưa có giờ, không bao giờ là giờ hiển thị 2020), `mbedtls_ms_time`, `mbedtls_platform_gmtime_r` (trên `clock_from_unix`);
+  - không bật `MBEDTLS_THREADING_C`: mỗi phiên tự sở hữu mọi context (ssl, config, DRBG, entropy, chứng chỉ, khóa), cấu hình này không có trạng thái dùng chung, và `board_rng` đã có mutex.
+- **Tên host luôn được truyền** cho `mbedtls_ssl_set_hostname` (CVE-2025-27809: từ 3.6.3, client kiểm server mà không đặt tên host thì handshake thất bại). **Giới hạn đã biết:** khi dial bằng địa chỉ IP, mbedTLS gửi chuỗi IP trong SNI (RFC 6066 không cho phép), và 3.6 không có tùy chọn bỏ riêng SNI mà giữ việc kiểm tên. Không bao giờ bỏ kiểm danh tính server vì điều này. OpenSSL (Python, nginx, Mosquitto) chấp nhận; server nào từ chối SNI là IP thì phải dial bằng tên.
 - **Khi chưa có giờ** (§10.4), áp dụng cho mọi kết nối TLS kể cả MQTT, **khi `tlsVerify` ≥ 1**:
   - chỉ bỏ qua hai cờ lỗi về ngày (`MBEDTLS_X509_BADCERT_EXPIRED` và `_FUTURE`) và ghi cảnh báo;
   - chuỗi chứng chỉ, CA và tên host vẫn kiểm đủ;

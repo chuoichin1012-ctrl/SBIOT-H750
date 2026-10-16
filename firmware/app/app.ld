@@ -46,6 +46,7 @@ SECTIONS
     *_nano.a:libc_a-memset.o(.text .text.*)
     *stm32h7xx_it.c.obj(.text.ETH_IRQHandler)        /* Plan 06a (spec §5.3) */
     *stm32h7xx_hal_eth.c.obj(.text.HAL_ETH_IRQHandler)
+    *bignum_core.c.obj(.text .text.*)  /* mbedTLS's bignum core (spec §5.3, Plan 08b) */
     *(.itcm_text .itcm_text.*)  /* ISRs tagged by later plans */
     . = ALIGN(4);
   } >ITCM AT> QSPI

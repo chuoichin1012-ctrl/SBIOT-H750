@@ -119,7 +119,7 @@ set(APP_OWN
   ${SYS}/clock.c ${SYS}/sysmgr.c ${WEB}/web_core.c ${WEB}/web.c ${WEB}/api.c ${WEB}/console.c ${WEB}/mg_port.c
   ${CMAKE_SOURCE_DIR}/components/arena/arena.c app/arena_port.c
   ${SER}/serial_frame.c ${SER}/uart_drv.c ${SER}/serial.c
-  ${IOM}/io_core.c ${IOM}/adc_core.c ${IOM}/adc_drv.c ${IOM}/iomgr.c ${IOM}/io_mb.c ${SVC}/bridge_core.c ${SVC}/net.c ${SVC}/bridge.c ${SVC}/services.c ${PROTO}/modbus.c ${SYS}/reload.c app/bench_io.c)
+  ${IOM}/io_core.c ${IOM}/adc_core.c ${IOM}/adc_drv.c ${IOM}/iomgr.c ${IOM}/io_mb.c ${SVC}/bridge_core.c ${SVC}/tls_core.c ${SVC}/tls_port.c ${SVC}/net.c ${SVC}/bridge.c ${SVC}/services.c ${PROTO}/modbus.c ${SYS}/reload.c app/bench_io.c)
 # The embedded UI (Plan 06b): tools/embed_web.py writes the gzip bytes as C arrays and their table.
 set(APP_WWW ${WEB}/www/www_files.c)
 if(NOT EXISTS ${APP_WWW})  # a build output (gitignored), not a source
@@ -129,19 +129,23 @@ endif()
 set(LWIP ${CMAKE_SOURCE_DIR}/third_party/lwip)
 file(GLOB LWIP_SRC ${LWIP}/src/core/*.c ${LWIP}/src/core/ipv4/*.c ${LWIP}/src/api/*.c)
 list(APPEND LWIP_SRC ${LWIP}/src/netif/ethernet.c ${LWIP}/contrib/ports/freertos/sys_arch.c ${LWIP}/src/apps/sntp/sntp.c)
+# TLS (Plan 08b): mbedTLS 3.6.7 LTS (third_party/mbedtls/README.md), its settings in tls_config.h.
+set(MBED ${CMAKE_SOURCE_DIR}/third_party/mbedtls)
+file(GLOB MBED_SRC ${MBED}/library/*.c)
 # Storage (Plan 05b): FlashDB and cJSON are upstream code, built without our -Werror.
 set(FDB ${CMAKE_SOURCE_DIR}/third_party/flashdb)
 set(UPSTREAM_APP ${FDB}/src/fdb.c ${FDB}/src/fdb_kvdb.c ${FDB}/src/fdb_tsdb.c ${FDB}/src/fdb_utils.c
   ${FDB}/port/fal/src/fal.c ${FDB}/port/fal/src/fal_flash.c ${FDB}/port/fal/src/fal_partition.c
   ${CMAKE_SOURCE_DIR}/third_party/cjson/cJSON.c ${LWIP_SRC} ${CMAKE_SOURCE_DIR}/third_party/mongoose/mongoose.c
-  ${CMAKE_SOURCE_DIR}/third_party/tlsf/tlsf.c)
+  ${CMAKE_SOURCE_DIR}/third_party/tlsf/tlsf.c ${MBED_SRC})
 add_executable(app ${APP_CUBE} ${APP_HAL} ${APP_RTOS} ${APP_OWN} ${MONO_SRC} ${UPSTREAM_APP} ${APP_WWW})
 image_includes(app ${CUBE}/app)
 target_include_directories(app PRIVATE app ${RTOS}/include ${RTOS}/portable/GCC/ARM_CM4F ${OTA}/include ${MONO} ${CMAKE_BINARY_DIR}/gen
   ${CMAKE_SOURCE_DIR}/components/syslog/include ${STORE}/include ${STORE}/port ${FDB}/inc ${FDB}/port/fal/inc ${CFGM}/include ${PROTO}/include ${CMAKE_SOURCE_DIR}/third_party/cjson
   ${NET}/include ${LWIP}/src/include ${LWIP}/contrib/ports/freertos/include
   ${SYS}/include ${WEB}/include ${SER}/include ${IOM}/include ${SVC}/include ${CMAKE_SOURCE_DIR}/components/arena/include ${CMAKE_SOURCE_DIR}/third_party/tlsf
-  ${CMAKE_SOURCE_DIR}/third_party/mongoose)
+  ${CMAKE_SOURCE_DIR}/third_party/mongoose ${MBED}/include)
+target_compile_definitions(app PRIVATE MBEDTLS_CONFIG_FILE="tls_config.h")
 set_source_files_properties(${APP_OWN} TARGET_DIRECTORY app PROPERTIES COMPILE_OPTIONS "${STRICT}")
 # The copy loops of Reset_Handler must stay loops: memcpy/memset run from ITCM, which they fill.
 set_property(SOURCE app/startup_app.c TARGET_DIRECTORY app APPEND PROPERTY COMPILE_OPTIONS -fno-tree-loop-distribute-patterns)

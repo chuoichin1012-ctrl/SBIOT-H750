@@ -140,7 +140,8 @@ export function Layout(props: { url: string; children: ComponentChildren }) {
           </div>
         )}
 
-        <main id="main" class="w-full min-w-0 max-w-5xl px-4 pt-6 pb-10 sm:px-6 lg:px-8">
+        {/* At least the screen's height, so a page's save bar (mt-auto) sits at the bottom even when the page is short. */}
+        <main id="main" class="flex min-h-[calc(100vh-3.5rem)] w-full min-w-0 flex-col px-4 pt-6 pb-10 sm:px-6 lg:px-8 [&>*:not(.save-bar)]:w-full [&>*:not(.save-bar)]:max-w-5xl">
           {props.children}
         </main>
       </div>

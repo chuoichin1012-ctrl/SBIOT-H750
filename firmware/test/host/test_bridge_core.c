@@ -211,8 +211,19 @@ static void test_tx(void)
     CHECK(!wait_over(d2485, d2485 + 2000000u) && wait_over(d2485 + 2000000u, d2485 + 2000000u), "a 2 s wait across 24.85 days");
 }
 
+// Plan 08b: bytes inside mbedTLS count as ready, or the bridge never reads them (Codex plan r1).
+static void test_wait_ready(void)
+{
+    CHECK(wait_ready(0, 1) == 1, "select saw nothing, one TLS client holds bytes: 1");
+    CHECK(wait_ready(-1, 1) == 1, "select failed, one holds bytes: still 1");
+    CHECK(wait_ready(2, 0) == 2, "select's own count");
+    CHECK(wait_ready(0, 0) == 0, "nothing");
+    CHECK(wait_ready(1, 1) == 2, "both");
+}
+
 int main(void)
 {
+    test_wait_ready();
     test_cfg();
     test_mbtcp();
     test_http();

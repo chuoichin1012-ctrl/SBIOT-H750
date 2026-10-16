@@ -6,7 +6,7 @@
 
 /** Starts port 1..2's bridge from port<n> and system (read once at boot, spec §9.1). 0, or -1 (logged). */
 int bridge_start(int port, const cJSON *pcfg, const cJSON *sys);
-/** "LISTEN", "CONNECTED(n)", "CONNECTING", "WAITING", "ERROR", "TLS UNAVAILABLE" or "NOT STARTED". */
+/** "LISTEN", "CONNECTED(n)", "CONNECTING", "WAITING", "ERROR" or "NOT STARTED". */
 void bridge_state(int port, char *out, size_t len);
 /** Serial frames dropped because the port's queue was full. */
 uint32_t bridge_dropped(int port);

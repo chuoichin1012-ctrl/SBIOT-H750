@@ -76,6 +76,8 @@ int conn_send_some(conn_t *c, const uint8_t *data, size_t len)
 {
     if (c->fd < 0)
         return NET_FAIL;
+    if (c->tls)
+        return tls_send_some(c->tls, data, len);  // after NET_AGAIN, called again with the same data
     int r = lwip_send(c->fd, data, len, MSG_DONTWAIT);
     return r > 0 ? r : r == 0 ? NET_AGAIN : net_classify(errno);
 }
@@ -104,14 +106,20 @@ int conn_recv(conn_t *c, uint8_t *buf, size_t max)
 {
     if (c->fd < 0)
         return NET_FAIL;
+    if (c->tls)
+        return tls_recv(c->tls, buf, max);
     int r = lwip_recv(c->fd, buf, max, MSG_DONTWAIT);
     if (r < 0)
         return net_classify(errno);
     return r;
 }
 
+bool conn_pending(const conn_t *c) { return c->tls && tls_pending(c->tls); }
+
 void conn_close(conn_t *c)
 {
+    tls_close(c->tls);
+    c->tls = NULL;
     if (c->fd >= 0)
         closesocket(c->fd);
     c->fd = -1;

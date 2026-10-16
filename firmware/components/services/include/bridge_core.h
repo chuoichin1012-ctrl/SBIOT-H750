@@ -87,7 +87,9 @@ typedef struct {
 enum { TX_DONE, TX_PENDING, TX_LOST };
 /** Sends what may be sent; >0 bytes taken, NET_AGAIN or NET_FAIL. */
 typedef int (*tx_send_fn)(void *ctx, const uint8_t *data, size_t len);
-/** Starts or continues sending `frame` (the same frame until TX_DONE or TX_LOST). */
+/** Starts or continues sending `frame` (the same frame until TX_DONE or TX_LOST). After NET_AGAIN the next
+ * call passes the same remaining bytes (frame + off, len - off): mbedtls_ssl_write requires exactly that
+ * of a TLS connection (Plan 08b), so keep it if this changes. */
 int tx_progress(tx_conn_t *c, const uint8_t *frame, size_t len, tx_send_fn send, void *ctx, uint32_t now_ms);
 
 /** idleRestart: true when `limit_us` passed since the last activity. The activity is read before
@@ -98,3 +100,7 @@ static inline bool wait_over(uint64_t now_us, uint64_t at_us) { return now_us >=
 
 /** spec §5.6: a TCP server's listener accepts only while at least `reserve` netconns are free. */
 static inline bool accept_allowed(int netconn_free, int reserve) { return netconn_free >= reserve; }
+
+/** What the bridge's wait() returns (Plan 08b): select's count, plus the TLS clients whose bytes are already
+ * inside mbedTLS (`pending`, not counted by select), so read_clients runs even when the socket is silent. */
+static inline int wait_ready(int selected, int pending) { return (selected > 0 ? selected : 0) + pending; }

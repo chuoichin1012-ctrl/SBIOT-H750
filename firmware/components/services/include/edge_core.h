@@ -102,6 +102,8 @@ typedef struct {
     double lower, upper;
     int64_t next_check, last_fire;
     bool last_state;
+    struct edge_pt *pt;  // what it watches (edge_rt)
+    char name[EDGE_NAME_MAX], desc[65];
 } edge_link_t;
 enum { EDGE_DO_KEEP = -1, EDGE_DO_OFF = 0, EDGE_DO_ON = 1 };
 /** One linkage check at now_ms: the output to set, or EDGE_DO_KEEP. *fired: a threshold event fired (log

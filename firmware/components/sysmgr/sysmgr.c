@@ -47,6 +47,8 @@ int64_t sysmgr_utc_ms(void)
     return o ? (o + (int64_t)now_us()) / 1000 : 0;
 }
 
+int sysmgr_timezone(void) { return s_tz; }
+
 void sysmgr_time_str(char out[20])
 {
     int64_t ms = sysmgr_utc_ms();

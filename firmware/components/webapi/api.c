@@ -8,6 +8,7 @@
 #include "io_core.h"
 #include "iomgr.h"
 #include "bridge.h"
+#include "edge_rt.h"
 #include "netmgr.h"
 #include "serial.h"
 #include "store.h"
@@ -170,7 +171,9 @@ static void status_get(struct mg_connection *c)
     cJSON_AddStringToObject(mq, "state", "NOT STARTED");
     cJSON *ed = cJSON_AddObjectToObject(o, "edge");  // Plan 08
     cJSON_AddBoolToObject(ed, "enabled", enabled("edge"));
-    cJSON_AddStringToObject(ed, "state", "NOT STARTED");
+    char est[48];
+    edge_status(est, sizeof est);
+    cJSON_AddStringToObject(ed, "state", est);
 
     // spec §10.2: the memory picture
     cJSON *mem = cJSON_AddObjectToObject(o, "mem");
@@ -237,9 +240,27 @@ static void config_get(struct mg_connection *c, const char *name)
     free(s);
 }
 
+// spec §9.4: a template that needs a report buffer over 26 KB with the running model's names is refused
+// before it is saved. Anything that does not parse goes on to the store, which answers it.
+static bool report_template_fits(struct mg_http_message *hm)
+{
+    cJSON *b = cJSON_ParseWithLength(hm->body.buf, hm->body.len);
+    const char *tmpl = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(b, "template"));
+    const char *ph = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(b, "placeholder"));
+    bool quote = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(b, "quoteValues"));
+    bool ph_on = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(b, "failurePlaceholder"));
+    bool fits = !tmpl || edge_template_fits(tmpl, quote, ph_on ? (ph ? ph : "null") : NULL);
+    cJSON_Delete(b);
+    return fits;
+}
+
 static void config_post(struct mg_connection *c, const char *name, struct mg_http_message *hm)
 {
     char err[160];
+    if (!strcmp(name, "edgeReport") && !report_template_fits(hm)) {
+        api_error(c, 400, "The report template needs too many values for this gateway.");
+        return;
+    }
     store_err_t e = store_set_text(name, hm->body.buf, hm->body.len, err, sizeof err);
     if (e == STORE_OK)
         api_ok(c);

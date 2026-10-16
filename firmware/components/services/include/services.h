@@ -1,5 +1,5 @@
-// The data services (spec §6.3 step 6, Plan 08a): the two ports' bridges and system.idleRestart. MQTT
-// (Plan 09) and Edge (Plan 08c) join here.
+// The data services (spec §6.3 step 6, Plans 08a and 08c): the two ports' bridges, Edge when enabled, and
+// system.idleRestart. MQTT (Plan 09) joins here.
 #pragma once
 #include "cJSON.h"
 

@@ -59,9 +59,9 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define SPI4_NSS_Pin GPIO_PIN_4
 #define SPI4_NSS_GPIO_Port GPIOE
-#define LTE_RESET_Pin GPIO_PIN_4
+#define LTE_RESET_Pin GPIO_PIN_5
 #define LTE_RESET_GPIO_Port GPIOA
-#define LTE_PWR_Pin GPIO_PIN_5
+#define LTE_PWR_Pin GPIO_PIN_6
 #define LTE_PWR_GPIO_Port GPIOA
 #define LED_NET_Pin GPIO_PIN_11
 #define LED_NET_GPIO_Port GPIOE

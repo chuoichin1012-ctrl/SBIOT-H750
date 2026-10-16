@@ -428,10 +428,6 @@ static void lte_task(void *arg)
 void lte_start(const net_cfg_t *cfg)
 {
     s_cfg = *cfg;
-    if (cfg->priority == 0) {
-        SLOG_I("lte", "network priority 0: Ethernet only");
-        return;
-    }
     s_at_out = xStreamBufferCreateStatic(AT_OUT_SIZE, 1, s_at_out_mem, &s_at_out_sb);
     s_at_in = xStreamBufferCreateStatic(AT_IN_SIZE, 1, s_at_in_mem, &s_at_in_sb);
     s_ppp_out = xStreamBufferCreateStatic(PPP_OUT_SIZE, 1, s_ppp_out_mem, &s_ppp_out_sb);
@@ -441,7 +437,20 @@ void lte_start(const net_cfg_t *cfg)
     }
     s_cmux_task = xTaskCreateStatic(cmux_task, "cmux_rx", CMUX_STACK_WORDS, NULL, CMUX_PRIO, s_cmux_stack, &s_cmux_tcb);
     lte_uart_reader(s_cmux_task);
+    if (cfg->priority == 0) {  // Ethernet only: UART3 listens, the modem is left alone (Plan 10 T5 powers it down)
+        SLOG_I("lte", "network priority 0: Ethernet only");
+        return;
+    }
     s_lte_task = xTaskCreateStatic(lte_task, "lte", LTE_STACK_WORDS, NULL, LTE_PRIO, s_lte_stack, &s_lte_tcb);
+}
+
+void lte_send_raw(const char *text)
+{
+    if (!s_at_out)
+        return;
+    xStreamBufferSend(s_at_out, text, strlen(text), pdMS_TO_TICKS(100));
+    xStreamBufferSend(s_at_out, "\r", 1, pdMS_TO_TICKS(100));
+    xTaskNotifyGive(s_cmux_task);
 }
 
 void lte_info(lte_info_t *out)

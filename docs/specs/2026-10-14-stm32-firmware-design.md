@@ -55,7 +55,7 @@ Lấy từ `docs/Job2.PDF`. Những mục có dấu (✓) phải đối chiếu 
 | USART1 TX / RX / **DE** | PA9 / PA10 / PA12 (AF7, DE phần cứng) | SN65HVD75 (RS485 #1) và SP3232 (RS232) **mắc song song**: TX đi ra cả hai, RX gộp qua diode MBR0540 |
 | USART2 TX / RX / **DE** | PD5 / PD6 / PD4 (AF7) | SN65HVD75 (RS485 #2) |
 | USART3 TX / RX | PD8 / PD9 | Tới MAIN_UART của EC600U qua bộ dịch mức UM3212 (1,8 V). **Không có RTS/CTS** |
-| LTE_PWR / LTE_RESET | PA5 / PA4 (✓) | Qua NPN Q1/Q2: mức cao tương ứng nhấn PWRKEY / kích RESET_N |
+| LTE_PWR / LTE_RESET | **PA6 / PA5** (Plan 10: đọc lại sơ đồ `docs/Job2.PDF` trang 2 bằng hình; trước đó ghi nhầm PA5 / PA4 vì đọc chữ trích từ PDF) | Qua NPN Q1/Q2: mức cao tương ứng nhấn PWRKEY / kích RESET_N. PA4 không nối |
 | UART7 RX / TX | PB3 / PB4 | Log debug ra cổng P4 |
 | UART8 RX / TX | PE0 / PE1 | Chưa dùng |
 | QUADSPI CLK / NCS | PB2 / PC11 | **Bank 2** (PC11 = BK2_NCS) |

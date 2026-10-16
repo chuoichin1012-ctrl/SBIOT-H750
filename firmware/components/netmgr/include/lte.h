@@ -21,3 +21,5 @@ typedef struct {
 /** Starts UART3 and both tasks (priority 1 or 2); priority 0 leaves the modem alone (Plan 10 T5 powers it down). */
 void lte_start(const net_cfg_t *cfg);
 void lte_info(lte_info_t *out);
+/** Bench: text and CR out of UART3 as they are (AT mode). */
+void lte_send_raw(const char *text);

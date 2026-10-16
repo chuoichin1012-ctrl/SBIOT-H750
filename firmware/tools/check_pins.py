@@ -25,7 +25,7 @@ COMMON = {
     'PE9': 'QUADSPI_BK2_IO2', 'PE10': 'QUADSPI_BK2_IO3',
     'PB3': 'UART7_RX', 'PB4': 'UART7_TX',
     'PC10': 'GPIO_Output', 'PE11': 'GPIO_Output', 'PD10': 'GPIO_Output', 'PD11': 'GPIO_Output',
-    'PD14': 'GPIO_Output', 'PD15': 'GPIO_Output', 'PA5': 'GPIO_Output', 'PA4': 'GPIO_Output',
+    'PD14': 'GPIO_Output', 'PD15': 'GPIO_Output', 'PA6': 'GPIO_Output', 'PA5': 'GPIO_Output',
     'PD13': 'GPIO_Output', 'PE4': 'GPIO_Output', 'PA8': 'GPIO_Input', 'PB7': 'GPIO_Input', 'PB6': 'GPIO_Input',
     'PE2': 'SPI4_SCK', 'PE5': 'SPI4_MISO', 'PE6': 'SPI4_MOSI',  # the bootloader's OTA flash since Plan 04b
 }
@@ -41,7 +41,7 @@ GPIO = {
     'PC10': ('WDI_LED', 'GPIO_PIN_RESET'), 'PE11': ('LED_NET', 'GPIO_PIN_RESET'),
     'PD10': ('DO1_D', 'GPIO_PIN_RESET'), 'PD11': ('DO2_D', 'GPIO_PIN_RESET'),
     'PD14': ('LATCH_LE', 'GPIO_PIN_RESET'), 'PD15': ('LATCH_OE', 'GPIO_PIN_SET'),
-    'PA5': ('LTE_PWR', 'GPIO_PIN_RESET'), 'PA4': ('LTE_RESET', 'GPIO_PIN_RESET'),
+    'PA6': ('LTE_PWR', 'GPIO_PIN_RESET'), 'PA5': ('LTE_RESET', 'GPIO_PIN_RESET'),
     'PD13': ('ETH_RESET', 'GPIO_PIN_RESET'), 'PE4': ('SPI4_NSS', 'GPIO_PIN_SET'),
     'PA8': ('RELOAD', None), 'PB7': ('DI1', None), 'PB6': ('DI2', None),
 }

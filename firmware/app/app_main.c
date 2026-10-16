@@ -268,6 +268,30 @@ static void init_task(void *arg)
         case 'o':
             bench_ota_report();
             break;
+        case 'V': {  // bench: "V<text>": the text and CR out of UART3, raw (Plan 10 bring-up)
+            char l[64];
+            read_line(l, sizeof l);
+            lte_send_raw(l);
+            blog("app: sent \"%s\" to UART3\r\n", l);
+            break;
+        }
+        case 'K': {  // bench: "K<ms>" presses PWRKEY, "K-<ms>" pulses RESET_N, for ms (under 3 s); Plan 10 bring-up
+            char l[12];
+            read_line(l, sizeof l);
+            bool reset = l[0] == '-';
+            long len = strtol(reset ? l + 1 : l, NULL, 10);
+            if (len <= 0 || len >= 3000) {
+                blog("app: K needs 1..2999 ms\r\n");
+                break;
+            }
+            GPIO_TypeDef *port = reset ? LTE_RESET_GPIO_Port : LTE_PWR_GPIO_Port;
+            uint16_t pin = reset ? LTE_RESET_Pin : LTE_PWR_Pin;
+            blog("app: %s %ld ms\r\n", reset ? "RESET_N" : "PWRKEY", len);
+            HAL_GPIO_WritePin(port, pin, GPIO_PIN_SET);
+            vTaskDelay(pdMS_TO_TICKS((uint32_t)len));
+            HAL_GPIO_WritePin(port, pin, GPIO_PIN_RESET);
+            break;
+        }
         case 'M': {  // bench: UART3 to the modem: the DMA's write position and the last bytes received (Plan 10)
             uint32_t wr = lte_uart_wr();
             const uint8_t *r = lte_uart_ring();
@@ -278,6 +302,9 @@ static void init_task(void *arg)
             hex[o] = '\0';
             blog("app: uart3 rx %lu bytes, errors %lu, PD9 %d, ISR %08lx, last: %s\r\n", (unsigned long)wr,
                  (unsigned long)lte_uart_errors(), (int)((GPIOD->IDR >> 9) & 1u), (unsigned long)USART3->ISR, hex);
+            blog("app: uart3 GPIOD MODER %08lx AFRH %08lx, USART3 CR1 %08lx CR3 %08lx BRR %08lx, PA ODR %08lx MODER %08lx\r\n",
+                 (unsigned long)GPIOD->MODER, (unsigned long)GPIOD->AFR[1], (unsigned long)USART3->CR1, (unsigned long)USART3->CR3,
+                 (unsigned long)USART3->BRR, (unsigned long)GPIOA->ODR, (unsigned long)GPIOA->MODER);
             break;
         }
         case 'S': {  // bench: the store's state

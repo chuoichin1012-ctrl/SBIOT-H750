@@ -24,6 +24,11 @@ bool app_bind_ok(void)
     return bind_valid((const uint8_t *)(QSPI_XIP_BASE + QSPI_BIND), BIND_PUBKEY, uid);
 }
 
+bool app_identity(uint8_t mac[6], char sn[13])
+{
+    return app_bind_ok() && bind_identity((const uint8_t *)(QSPI_XIP_BASE + QSPI_BIND), mac, sn);
+}
+
 void bench_ota_init(void)
 {
     s_spi_err = flash_spi4_init();

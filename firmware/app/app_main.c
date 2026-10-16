@@ -24,6 +24,8 @@
 #include "bridge.h"
 #include "services.h"
 #include "bench_io.h"
+#include "flashmap.h"
+#include "hb.h"
 #include "syslog.h"
 #include <stdbool.h>
 #include <stdio.h>
@@ -49,9 +51,12 @@ static StackType_t s_wdog_stack[WDOG_STACK_WORDS], s_init_stack[INIT_STACK_WORDS
 
 extern const uint8_t __image_start__[], __image_end__[];  // app.ld: the whole QSPI image
 
+static uint32_t s_boot_rsr;  // this boot's reset flags, kept for the supervisor's reason (Plan 11a task 0b)
+
 static void report_boot(void)
 {
     uint32_t rsr = RCC->RSR;
+    s_boot_rsr = rsr;
     RCC->RSR |= RCC_RSR_RMVF;  // the next boot reports only its own cause
     blog("\r\nSBIOT-H750 app " APP_VERSION " rsr=%08lx sysclk=%lu\r\n", (unsigned long)rsr,
          (unsigned long)SystemCoreClock);
@@ -69,6 +74,8 @@ static void info(void)
 }
 
 // The `network` and `system` configs, read once (spec §9.1), or their defaults.
+static uint8_t s_mac[6];  // from the binding record (Plan 11a): never derived from the UID
+
 static void net_start(const cfg_env_t *env)
 {
     cJSON *n = store_get("network"), *sys = store_get("system");
@@ -80,9 +87,8 @@ static void net_start(const cfg_env_t *env)
     netcfg_from_json(n, sys, &nc);
     cJSON_Delete(n);
     cJSON_Delete(sys);
-    uint8_t uid[12], mac[6];
-    memcpy(uid, (const void *)UID_BASE, sizeof uid);
-    netcfg_mac(uid, mac);
+    uint8_t mac[6];
+    memcpy(mac, s_mac, sizeof mac);
     if (board_rng_init())
         blog("app: RNG FAILED\r\n");
     netmgr_init(&nc, mac);
@@ -188,12 +194,18 @@ static bool print_log_line(const store_log_meta_t *m, const char *line, size_t l
 static void init_task(void *arg)
 {
     report_boot();
-    if (!app_bind_ok()) {  // spec §11.5: no service starts on a board this image is not bound to
+    char sn[13];
+    if (!app_identity(s_mac, sn)) {  // spec §11.5: no service starts on a board this image is not bound to
+        // (Plan 11a: an old record without MAC and SN is refused too; program it again with flash.sh bind)
         blog("app: anti-clone record INVALID, nothing started\r\n");
         wdog_set_halt();  // LED WORK at the halt rhythm (Plan 11a task 0)
+        blog("app: an old record (no MAC, no SN) is refused too: program it again with flash.sh bind\r\n");
         for (;;)
             vTaskDelay(pdMS_TO_TICKS(1000));
     }
+    sysmgr_set_serial(sn);
+    blog("app: SN %s, MAC %02x:%02x:%02x:%02x:%02x:%02x (the binding record)\r\n", sn, s_mac[0], s_mac[1], s_mac[2], s_mac[3],
+         s_mac[4], s_mac[5]);
     bench_ota_init();
     // The configs are read once, here; a saved config applies after a restart (spec §9.1).
     static const cfg_env_t env = {.uart_count = 2, .do_count = 2, .di_count = 2, .ai_count = 2};
@@ -204,6 +216,13 @@ static void init_task(void *arg)
     store_err_t se = store_init(&env, flash_spi4());
     blog("app: store %s in %lu ms, boot %lu, heap free %lu\r\n", se == STORE_OK ? "mounted" : "FAILED",
          (unsigned long)((now_us() - t0) / 1000u), (unsigned long)store_boot_count(), (unsigned long)heap_free_now());
+    // The supervisor's reason, once the log can keep it; taken (cleared) whatever the flags say (Plan 11a task 0b).
+    char who[HB_NAME_MAX];
+    uint32_t late_s = 0;
+    bool reason = wdog_reason_take(who, &late_s);
+    uint32_t f = s_boot_rsr;
+    if (reason && hb_restart_was_ours(f & RCC_RSR_PORRSTF, f & RCC_RSR_BORRSTF, f & RCC_RSR_IWDG1RSTF, f & RCC_RSR_PINRSTF))
+        SLOG_W("wdog", "%s stopped for %lu s: restarted", who, (unsigned long)late_s);
     net_start(&env);
     // The web (spec §6.3 step 7), then sysmgr last (step 8); both read `system` once (spec §9.1).
     cJSON *sys = store_get("system");
@@ -370,6 +389,10 @@ static void init_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(3000));
             blog("app: phy up %d\r\n", eth_drv_phy_power(false));
             break;
+        case 'I':  // bench: the web task stops for 40 s; the supervisor restarts the board (Plan 11a task 0b)
+            blog("app: web stops for 40 s\r\n");
+            web_bench_hang(40000);
+            break;
         case 'd':  // bench: toggle disregarding POWERED DOWN (Plan 10b)
             blog("app: POWERED DOWN %s\r\n", lte_bench_nopd() ? "disregarded" : "taken");
             break;
@@ -428,6 +451,27 @@ static void init_task(void *arg)
             uint64_t t0 = now_us();
             int bad = flash_spi4_wipe();  // also fails every OTA write from here on
             blog("app: SPI4 wiped in %lu ms, %d sectors failed; restarting\r\n", (unsigned long)((now_us() - t0) / 1000u), bad);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            NVIC_SystemReset();
+            break;
+        }
+        case 'R': {  // migration (Plan 11a task 6): "R" then "RESEED": erase the factory slot's first sector (its magic),
+                     // then reset; the bootloader seeds it again from the app now in QSPI. FlashDB and the factory
+                     // record are untouched.
+            char l[8];
+            read_line(l, sizeof l);
+            if (strcmp(l, "RESEED") != 0) {
+                blog("app: R needs RESEED\r\n");
+                break;
+            }
+            if (!sysmgr_restart_claim()) {
+                blog("app: a restart is pending: R refused\r\n");
+                break;
+            }
+            store_port_lock();
+            nor_t *spi = flash_spi4();
+            int e = spi ? spi->erase_sector(spi, SPI_FACTORY) : -1;
+            blog("app: factory slot %s; restarting, the bootloader seeds it from QSPI\r\n", e ? "NOT erased" : "erased");
             vTaskDelay(pdMS_TO_TICKS(50));
             NVIC_SystemReset();
             break;

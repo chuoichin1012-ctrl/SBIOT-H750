@@ -186,7 +186,8 @@ void boot_main(void)
     memcpy(uid, (const void *)UID_BASE, sizeof uid);
     bind_result_t b = bind_check(&q.nor, BIND_PUBKEY, uid, boot_kick);
     static const char *const bind_text[] = {"ok", "record unreadable", "not provisioned", "record corrupt",
-                                            "CLONE: application erased"};
+                                            "CLONE: application erased",
+                                            "an old record without MAC and SN: program it again with flash.sh bind"};
     log_line("bind: %s\r\n", bind_text[b]);
     if (b != BIND_OK)
         halt("anti-clone check failed", b);

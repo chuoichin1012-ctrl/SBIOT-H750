@@ -17,6 +17,10 @@
   - the first two attempts: `AT+CFUN=1,1`, as now, followed by RECOVER when AT stays silent;
   - from the third attempt on: a **soft power cycle**. `AT+QPOWD=1` (CLD first, on the plain UART), then `POWERED DOWN`, then PWRKEY 2.5 s from the confirmed OFF, as the start sequence does from OFF.
   - Without `POWERED DOWN` within 60 s, the module counts as UNKNOWN, and the RECOVER of today follows (RESET_N). It is never pressed blind.
+- **Both paths share the one backoff** (Codex plan r1), over CMUX and on the plain UART:
+  - on the plain path, the wait for the registration and the wait for an address both use the backoff's limit, not the fixed 90 s and 2 minutes;
+  - a failure there takes the same step: RESET_N (the plain path's equivalent of CFUN, since data mode holds the UART) for the first two, the soft power cycle afterwards;
+  - the counter is kept across CFUN, RECOVER and the power cycles, and is reset only by an address.
 - **Keep it simple:** one pure counter in `lte_power.c`, host-tested; no new task, no config field.
 
 ## Rulings to approve
@@ -29,6 +33,10 @@
 3. `/api/status` gets `cell.recoveries`, the number of attempts in a row, for the bench and the UI.
 4. **Bench:** `lte_check backoff`, with the bench toggle `q` dropping PPP's input. The bench build shortens the minutes to seconds through a console command `b` (`lte_bench_fast`), so that the case takes minutes, not an hour.
    - Checked: CFUN, CFUN, then a power cycle (QPOWD, POWERED DOWN, PWRKEY), at the growing intervals; then, with the input passing again, the address back and `recoveries` 0.
+   - **The plain path** (the fallback forced with `j`): the same sequence of steps and waits.
+   - **No POWERED DOWN** (Codex plan r1): the console command `d` makes `power_down()` disregard the URC, as if it never came.
+     - The power cycle then goes through UNKNOWN, the RESET_N of a RECOVER, and the full start sequence: AT, RESET_N, then PWRKEY only after AT stays silent.
+     - It never goes `lte_power_up(LTE_OFF)`, so PWRKEY is not pressed first.
 
 ## Tasks
 
@@ -50,5 +58,5 @@
   - `lte_backoff_ok` when PPP is up;
   - `cell.recoveries`;
   - the `b` console command (fast timings, bench only).
-- [ ] **Bench:** `lte_check backoff`, then the regressions `mux`, `cfun` and `power`.
+- [ ] **Bench:** `lte_check backoff` (over CMUX), `backoff_plain` (the fallback), `backoff_nopd` (no POWERED DOWN), then the regressions `mux`, `cfun`, `power` and `fallback`.
 - [ ] **Spec §7.2,** measurements, **commit,** then the Codex code review, the PR and the merge.

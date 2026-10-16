@@ -37,7 +37,20 @@ static void stop_if_failfast(void)
         }                                               \
     } while (0)
 
-static const cfg_env_t ENV = {.uart_count = 2, .do_count = 2, .di_count = 2, .ai_count = 2};
+static int s_alloc_fail_at = -1;  // cJSON's allocation number n fails (0 the first); -1 none
+static unsigned s_alloc_failures;
+static void *fail_malloc(size_t n)
+{
+    if (s_alloc_fail_at >= 0 && s_alloc_fail_at-- == 0) {
+        s_alloc_failures++;
+        return NULL;
+    }
+    return malloc(n);
+}
+// As the board's allocator does (json_alloc_failures in cfgmodel.c): failed allocations are counted.
+unsigned json_alloc_failures(void) { return s_alloc_failures; }
+
+static const cfg_env_t ENV ={.uart_count = 2, .do_count = 2, .di_count = 2, .ai_count = 2};
 
 // ---- the port ------------------------------------------------------------------------------
 
@@ -320,6 +333,23 @@ static void test_set_get(void)
         CHECK(store_set_text("port2", p2ok, strlen(p2ok), err, sizeof err) == STORE_OK, "port2 on 4001: %s", err);
         char *s2 = store_get_json("port2");
         CHECK(s2 && strstr(s2, "\"listenPort\":4001"), "the refused save changed nothing");
+        free(s2);
+        // Out of memory while reading the three configs: never saved as if there were no clash (Codex 08b r1).
+        bool saved = false;
+        for (int n = 0;; n++) {  // fails each allocation in turn, until the call makes fewer than n + 1
+            s_alloc_fail_at = n;
+            cJSON_Hooks h = {fail_malloc, free};
+            cJSON_InitHooks(&h);
+            store_err_t e = store_set_text("port2", p2, strlen(p2), err, sizeof err);
+            cJSON_InitHooks(NULL);
+            bool reached = s_alloc_fail_at < 0;
+            s_alloc_fail_at = -1;
+            saved |= e == STORE_OK;
+            if (!reached)
+                break;
+        }
+        s2 = store_get_json("port2");
+        CHECK(!saved && s2 && strstr(s2, "\"listenPort\":4001"), "a clash is never saved when memory runs out");
         free(s2);
     }
     CHECK(store_set_text("system", bad, strlen(bad), err, sizeof err) == STORE_EINVALID && !strcmp(err, err2),

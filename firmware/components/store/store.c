@@ -497,19 +497,24 @@ static store_err_t listen_check(const char *name, const char *text, char *err, s
 {
     static const char *const NAMES[] = {"port1", "port2", "system"};
     cJSON *c[3] = {NULL, NULL, NULL};
+    bool missing = false;  // a config that is there but did not parse: out of memory (Codex 08b r1)
     for (int k = 0; k < 3; k++) {
         if (!strcmp(name, NAMES[k])) {
             c[k] = cJSON_Parse(text);
+            missing |= !c[k];
         } else {
             int i = cache_find(NAMES[k]);
-            if (i >= 0)
+            if (i >= 0) {
                 c[k] = cJSON_ParseWithLength(s_pool + s_cache[i].off, s_cache[i].len);
+                missing |= !c[k];
+            }
         }
     }
-    bool ok = cfg_listen_ok(c[0], c[1], c[2], err, errlen);
+    store_err_t r = missing ? from_cfg(CFG_NO_MEMORY, err, errlen)
+                    : cfg_listen_ok(c[0], c[1], c[2], err, errlen) ? STORE_OK : STORE_EINVALID;
     for (int k = 0; k < 3; k++)
         cJSON_Delete(c[k]);
-    return ok ? STORE_OK : STORE_EINVALID;
+    return r;
 }
 
 store_err_t store_set_text(const char *name, const char *text, size_t len, char *err, size_t errlen)

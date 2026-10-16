@@ -60,7 +60,8 @@ static uint32_t s_release_ms;  // the last PWRKEY or RESET_N release, for ready_
 // the shutdown before a gateway restart, and priority 0 (Plan 10 T5)
 static volatile lte_power_t s_power = LTE_UNKNOWN;
 static volatile bool s_shutdown_req, s_powered_down;
-static volatile bool s_bench_drop;  // bench: PPP's input dropped, so PPP never gets an address (the CFUN case)
+static volatile bool s_bench_drop;
+static volatile bool s_bench_plain;  // bench: AT+CMUX replaced by a command the modem refuses (the fallback case)  // bench: PPP's input dropped, so PPP never gets an address (the CFUN case)
 static SemaphoreHandle_t s_shutdown_done;
 static StaticSemaphore_t s_shutdown_mem;
 static at_lines_t s_lines;  // the AT channel's lines (the lte task)
@@ -131,8 +132,9 @@ static void cmux_task(void *arg)
 {
     (void)arg;
     uint32_t rd = lte_uart_wr();
+    bool more = false;  // a frame went out: another may wait, and RX comes first (Codex code review)
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));  // HT, TC, IDLE, a request; and the CMUX timers
+        ulTaskNotifyTake(pdTRUE, more ? 0 : pdMS_TO_TICKS(10));  // HT, TC, IDLE, a request; and the CMUX timers
         uint32_t now = ms();
         taskENTER_CRITICAL();
         uint32_t req = s_req;
@@ -175,20 +177,26 @@ static void cmux_task(void *arg)
                 at_input(ring + off, n);
             rd += n;
         }
-        // TX
+        // TX: one frame (at most 2055 bytes, 178 ms at 115200) or 1 KB a pass, then RX again, so the 4 KB ring
+        // (350 ms) is drained between them however full the queues are
+        more = false;
         if (s_mode == M_MUX) {
             cmux_tick(&s_mux, now);
             feed_dlc(s_at_out, 2);
             feed_dlc(s_ppp_out, 1);
-            size_t n;
-            while ((n = cmux_tx_next(&s_mux, lte_uart_txbuf(), LTE_UART_TXBUF)))
+            size_t n = cmux_tx_next(&s_mux, lte_uart_txbuf(), LTE_UART_TXBUF);
+            if (n) {
                 lte_uart_write(lte_uart_txbuf(), n, 100);
+                more = true;
+            }
             s_last_rx_ms = cmux_last_rx_ms(&s_mux);
         } else {
             StreamBufferHandle_t sb = s_mode == M_PLAIN_PPP ? s_ppp_out : s_at_out;
-            size_t n;
-            while ((n = xStreamBufferReceive(sb, lte_uart_txbuf(), LTE_UART_TXBUF, 0)))
+            size_t n = xStreamBufferReceive(sb, lte_uart_txbuf(), 1024, 0);
+            if (n) {
                 lte_uart_write(lte_uart_txbuf(), n, 100);
+                more = true;
+            }
         }
     }
 }
@@ -222,35 +230,35 @@ static at_final_t at_cmd(const char *cmd, uint32_t timeout_ms, line_fn fn, void 
         uint32_t spent = ms() - t0;
         if (spent >= timeout_ms)
             return AT_NONE;
-        size_t n = xStreamBufferReceive(s_at_in, b, sizeof b, pdMS_TO_TICKS(timeout_ms - spent));
-        for (size_t i = 0; i < n; i++) {
-            const char *line = at_feed(lines, b[i]);
-            if (!line || !strcmp(line, cmd))
-                continue;  // the echo, before ATE0
-            at_final_t f = at_final(line);
-            if (f != AT_NONE)
-                return f;
-            if (fn)
-                fn(line, ctx);
-        }
+        // one byte at a time: nothing after the final result is taken (an URC such as POWERED DOWN stays for at_wait)
+        uint8_t c;
+        if (!xStreamBufferReceive(s_at_in, &c, 1, pdMS_TO_TICKS(timeout_ms - spent)))
+            continue;
+        const char *line = at_feed(lines, c);
+        if (!line || !strcmp(line, cmd))
+            continue;  // the echo, before ATE0
+        at_final_t f = at_final(line);
+        if (f != AT_NONE)
+            return f;
+        if (fn)
+            fn(line, ctx);
     }
 }
 
 /** Waits up to timeout_ms for a line whose final result is want (an URC such as POWERED DOWN). */
 static bool at_wait(at_final_t want, uint32_t timeout_ms)
 {
-    uint8_t b[64];
     uint32_t t0 = ms();
     for (;;) {
         uint32_t spent = ms() - t0;
         if (spent >= timeout_ms)
             return false;
-        size_t n = xStreamBufferReceive(s_at_in, b, sizeof b, pdMS_TO_TICKS(timeout_ms - spent));
-        for (size_t i = 0; i < n; i++) {
-            const char *line = at_feed(&s_lines, b[i]);
-            if (line && at_final(line) == want)
-                return true;
-        }
+        uint8_t c;
+        if (!xStreamBufferReceive(s_at_in, &c, 1, pdMS_TO_TICKS(timeout_ms - spent)))
+            continue;
+        const char *line = at_feed(&s_lines, c);
+        if (line && at_final(line) == want)
+            return true;
     }
 }
 
@@ -386,6 +394,14 @@ static bool power_down(void)
     if (s_mode == M_MUX) {
         request(REQ_MUX_CLOSE);  // CLD: the modem goes back to AT on its UART
         vTaskDelay(pdMS_TO_TICKS(1000));
+    } else if (s_mode == M_PLAIN_PPP) {  // data mode: +++ with 1 s of silence on each side, then ATH (spec §7.2)
+        request(REQ_MUX_CLOSE);          // cmux_rx back to AT on the plain UART
+        vTaskDelay(pdMS_TO_TICKS(1100));
+        xStreamBufferSend(s_at_out, "+++", 3, pdMS_TO_TICKS(100));
+        xTaskNotifyGive(s_cmux_task);
+        vTaskDelay(pdMS_TO_TICKS(1100));
+        if (at_cmd("ATH", 2000, NULL, NULL) != AT_OK)
+            SLOG_W("lte", "no OK to ATH after +++");
     }
     SLOG_I("lte", "AT+QPOWD=1");
     at_final_t f = at_cmd("AT+QPOWD=1", 3000, NULL, NULL);
@@ -557,6 +573,8 @@ static bool dial_mux(void)
     return false;
 }
 
+static bool registered(void);
+
 /** AT+CMUX refused: PPP on the plain UART (spec §7.2's fallback); the signal is read before only. */
 static void plain_ppp(void)
 {
@@ -569,6 +587,14 @@ static void plain_ppp(void)
     bool alive = false;
     at_cmd("AT+CSQ", 2000, on_csq, &alive);
     at_cmd("AT+QNWINFO", 2000, on_nwinfo, NULL);
+    uint32_t t0 = ms();
+    while (!registered()) {  // as over CMUX: dialled only once on the network (a module just reset is not yet)
+        if (ms() - t0 >= 90000) {
+            SLOG_W("lte", "plain UART: not on the network after 90 s");
+            return;
+        }
+        wait_events(0, 5000);
+    }
     info_set(&s_info.state, "connecting");
     if (at_cmd("ATD*99#", 30000, NULL, NULL) != AT_CONNECT) {
         info_set(&s_info.state, "disconnected");
@@ -590,7 +616,7 @@ static void plain_ppp(void)
 /** CMUX up: the command, then DLC0, DLC1, DLC2 and their MSCs. 1 running, 0 refused (the plain fallback), -1 failed. */
 static int open_mux(void)
 {
-    at_final_t f = at_cmd(CMUX_CMD, 3000, NULL, NULL);
+    at_final_t f = at_cmd(s_bench_plain ? "AT+CMUX=9" : CMUX_CMD, 3000, NULL, NULL);
     if (f != AT_OK) {
         SLOG_W("lte", "AT+CMUX refused");
         return f == AT_ERROR ? 0 : -1;
@@ -741,6 +767,12 @@ bool lte_shutdown(uint32_t timeout_ms)
 }
 
 void lte_bench_disc(void) { request(REQ_DISC2); }
+
+bool lte_bench_plain(void)
+{
+    s_bench_plain = !s_bench_plain;
+    return s_bench_plain;
+}
 
 bool lte_bench_drop(void)
 {

@@ -34,6 +34,6 @@ typedef struct {
 lte_power_t lte_power_up(const lte_hw_t *hw, lte_power_t from);
 
 typedef enum { LTE_ACT_NONE, LTE_ACT_CFUN, LTE_ACT_RECOVER } lte_action_t;
-/** Supervision: no SIM never acts; no frame for LTE_SILENT_MS with AT silent is RECOVER; no address for
- *  LTE_NO_ADDR_MS is CFUN. */
+/** Supervision: no frame for LTE_SILENT_MS with AT silent is RECOVER, SIM or not; otherwise no SIM never acts;
+ *  no address for LTE_NO_ADDR_MS is CFUN. */
 lte_action_t lte_supervise(uint32_t now_ms, uint32_t last_addr_ms, uint32_t last_frame_ms, bool at_alive, bool no_sim);

@@ -11,6 +11,8 @@ Cases:
   has no Internet: the Internet check moves the route to LTE; the PHY down 30 s and back;
 - load: MQTT over LTE both ways for 5 minutes while DLC2 polls: overrun 0, bad FCS 0, the data through;
 - cfun: no PPP address for 2 minutes (PPP's input dropped by the bench): CFUN, then RECOVER;
+- fallback: AT+CMUX refused (forced by the console 'j'): PPP on the plain UART, and a restart leaves data mode
+  (+++, ATH) before QPOWD;
 - p0: priority 0 powers down a module that answers.
 Ends with priority 1, MQTT off. Prints one line per check and "bench: ok".
 """
@@ -186,6 +188,25 @@ def case_cfun():
     check(ppp_up(120), 'PPP up again once its input passes')
 
 
+def case_fallback():
+    """AT+CMUX refused (forced by the bench): PPP on the plain UART; then a restart leaves data mode for QPOWD."""
+    check(network(priority=2) and restart() and ppp_up(), 'set up: priority 2, PPP up over CMUX')
+    console([(1, 'j'), (2, 'Q')], 4)  # the fallback forced, then a recovery reopens
+    back = ppp_up(120)
+    c = cell()
+    check(back and c.get('mux') == 'PLAIN' and 'AT+CMUX refused' in log_text(), 'AT+CMUX refused: PPP up on the plain UART (%s)' % c.get('mux'))
+    check(wait(lambda: status()['system']['activeNet'] == 'LTE', 30), 'the route over LTE')
+    out = {}
+    t = threading.Thread(target=lambda: out.update(lines=console([], 40)))
+    t.start()
+    time.sleep(2)
+    w.req('POST', '/api/restart', body=b'')
+    t.join()
+    l = '\n'.join(out.get('lines', []))
+    check('POWERED DOWN' in l and 'no OK to ATH' not in l, 'a restart in data mode: +++, ATH, then POWERED DOWN')
+    w.wait_up(90)
+
+
 def case_p0():
     check(network(priority=0) and restart(), 'set up: priority 0')
     lines = console([(1, 'K'), (1.1, '2500\r')], 15)  # the module on by hand
@@ -204,7 +225,7 @@ def case_p0():
 
 
 CASES = {'identity': case_identity, 'power': case_power, 'mux': case_mux, 'priority': case_priority, 'load': case_load,
-         'cfun': case_cfun, 'p0': case_p0}
+         'cfun': case_cfun, 'fallback': case_fallback, 'p0': case_p0}
 
 
 def main():

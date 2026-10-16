@@ -85,6 +85,15 @@ static void test_lines(void)
             next = x;
     }
     CHECK(next && !strcmp(next, "OK"), "then the next line whole (%s)", next ? next : "-");
+    // a final result and an URC in one read: both lines (Codex code review: POWERED DOWN after OK)
+    at_lines_t q = {0};
+    int finals = 0;
+    for (const char *p = "\r\nOK\r\n\r\nPOWERED DOWN\r\n"; *p; p++) {
+        const char *x = at_feed(&q, (uint8_t)*p);
+        if (x && at_final(x) != AT_NONE)
+            finals++;
+    }
+    CHECK(finals == 2, "OK and POWERED DOWN in one chunk: two lines (%d)", finals);
 }
 
 int main(void)

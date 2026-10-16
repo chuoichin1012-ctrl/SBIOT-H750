@@ -99,28 +99,33 @@ static void abort_others(struct netif *keep)
 
 #define PROBE_MS 30000
 #define PROBE_WAIT_MS 2000
-#define PROBE_ID 0x5B10
+#define PROBE_ID INET_PROBE_ID
 static struct raw_pcb *s_probe;
 static inet_t s_inet[2];          // 0 Ethernet, 1 the cell
 static bool s_probed[2], s_replied[2];
 static uint16_t s_probe_round;
-static const uint32_t k_targets[2] = {0x08080808u, 0x01010101u};
+static const uint32_t k_targets[2] = {INET_TARGET0, INET_TARGET1};
 
 static u8_t probe_recv(void *arg, struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *addr)
 {
     (void)arg;
     (void)pcb;
     (void)addr;
+    // Only a reply for this round, from the target its sequence names, on the link it names, with a good checksum
+    // counts (inet_reply_ok, Codex code review): a forged packet from the LAN cannot move the route.
     struct ip_hdr ih;
-    struct icmp_echo_hdr e;
+    uint8_t icmp[64];
     if (pbuf_copy_partial(p, &ih, sizeof ih, 0) != sizeof ih)
         return 0;
-    u16_t hl = (u16_t)IPH_HL_BYTES(&ih);
-    if (pbuf_copy_partial(p, &e, sizeof e, hl) != sizeof e || e.type != ICMP_ER || lwip_ntohs(e.id) != PROBE_ID)
-        return 0;  // not ours: lwIP goes on with it
-    u16_t seq = lwip_ntohs(e.seqno);
-    if ((seq >> 2) == (s_probe_round & 0x3FFF))
-        s_replied[(seq >> 1) & 1] = true;
+    u16_t hl = (u16_t)IPH_HL_BYTES(&ih), n = (u16_t)(p->tot_len - hl);
+    if (n > sizeof icmp || pbuf_copy_partial(p, icmp, n, hl) != n || icmp[0] != ICMP_ER)
+        return 0;  // not an echo reply of ours: lwIP goes on with it
+    struct netif *in = ip_current_input_netif();
+    int in_link = in == &s_netif ? 0 : (s_cell && in == s_cell) ? 1 : -1, link;
+    uint32_t src = lwip_ntohl(ip4_addr_get_u32(ip4_current_src_addr()));
+    if (!inet_reply_ok(icmp, n, src, in_link, s_probe_round, &link))
+        return 0;
+    s_replied[link] = true;
     pbuf_free(p);
     return 1;
 }

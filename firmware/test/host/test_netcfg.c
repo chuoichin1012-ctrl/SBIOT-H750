@@ -158,6 +158,44 @@ static void test_inet(void)
     CHECK(s.ok, "misses count in a row only");
 }
 
+// An ICMP echo reply as netmgr's probe sees it: type, code, checksum, id, seq, 8 bytes.
+static size_t echo_reply(uint8_t *p, uint16_t id, uint16_t seq)
+{
+    memset(p, 0, 16);
+    p[0] = 0;  // echo reply
+    p[4] = (uint8_t)(id >> 8), p[5] = (uint8_t)id, p[6] = (uint8_t)(seq >> 8), p[7] = (uint8_t)seq;
+    uint32_t sum = 0;
+    for (int i = 0; i < 16; i += 2)
+        sum += (uint32_t)p[i] << 8 | p[i + 1];
+    while (sum >> 16)
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    uint16_t c = (uint16_t)~sum;
+    p[2] = (uint8_t)(c >> 8), p[3] = (uint8_t)c;
+    return 16;
+}
+
+static void test_reply_ok(void)
+{
+    uint8_t p[16];
+    const uint16_t round = 7;
+    int link = -1;
+    // seq = round << 2 | link << 1 | target; target 0 is 8.8.8.8, 1 is 1.1.1.1
+    size_t n = echo_reply(p, INET_PROBE_ID, (uint16_t)(round << 2 | 1 << 1 | 0));
+    CHECK(inet_reply_ok(p, n, 0x08080808u, 1, round, &link) && link == 1, "a reply from 8.8.8.8 on LTE for this round: LTE");
+    CHECK(!inet_reply_ok(p, n, 0x08080808u, 0, round, &link), "the same reply received on Ethernet: refused (the wrong link)");
+    CHECK(!inet_reply_ok(p, n, 0x01010101u, 1, round, &link), "from 1.1.1.1 for a probe to 8.8.8.8: refused (the wrong source)");
+    CHECK(!inet_reply_ok(p, n, 0xC0A8000Au, 1, round, &link), "from the LAN: refused");
+    CHECK(!inet_reply_ok(p, n, 0x08080808u, 1, round + 1, &link), "an earlier round: refused");
+    p[10] ^= 1;  // the payload changed, the checksum no longer adds up
+    CHECK(!inet_reply_ok(p, n, 0x08080808u, 1, round, &link), "a bad checksum: refused");
+    n = echo_reply(p, INET_PROBE_ID + 1, (uint16_t)(round << 2 | 1 << 1));
+    CHECK(!inet_reply_ok(p, n, 0x08080808u, 1, round, &link), "another id: refused");
+    n = echo_reply(p, INET_PROBE_ID, (uint16_t)(round << 2 | 0 << 1 | 1));
+    CHECK(inet_reply_ok(p, n, 0x01010101u, 0, round, &link) && link == 0, "from 1.1.1.1 on Ethernet: Ethernet");
+    p[0] = 8;
+    CHECK(!inet_reply_ok(p, n, 0x01010101u, 0, round, &link), "an echo request: refused");
+}
+
 static void test_pick_inet(void)
 {
     // priority 1: Ethernet first
@@ -249,6 +287,7 @@ int main(void)
     test_dns();
     test_inet();
     test_pick_inet();
+    test_reply_ok();
     printf("test_netcfg: %s\n", failures ? "FAILED" : "ok");
     return failures ? 1 : 0;
 }

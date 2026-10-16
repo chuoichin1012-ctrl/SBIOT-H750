@@ -369,6 +369,9 @@ static void init_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(3000));
             blog("app: phy up %d\r\n", eth_drv_phy_power(false));
             break;
+        case 'j':  // bench: toggle forcing the plain-PPP fallback at the next CMUX opening (Plan 10 review)
+            blog("app: plain fallback %s\r\n", lte_bench_plain() ? "forced" : "off");
+            break;
         case 'q':  // bench: toggle dropping PPP's input (the CFUN case, Plan 10 T5)
             blog("app: PPP input %s\r\n", lte_bench_drop() ? "dropped" : "passed");
             break;

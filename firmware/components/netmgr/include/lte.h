@@ -30,5 +30,7 @@ bool lte_shutdown(uint32_t timeout_ms);
 void lte_bench_disc(void);
 /** Bench: PPP's input dropped (toggle), so PPP never gets an address: the CFUN case. The new state. */
 bool lte_bench_drop(void);
+/** Bench: AT+CMUX replaced by a refused command (toggle), so the next opening takes the plain-PPP fallback. */
+bool lte_bench_plain(void);
 /** Bench: text and CR out of UART3 as they are (AT mode). */
 void lte_send_raw(const char *text);

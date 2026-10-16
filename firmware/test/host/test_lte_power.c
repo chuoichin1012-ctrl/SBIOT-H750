@@ -128,7 +128,8 @@ static void test_supervise(void)
     CHECK(lte_supervise(T, T - 119999, T - 1000, true, false) == LTE_ACT_NONE, "not yet 2 minutes");
     CHECK(lte_supervise(T, T - 1000, T - 60000, false, false) == LTE_ACT_RECOVER, "60 s without a frame, AT silent: RECOVER");
     CHECK(lte_supervise(T, T - 1000, T - 60000, true, false) == LTE_ACT_NONE, "60 s without a frame, AT answering: nothing");
-    CHECK(lte_supervise(T, T - 500000, T - 500000, false, true) == LTE_ACT_NONE, "no SIM: never CFUN or RECOVER");
+    CHECK(lte_supervise(T, T - 500000, T - 1000, true, true) == LTE_ACT_NONE, "no SIM, the module answering: no CFUN, no RECOVER");
+    CHECK(lte_supervise(T, T - 500000, T - 60000, false, true) == LTE_ACT_RECOVER, "no SIM, the module silent 60 s: RECOVER still (Codex code review)");
 }
 
 int main(void)

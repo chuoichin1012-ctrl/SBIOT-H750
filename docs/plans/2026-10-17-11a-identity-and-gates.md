@@ -33,11 +33,11 @@
 
 ### Task 0: LED WORK rhythm (the user)
 
-**Files:** `firmware/components/board/include/board.h` and `board_io.c` (`board_iwdg_reload()`, `board_wdi_toggle()`; `board_kick()` keeps doing both for the SWD loader and early boot), new `components/board/pace.c/.h` (pure: `#define PACE_RUN_MS 500u`, `PACE_BUSY_MS 100u`, `PACE_HALT_MS 250u`; `bool pace_due(uint32_t now_ms, uint32_t *last_ms, uint32_t half_ms)`), `components/board/wdog.c` (loop every 100 ms: IWDG1 reloaded each loop, WDI toggled when `pace_due` with the mode's half period; `void wdog_set_busy(bool)`, `void wdog_set_halt(void)`), `boot/boot.c` (a paced `boot_kick`: IWDG1 every call, WDI by `pace_due` on `HAL_GetTick`; 100 ms while it checks, installs or restores, 500 ms while it samples Reload, 250 ms in `halt()` and the no-image halt), `components/webapi/web.c` and `app/bench_ota.c` (busy from the upload's claim to its end), `app/app_main.c` (the bind halt calls `wdog_set_halt`); test `test/host/test_board.c` (or a new `test_pace.c`).
+**Files:** `firmware/components/board/include/board.h` and `board_io.c` (`board_iwdg_reload()`, `board_wdi_toggle()`; `board_kick()` keeps doing both for the SWD loader and early boot), new `components/board/pace.c/.h` (pure: `#define PACE_RUN_MS 500u`, `PACE_BUSY_MS 100u`, `PACE_HALT_MS 250u`; `bool pace_due(uint32_t now_ms, uint32_t *last_ms, uint32_t half_ms)`), `components/board/wdog.c` (loop every 50 ms (Codex plan r1: a 100 ms loop cannot make 250 ms toggles): IWDG1 reloaded each loop, WDI toggled when `pace_due` with the mode's half period; two gaps measured apart, the loop's (IWDG1) and the toggles' (WDI); `void wdog_set_busy(bool)`, `void wdog_set_halt(void)`), `boot/boot.c` (a paced `boot_kick`: IWDG1 every call, WDI by `pace_due` on `HAL_GetTick`; 100 ms while it checks, installs or restores, 500 ms while it samples Reload, 250 ms in `halt()` and the no-image halt), `components/webapi/web.c` and `app/bench_ota.c` (busy from the upload's claim to its end), `app/app_main.c` (the bind halt calls `wdog_set_halt`); test `test/host/test_board.c` (or a new `test_pace.c`).
 
-- [ ] Test: `pace_due` is false before the half period and true at it, updates `last` only when due, survives the `uint32_t` wrap; a sequence of calls every 10 ms gives exactly one toggle per half period for each of 500, 100 and 250.
-- [ ] Fix as above. `wdiMaxGapMs` still measures the wdog loop's gap (nominal 100 ms), so the 400 ms criteria of §6.1 and §12.2 stand.
-- [ ] Build boot and app; board: the LED blinks at 1 s when running, 0.2 s during a web OTA upload (and the install after it), 0.5 s halted (an unbound board); `wdiMaxGapMs` stays under 400 ms.
+- [ ] Test: `pace_due` is false before the half period and true at it, updates `last` only when due, survives the `uint32_t` wrap; calls every **50 ms** (the wdog loop) give toggles exactly 500, 100 and 250 ms apart; calls at the bootloader's irregular pace (every 10 ms, and a 300 ms gap) never toggle closer than the half period nor later than half + one call.
+- [ ] Fix as above. `/api/status` reports both gaps: `iwdgMaxGapMs` (the loop, nominal 50 ms; the 400 ms criteria of §6.1 and §12.2 now apply to it) and `wdiMaxGapMs` (the toggles, nominal 500 ms; criterion < 600 ms, inside the SGM706's 1.0 s minimum).
+- [ ] Build boot and app; board: the LED blinks at 1 s when running, 0.2 s during a web OTA upload (and the install after it), 0.5 s halted (an unbound board); `iwdgMaxGapMs` < 400 ms and `wdiMaxGapMs` < 600 ms after the bench suites.
 - [ ] Spec: §6.1 (`wdog` row), §11.2 and §11.5 (the LED patterns). Commit.
 
 ### Task 1: binding record version 2 (C and Python)
@@ -53,10 +53,11 @@
 | 16 | MAC (6 B): `02` + SHA-256(UID)[0..4] |
 | 22 | SN (12 B ASCII, no NUL): `SB` + YYMM + 6 digits |
 | 34 | reserved, 0 (2 B) |
-| 36 | Ed25519 signature (64 B) over `"SBIOT-H750 bind2"` ‖ chip UID ‖ MAC ‖ SN |
+| 36 | Ed25519 signature (64 B) over `"SBIOT-H750 bind2"` ‖ UID ‖ MAC ‖ SN, bytes 4–33 of the record |
 | 100 | CRC-32 of bytes 0–99 |
 
-- [ ] Test (C, host): a Python-signed v2 record verifies; a changed MAC, SN or UID with the CRC fixed is `BIND_CLONE`; a v1 record (`SBBD`) is the new `BIND_EOLD` and erases nothing; `bind_identity(rec, mac, sn)` returns the record's MAC and SN; an SN that is not `SB` + 10 digits fails the parse. Run: FAIL.
+- [ ] The UID rule (Codex plan r1): the signature covers the record's own UID, MAC and SN, and the record's UID must equal the chip's; a record whose UID is not this chip's is `BIND_CLONE` (another board's, valid or not).
+- [ ] Test (C, host): a Python-signed v2 record verifies; a changed MAC or SN with the CRC fixed is `BIND_CLONE` (the signature fails); another chip's valid record is `BIND_CLONE` (the UID differs); a record whose UID was changed to this chip's with the CRC fixed is `BIND_CLONE` (the signature fails); a v1 record (`SBBD`) is the new `BIND_EOLD` and erases nothing; `bind_identity(rec, mac, sn)` returns the record's MAC and SN; an SN that is not `SB` + 10 digits fails the parse. Run: FAIL.
 - [ ] Test (Python): `provision.py record KEY UID SN OUT` writes the layout above; the MAC equals `netcfg_mac`'s (a fixed UID vector shared with the C test); a bad SN is refused.
 - [ ] Fix: `BIND_LEN` 104, `BIND_EOLD`, `bind_valid` over the v2 message, `bool bind_identity(const uint8_t rec[BIND_LEN], uint8_t mac[6], char sn[13])`. `provision.py`: `record KEY UID SN OUT` (the MAC computed inside), `next-sn COUNTER` (task 2).
 - [ ] Run `test_bind`, `test_provision.py`. Commit.
@@ -65,10 +66,10 @@
 
 **Files:** `tools/provision.py` (`next-sn`), `tools/flash.sh` (`bind`), `tools/test_provision.py`, `.gitignore`.
 
-- `provision.py next-sn COUNTER`: reads the integer in COUNTER (missing: 1), prints `SB` + YYMM (today, local time) + the number in 6 digits, and writes number + 1 back **before** printing (write to a temporary file, then rename), so a programming that fails after it wastes a number but never reuses one. Past 999999: refuses.
+- `provision.py next-sn COUNTER`: under an exclusive lock on `COUNTER.lock` (`fcntl.flock`, held for the whole read–increment–write), reads the integer in COUNTER (missing: 1), writes number + 1 to a temporary file in the same directory, `flush` + `os.fsync`, `os.replace` over COUNTER, `fsync` of the directory, and only then prints `SB` + YYMM (today, local time) + the number in 6 digits. Any failure before the print exits non-zero and prints no SN. A programming that fails after the print wastes a number, never reuses one. Past 999999: refuses (Codex plan r1).
 - `flash.sh bind KEY [SN]`: reads the UID (as now), takes SN from the argument or `next-sn` (counter `$SBIOT_SN_COUNTER`, default `~/.sbiot/sn_counter`), builds the record, writes and verifies it as now, and prints the MAC and SN it wrote. `SBIOT_BIND_UID` (the bench's clone case) still works.
 
-- [ ] Test (Python): two `next-sn` calls give consecutive numbers; the counter is written before the SN is printed (a crash after: the next call skips it); a counter at 999999 refuses; the date part is YYMM.
+- [ ] Test (Python): two `next-sn` calls give consecutive numbers; 8 processes calling it at once get 8 different numbers; a write failure (a read-only directory, `os.replace` made to raise) prints no SN and leaves the counter as it was; a counter at 999999 refuses; the date part is YYMM.
 - [ ] Fix as above. Run `test_provision.py`. Commit.
 
 ### Task 3: the bootloader and the app read the identity from the record
@@ -83,8 +84,9 @@
 
 **Files:** `tools/factory_cal.py` (new), `app/bench_io.c` (only if the console's `A` needs a read-back line it does not print yet), spec §12.4.
 
-- `factory_cal.py PORT G1 O1 G2 O2`: sends the console command `A` with the four coefficients over UART7 (`board.py`'s serial helpers), then `a`, and checks that the record read back holds them and `calibrated` is true. The production path to SPI4 is the console because the team's SWD loader programs QSPI only.
-- [ ] Test (Python, no board): the command line it builds and the parse of the `a` answer, on a recorded console transcript.
+- A console read-back (Codex plan r1): a new command `F` reads both factory record copies from SPI4 and prints, for each, whether it parses (magic, version, CRC) and its four coefficients.
+- `factory_cal.py PORT G1 O1 G2 O2`: sends `A` with the four coefficients over UART7 (`board.py`'s serial helpers), then `F`: both copies must parse and hold the requested values; then a reset, and after the boot `/api/status` must report `aiCalibrated: true` (the runtime reads the record at boot only). The production path to SPI4 is the console because the team's SWD loader programs QSPI only.
+- [ ] Test (Python, no board): the command line it builds and the parse of the `F` answer, on a recorded console transcript (two good copies, one bad copy, values that differ from the request).
 - [ ] Board: write the nominal coefficients (gain 1, offset 0) and read them back; `/api/status` reports `aiCalibrated: true`.
 - [ ] Commit.
 
@@ -97,9 +99,14 @@
 
 ### Task 6: board, spec, review
 
+**The one-time migration** of a board programmed before this plan (Codex plan r1: its staging may hold an older valid image that would install over the new app, and its factory slot holds an older app that refuses a v2 record): no migration code in the bootloader. A console command `X` then `OLD` erases the first sector of staging and of the factory slot (their magic; FlashDB and the factory record untouched) and resets; the next boot finds the factory slot unseeded and seeds it from the new app in QSPI (the existing one-time seeding).
+
+The order, written into §12.4: flash boot and app (SWD) → `flash.sh bind KEY` (v2 record) → console `X` `OLD` → boot (the factory slot seeded from the v2 app).
+
 - [ ] Board:
   - flash boot and app built from this branch: the bench board (its v1 record) halts with the old-record message, nothing erased;
-  - `flash.sh bind dev`: it boots; `/api/status` shows the SN `SB<YYMM><n>` and the same MAC as before;
+  - `flash.sh bind dev`, then `X` `OLD`: it boots; `/api/status` shows the SN `SB<YYMM><n>` and the same MAC as before; the log shows the factory slot seeded;
+  - a Reload restore (held 5 s at power-up) boots the v2 factory image, which accepts the record;
   - the clone case of `ota_check` (`SBIOT_BIND_UID`) still erases and halts;
   - `defaults_check`, `web_check plain configs`, `review_check`.
 - [ ] Spec: §11.5 (the v2 record, the old-record halt, MAC and SN), §12.4 (the SN counter, `factory_cal.py`), roadmap row 11 (11a done, 11b next).

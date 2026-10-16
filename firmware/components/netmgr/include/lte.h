@@ -18,6 +18,7 @@ typedef struct {
     uint32_t overrun, bad_fcs, ppp_in_drop, ppp_out_drop, uart_errors;
     uint8_t last_bad[6];  // bench: the last frame with a bad FCS (cmux_counters_t)
     uint32_t stack_cmux, stack_lte;  // the least stack left, bytes (0: not running)
+    uint32_t recoveries;  // "no PPP address" attempts in a row (CFUN, then power cycles; Plan 10b)
 } lte_info_t;
 
 /** Starts UART3 and both tasks (priority 1 or 2); priority 0 leaves the modem alone (Plan 10 T5 powers it down). */
@@ -32,5 +33,9 @@ void lte_bench_disc(void);
 bool lte_bench_drop(void);
 /** Bench: AT+CMUX replaced by a refused command (toggle), so the next opening takes the plain-PPP fallback. */
 bool lte_bench_plain(void);
+/** Bench: the backoff's waits divided by 10 (toggle), so its case takes minutes. The new state. */
+bool lte_bench_fast(void);
+/** Bench: power_down() disregards POWERED DOWN (toggle), as if it never came. The new state. */
+bool lte_bench_nopd(void);
 /** Bench: text and CR out of UART3 as they are (AT mode). */
 void lte_send_raw(const char *text);

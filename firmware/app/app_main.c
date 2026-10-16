@@ -369,6 +369,12 @@ static void init_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(3000));
             blog("app: phy up %d\r\n", eth_drv_phy_power(false));
             break;
+        case 'd':  // bench: toggle disregarding POWERED DOWN (Plan 10b)
+            blog("app: POWERED DOWN %s\r\n", lte_bench_nopd() ? "disregarded" : "taken");
+            break;
+        case 'b':  // bench: toggle the backoff's waits divided by 10 (Plan 10b)
+            blog("app: backoff %s\r\n", lte_bench_fast() ? "fast" : "normal");
+            break;
         case 'j':  // bench: toggle forcing the plain-PPP fallback at the next CMUX opening (Plan 10 review)
             blog("app: plain fallback %s\r\n", lte_bench_plain() ? "forced" : "off");
             break;

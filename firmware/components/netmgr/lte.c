@@ -60,8 +60,18 @@ static uint32_t s_release_ms;  // the last PWRKEY or RESET_N release, for ready_
 // the shutdown before a gateway restart, and priority 0 (Plan 10 T5)
 static volatile lte_power_t s_power = LTE_UNKNOWN;
 static volatile bool s_shutdown_req, s_powered_down;
-static volatile bool s_bench_drop;
-static volatile bool s_bench_plain;  // bench: AT+CMUX replaced by a command the modem refuses (the fallback case)  // bench: PPP's input dropped, so PPP never gets an address (the CFUN case)
+static volatile bool s_bench_drop;   // bench: PPP's input dropped, so PPP never gets an address (the CFUN case)
+static volatile bool s_bench_plain;  // bench: AT+CMUX replaced by a command the modem refuses (the fallback case)
+static volatile bool s_bench_fast;  // bench: the backoff's minutes divided by 10 (Plan 10b)
+static lte_backoff_t s_backoff;     // "no PPP address": attempts in a row (Plan 10b), over CMUX and on the plain UART
+static volatile bool s_bench_nopd;  // bench: power_down() disregards POWERED DOWN (the case where it never comes)
+static volatile bool s_got_addr;    // PPP had an address since the lte task last looked (set in ppp_status)
+
+static uint32_t backoff_limit(void)
+{
+    uint32_t l = lte_backoff_limit(&s_backoff);
+    return s_bench_fast ? l / 10 : l;
+}
 static SemaphoreHandle_t s_shutdown_done;
 static StaticSemaphore_t s_shutdown_mem;
 static at_lines_t s_lines;  // the AT channel's lines (the lte task)
@@ -405,7 +415,7 @@ static bool power_down(void)
     }
     SLOG_I("lte", "AT+QPOWD=1");
     at_final_t f = at_cmd("AT+QPOWD=1", 3000, NULL, NULL);
-    bool down = f == AT_POWERED_DOWN || (f == AT_OK && at_wait(AT_POWERED_DOWN, 60000));
+    bool down = !s_bench_nopd && (f == AT_POWERED_DOWN || (f == AT_OK && at_wait(AT_POWERED_DOWN, 60000)));
     s_power = down ? LTE_OFF : LTE_UNKNOWN;
     info_set(&s_info.modem, down ? "OFF" : "UNKNOWN");
     info_set(&s_info.mux, "AT");
@@ -470,6 +480,7 @@ static void ppp_status(ppp_pcb *pcb, int err, void *ctx)
         dns[0] = lwip_ntohl(pcb->ipcp_gotoptions.dnsaddr[0]);
         dns[1] = lwip_ntohl(pcb->ipcp_gotoptions.dnsaddr[1]);
         s_ppp_up = true;
+        s_got_addr = true;  // the backoff's reset, even if PPP goes down before the lte task looks
         s_info.ip = lwip_ntohl(ip4_addr_get_u32(netif_ip4_addr(&s_ppp_netif)));
         s_info.dns1 = s_cfg.cell_dns_manual ? s_cfg.cell_dns1 : dns[0];
         s_info.dns2 = s_cfg.cell_dns_manual ? s_cfg.cell_dns2 : dns[1];
@@ -490,6 +501,20 @@ static void ppp_status(ppp_pcb *pcb, int err, void *ctx)
     s_events |= EV_PPP_DOWN;
     if (s_lte_task)
         xTaskNotifyGive(s_lte_task);
+}
+
+/** An address since the last call (PPP may have lost it since): the backoff back to its first wait. */
+static bool took_addr(void)
+{
+    taskENTER_CRITICAL();
+    bool got = s_got_addr;
+    s_got_addr = false;
+    taskEXIT_CRITICAL();
+    if (got) {
+        lte_backoff_ok(&s_backoff);
+        s_info.recoveries = 0;
+    }
+    return got;
 }
 
 static void ppp_begin(void)
@@ -576,40 +601,53 @@ static bool dial_mux(void)
 static bool registered(void);
 
 /** AT+CMUX refused: PPP on the plain UART (spec §7.2's fallback); the signal is read before only. */
-static void plain_ppp(void)
+enum { PLAIN_NO_SIM, PLAIN_DOWN, PLAIN_NO_ADDR };
+
+/** On the plain UART: the registration, the dial and PPP, each waited for within the backoff's limit (Plan 10b).
+ *  PLAIN_NO_ADDR: no address within it, the caller takes the backoff's step; PLAIN_DOWN: PPP went down after an
+ *  address; PLAIN_NO_SIM. */
+static int plain_ppp(void)
 {
     info_set(&s_info.mux, "PLAIN");
     if (!sim_ready()) {
         SLOG_W("lte", "NO SIM");
-        return;
+        return PLAIN_NO_SIM;
     }
     at_cmd("AT+QCCID", 2000, on_iccid, NULL);
     bool alive = false;
     at_cmd("AT+CSQ", 2000, on_csq, &alive);
     at_cmd("AT+QNWINFO", 2000, on_nwinfo, NULL);
-    uint32_t t0 = ms();
-    while (!registered()) {  // as over CMUX: dialled only once on the network (a module just reset is not yet)
-        if (ms() - t0 >= 90000) {
-            SLOG_W("lte", "plain UART: not on the network after 90 s");
-            return;
+    uint32_t t0 = ms(), limit = backoff_limit();
+    for (;;) {  // as over CMUX: dialled only once on the network (a module just reset is not yet)
+        if (registered()) {
+            info_set(&s_info.state, "connecting");
+            if (at_cmd("ATD*99#", 30000, NULL, NULL) == AT_CONNECT)
+                break;
+            info_set(&s_info.state, "disconnected");
+            SLOG_W("lte", "dial on the plain UART: no CONNECT");
+        }
+        if (ms() - t0 >= limit) {
+            SLOG_W("lte", "plain UART: no address within %lu s", (unsigned long)(limit / 1000));
+            return PLAIN_NO_ADDR;
         }
         wait_events(0, 5000);
     }
-    info_set(&s_info.state, "connecting");
-    if (at_cmd("ATD*99#", 30000, NULL, NULL) != AT_CONNECT) {
-        info_set(&s_info.state, "disconnected");
-        SLOG_W("lte", "dial on the plain UART: no CONNECT");
-        return;
-    }
+    taskENTER_CRITICAL();
+    s_events &= ~EV_PPP_DOWN;  // the last session's (recover's ppp_stop): not this one's
+    taskEXIT_CRITICAL();
     request(REQ_PLAIN_PPP);
     ppp_begin();
-    uint32_t last_addr = ms();
-    for (;;) {  // until PPP goes down, or 2 minutes without an address
-        uint32_t e = wait_events(EV_PPP_DOWN, POLL_MS);
-        if (s_ppp_up)
-            last_addr = ms();
-        if (e || ms() - last_addr >= LTE_NO_ADDR_MS)
-            return;  // the caller recovers with RESET_N (leaving data mode needs +++ and ATH; a reset is simpler)
+    bool had = false;
+    for (;;) {
+        bool down = wait_events(EV_PPP_DOWN, 5000) != 0;
+        switch (lte_plain_wait(&had, took_addr(), down, ms() - t0, limit)) {
+        case LTE_PLAIN_NO_ADDR:
+            return PLAIN_NO_ADDR;
+        case LTE_PLAIN_DOWN:
+            return PLAIN_DOWN;
+        default:
+            break;
+        }
     }
 }
 
@@ -675,8 +713,16 @@ static void lte_task(void *arg)
         at_cmd(cmd, 2000, NULL, NULL);
         int mux = open_mux();
         if (mux <= 0) {
-            if (mux == 0)
-                plain_ppp();
+            if (mux == 0 && plain_ppp() == PLAIN_NO_ADDR) {  // the backoff's step, as over CMUX
+                s_info.recoveries++;
+                if (lte_backoff_step(&s_backoff) == LTE_ACT_POWER_CYCLE) {
+                    SLOG_W("lte", "plain UART, attempt %lu: a soft power cycle", (unsigned long)s_info.recoveries);
+                    if (!power_down())  // leaves data mode (+++, ATH), QPOWD, POWERED DOWN
+                        recover();
+                    continue;  // from OFF: PWRKEY; from UNKNOWN: the whole start sequence
+                }
+                SLOG_W("lte", "plain UART, attempt %lu: RESET_N", (unsigned long)s_info.recoveries);
+            }
             recover();
             s_power = LTE_UNKNOWN;
             continue;
@@ -699,6 +745,8 @@ static void lte_task(void *arg)
                     SLOG_I("lte", "SIM ready");
                 }
             }
+            if (took_addr())  // an address since the last poll, kept or not: the waits back to 2 minutes,
+                last_addr = ms();  // counted from it
             if (no_sim || s_ppp_up)
                 last_addr = ms();  // NO SIM: nothing dialled, nothing missed
             else if (!s_ppp_running && registered())
@@ -710,14 +758,25 @@ static void lte_task(void *arg)
             taskENTER_CRITICAL();
             s_events &= ~EV_PPP_DOWN;  // PPP down: the next poll dials again
             taskEXIT_CRITICAL();
-            lte_action_t act = lte_supervise(ms(), last_addr, s_last_rx_ms, alive, no_sim);
+            uint32_t limit = backoff_limit();
+            lte_action_t act = lte_supervise(ms(), last_addr, s_last_rx_ms, alive, no_sim, limit);
             if (wait_events(EV_CLOSED | EV_FAILED, 0) || act == LTE_ACT_RECOVER) {
                 recover();
                 s_power = LTE_UNKNOWN;
                 break;
             }
+            if (act == LTE_ACT_CFUN && lte_backoff_step(&s_backoff) == LTE_ACT_POWER_CYCLE) {
+                s_info.recoveries++;
+                SLOG_W("lte", "no PPP address for %lu s (attempt %lu): a soft power cycle", (unsigned long)(limit / 1000),
+                       (unsigned long)s_info.recoveries);
+                if (!power_down())  // CLD, QPOWD, POWERED DOWN: then PWRKEY 2.5 s from the confirmed OFF
+                    recover();      // no POWERED DOWN: UNKNOWN, the RESET_N of a RECOVER (never pressed blind)
+                break;              // the start sequence follows: from OFF, PWRKEY; from UNKNOWN, all of it
+            }
             if (act == LTE_ACT_CFUN) {
-                SLOG_W("lte", "no PPP address for 2 minutes: AT+CFUN=1,1");
+                s_info.recoveries++;
+                SLOG_W("lte", "no PPP address for %lu s (attempt %lu): AT+CFUN=1,1", (unsigned long)(limit / 1000),
+                       (unsigned long)s_info.recoveries);
                 ppp_stop();
                 at_cmd("AT+CFUN=1,1", 5000, NULL, NULL);
                 vTaskDelay(pdMS_TO_TICKS(5000));
@@ -767,6 +826,18 @@ bool lte_shutdown(uint32_t timeout_ms)
 }
 
 void lte_bench_disc(void) { request(REQ_DISC2); }
+
+bool lte_bench_nopd(void)
+{
+    s_bench_nopd = !s_bench_nopd;
+    return s_bench_nopd;
+}
+
+bool lte_bench_fast(void)
+{
+    s_bench_fast = !s_bench_fast;
+    return s_bench_fast;
+}
 
 bool lte_bench_plain(void)
 {

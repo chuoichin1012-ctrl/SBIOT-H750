@@ -492,6 +492,17 @@ Những gì Plan 10 thêm so với thiết kế dưới đây:
 - **Kiểm Internet theo từng link** (ruling 14), xem mục ưu tiên kết nối.
 - `cmux_rx` là chủ duy nhất của UART3 và của trạng thái CMUX; task `lte` và PPP chỉ trao đổi với nó qua stream buffer.
 
+Những gì Plan 10b thêm (mất mạng lâu):
+- **Backoff cho "PPP không có địa chỉ":** thời gian chờ trước mỗi lần xử lý tăng theo số lần liên tiếp không có địa chỉ: **2, 5, 10, rồi 30 phút**, và 30 phút từ đó trở đi. Có địa chỉ thì quay về 2 phút. Bộ đếm giữ nguyên qua CFUN, RECOVER và power cycle.
+- **Hai lần đầu** xử lý như Plan 10 (CMUX: `AT+CFUN=1,1`; UART thường: RESET_N). **Từ lần thứ ba**: soft power cycle, tức `AT+QPOWD=1`, chờ `POWERED DOWN`, rồi PWRKEY 2,5 s từ `OFF` đã xác nhận. Không nhận `POWERED DOWN` thì trạng thái là `UNKNOWN` và đi RECOVER (RESET_N), không nhấn PWRKEY mù.
+- **Cả hai đường dùng chung backoff:** trên UART thường, thời gian chờ đăng ký mạng và chờ địa chỉ đều lấy giới hạn của backoff, thay cho 90 s và 2 phút cố định.
+- `/api/status` có `cell.recoveries`: số lần xử lý liên tiếp chưa có địa chỉ.
+- **Đo trên bench (2026-10-17, lệnh `b` chia thời gian chờ cho 10):**
+  - không địa chỉ qua CMUX: `AT+CFUN=1,1` sau 12 s, rồi sau 30 s; lần thứ ba soft power cycle sau 60 s. `POWERED DOWN` đến, rồi PWRKEY 2,5 s, không có RESET_N xen giữa. `cell.recoveries` là 3;
+  - lệnh `d` (bỏ qua `POWERED DOWN`): lần thứ ba đi RECOVER (RESET_N), rồi trình tự từ `UNKNOWN`. PWRKEY chỉ được nhấn sau khi RESET_N và AT đều không được trả lời;
+  - restart trong data mode: `+++`, ATH, rồi `POWERED DOWN`;
+  - **chưa kiểm:** PPP lên lại sau khi phục hồi, và các ca cần PPP (`mux`, `cfun`, `power`, `fallback`, phần UART thường của `backoff_plain`). Trong lúc chạy, SIM và mạng mất dịch vụ: tín hiệu CSQ 19–23 nhưng `+CEREG: 0,2` kéo dài (người dùng: vấn đề của SIM và mạng). Bộ đếm vẫn được dùng chung giữa hai đường: ca `backoff_plain` mở đầu bằng lần CFUN thứ nhất qua CMUX, rồi tới lần 2 và lần 3 trên UART thường.
+
 
 - **Timing của EC600U** lấy theo *Quectel EC600U系列 QuecOpen 硬件设计手册 V1.3* (bản trên developer.quectel.com, 2024-09), mục 3.7–3.8. **Không** dùng timing của EC800 trong bản ESP32 (xung PWRKEY 700 ms ở `modem.c:47`). Mốc thời gian tính từ cạnh GPIO của MCU. Qua transistor, độ trễ không đáng kể so với các giá trị dưới đây.
 
@@ -572,7 +583,7 @@ Những gì Plan 10 thêm so với thiết kế dưới đây:
   - lwIP coi số byte khác độ dài yêu cầu là `ERR_IF` và bỏ phần còn lại của frame. Firmware đếm `ppp_out_drop`. TCP tự gửi lại. Không có cơ chế `ERR_MEM` nào được hứa ở đây.
   - Tràn ring được đếm thành `overrun`, và PPP tự phục hồi bằng cơ chế của nó (FCS, gửi lại TCP).
   - **Cần chứng minh bằng tải liên tục** trên bench: tải xuống HTTPS lớn trong lúc DLC2 vẫn đọc tín hiệu. Số `overrun` phải bằng 0.
-- **Phục hồi:** PPP không có địa chỉ quá 2 phút thì gửi `AT+CFUN=1,1` qua DLC2. Không phản hồi AT thì vào `RECOVER`.
+- **Phục hồi:** PPP không có địa chỉ quá 2 phút thì gửi `AT+CFUN=1,1` qua DLC2. Không phản hồi AT thì vào `RECOVER`. Mất mạng lâu: backoff và soft power cycle của Plan 10b (đầu mục này).
 - **PPP:** xác thực None/PAP/CHAP/tự thương lượng, APN và DNS lấy từ `network`.
 - **Ưu tiên kết nối (`network.priority`)** giữ nguyên như ESP32:
   - 0: chỉ Ethernet;
@@ -692,7 +703,6 @@ Những gì Plan 10 thêm so với thiết kế dưới đây:
   - log TSDB đánh khóa bằng số thứ tự tăng dần.
 - **Luồng cấu hình (Plan 09b, người dùng, 2026-10-16):**
   - **Web UI validate toàn bộ** và gửi JSON đầy đủ, đã minify. Gateway lưu nguyên từng byte nhận được, và GET trả lại đúng các byte đó.
-  - **Khi lưu, gateway chỉ kiểm:** xác thực, tên cấu hình, kích thước (10.240 byte; `edgeDevices` 49.152 byte), cú pháp JSON (`jsonscan`), kiểu gốc (object hoặc array) và lỗi ghi. Không merge với bản cũ, không chuẩn hóa, không kiểm quy tắc nghiệp vụ.
   - **Lúc khởi động, bộ nạp (`cfg_load`) chỉ kiểm kiểu JSON của từng trường** và giữ nguyên mọi giá trị đã gửi: không kiểm giới hạn, độ dài hay quy tắc chéo.
     - Trường sai kiểu thì lấy giá trị mặc định của trường đó, có ghi log; key thiếu thì điền mặc định.
     - Danh sách topic và event giữ tối đa 16 và 10 phần tử, để giới hạn bộ nhớ.

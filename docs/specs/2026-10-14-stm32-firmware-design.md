@@ -381,6 +381,7 @@ Quy tắc riêng của bản STM32:
   - Topic bind cổng qua bitmask `ports`.
   - `websocketTarget` nhận giá trị 0 (tắt), 1, 2 (UART) hoặc 3 (LOG).
   - Thiết bị Edge chọn bus qua trường `uart`.
+  - **Polling interval** (`poll` của thiết bị) là thời gian nghỉ sau **mỗi** block (Modbus) hoặc point (DL/T645) đọc xong, rồi mới đọc block kế tiếp của thiết bị đó (định nghĩa của người dùng, như USR; Plan 08c). Bản ESP32 đọc hết các block liên tiếp rồi mới nghỉ cả vòng. Đọc lại sau một lệnh ghi từ xa thì đọc cả thiết bị một lượt.
   - `edgeReport.channel` nhận giá trị 0 (MQTT), 1 hoặc 2 (socket của cổng).
     - Report tới socket đi qua **slot report** của bridge (`bridge_send`), không qua hàng đợi serial (MessageBuffer không chuyển được message lớn hơn frame 1,5 KB của bridge). Report không kèm registration prefix; `bufferOffline` giữ frame serial, không giữ report (Plan 08c).
     - Truy cập từ xa của Edge trên socket của cổng `channel` đi **trước** các đường của bridge: Edge chỉ trả lời unit nó expose, phần còn lại đi tiếp như cũ (Modbus gateway, IO slave, polling, cổng RS485). Mẩu request dang dở im lặng 200 ms thì được chuyển tiếp.

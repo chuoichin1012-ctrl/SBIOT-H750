@@ -263,12 +263,13 @@ int serial_transact(int port, const uint8_t *req, size_t len, uint8_t *resp, siz
     // never goes quiet must not keep it). The deadline is checked before a quiet bus is taken, and no sleep
     // goes past it: no request leaves after the timeout.
     for (;;) {
-        uint64_t now = now_us(), since = rx_quiet_since(p);
+        uint64_t since = rx_quiet_since(p);  // first: it may read the clock itself (a byte just arrived)
+        uint64_t now = now_us();
         if (now >= until) {
             xSemaphoreGive(p->bus);
             return 0;
         }
-        if ((now - since) / 1000u >= p->gap_ms + 1u)
+        if (now > since && (now - since) / 1000u >= p->gap_ms + 1u)
             break;
         uint32_t left_ms = (uint32_t)((until - now + 999u) / 1000u);
         vTaskDelay(ticks(left_ms < p->gap_ms + 1u ? left_ms : p->gap_ms + 1u));

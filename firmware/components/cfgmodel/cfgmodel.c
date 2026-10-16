@@ -1018,3 +1018,32 @@ done:
     cJSON_free(m);
     return r;
 }
+
+// A port's TCP server listen port, or 0 when its bridge is not a TCP server.
+static int tcp_listen(const cJSON *port)
+{
+    const cJSON *w = cJSON_GetObjectItemCaseSensitive(port, "workMode"), *l = cJSON_GetObjectItemCaseSensitive(port, "listenPort");
+    return cJSON_IsNumber(w) && w->valueint == 3 && cJSON_IsNumber(l) ? l->valueint : 0;
+}
+
+bool cfg_listen_ok(const cJSON *port1, const cJSON *port2, const cJSON *system, char *err, size_t errlen)
+{
+    int l1 = tcp_listen(port1), l2 = tcp_listen(port2);
+    if (l1 && l1 == l2) {
+        snprintf(err, errlen, "UART1 and UART2 both listen on TCP port %d: give each its own port.", l1);
+        return false;
+    }
+    static const char *const KEYS[] = {"webPort", "websocketPort"}, *const WHAT[] = {"the web interface", "the WebSocket console"};
+    for (int k = 0; k < 2; k++) {
+        const cJSON *v = cJSON_GetObjectItemCaseSensitive(system, KEYS[k]);
+        int p = cJSON_IsNumber(v) ? v->valueint : 0;
+        for (int n = 1; n <= 2; n++) {
+            int l = n == 1 ? l1 : l2;
+            if (p && l == p) {
+                snprintf(err, errlen, "UART%d listens on TCP port %d, which %s uses: choose another port.", n, p, WHAT[k]);
+                return false;
+            }
+        }
+    }
+    return true;
+}

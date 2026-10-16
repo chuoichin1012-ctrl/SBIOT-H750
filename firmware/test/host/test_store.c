@@ -310,6 +310,18 @@ static void test_set_get(void)
     cur = store_get("system");
     cfg_validate_text(&ENV, "system", bad, strlen(bad), cur, want, sizeof want, err2, sizeof err2);
     cJSON_Delete(cur);
+    // Plan 08b T0: two TCP servers may not share a listen port, nor take the web's.
+    {
+        const char *p1 = "{\"workMode\":3,\"listenPort\":4000}", *p2 = "{\"workMode\":3,\"listenPort\":4000}";
+        const char *p2ok = "{\"workMode\":3,\"listenPort\":4001}";
+        CHECK(store_set_text("port1", p1, strlen(p1), err, sizeof err) == STORE_OK, "port1 on 4000: %s", err);
+        CHECK(store_set_text("port2", p2, strlen(p2), err, sizeof err) == STORE_EINVALID && strstr(err, "4000"),
+              "port2 on 4000 too: refused (%s)", err);
+        CHECK(store_set_text("port2", p2ok, strlen(p2ok), err, sizeof err) == STORE_OK, "port2 on 4001: %s", err);
+        char *s2 = store_get_json("port2");
+        CHECK(s2 && strstr(s2, "\"listenPort\":4001"), "the refused save changed nothing");
+        free(s2);
+    }
     CHECK(store_set_text("system", bad, strlen(bad), err, sizeof err) == STORE_EINVALID && !strcmp(err, err2),
           "invalid: 400 with cfg_validate_text's message (%s)", err);
     CHECK(store_set_text("system", "{", 1, err, sizeof err) == STORE_EINVALID, "not JSON: 400");

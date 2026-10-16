@@ -65,6 +65,7 @@ static volatile bool s_bench_plain;  // bench: AT+CMUX replaced by a command the
 static volatile bool s_bench_fast;  // bench: the backoff's minutes divided by 10 (Plan 10b)
 static lte_backoff_t s_backoff;     // "no PPP address": attempts in a row (Plan 10b), over CMUX and on the plain UART
 static volatile bool s_bench_nopd;  // bench: power_down() disregards POWERED DOWN (the case where it never comes)
+static volatile bool s_got_addr;    // PPP had an address since the lte task last looked (set in ppp_status)
 
 static uint32_t backoff_limit(void)
 {
@@ -479,6 +480,7 @@ static void ppp_status(ppp_pcb *pcb, int err, void *ctx)
         dns[0] = lwip_ntohl(pcb->ipcp_gotoptions.dnsaddr[0]);
         dns[1] = lwip_ntohl(pcb->ipcp_gotoptions.dnsaddr[1]);
         s_ppp_up = true;
+        s_got_addr = true;  // the backoff's reset, even if PPP goes down before the lte task looks
         s_info.ip = lwip_ntohl(ip4_addr_get_u32(netif_ip4_addr(&s_ppp_netif)));
         s_info.dns1 = s_cfg.cell_dns_manual ? s_cfg.cell_dns1 : dns[0];
         s_info.dns2 = s_cfg.cell_dns_manual ? s_cfg.cell_dns2 : dns[1];
@@ -499,6 +501,20 @@ static void ppp_status(ppp_pcb *pcb, int err, void *ctx)
     s_events |= EV_PPP_DOWN;
     if (s_lte_task)
         xTaskNotifyGive(s_lte_task);
+}
+
+/** An address since the last call (PPP may have lost it since): the backoff back to its first wait. */
+static bool took_addr(void)
+{
+    taskENTER_CRITICAL();
+    bool got = s_got_addr;
+    s_got_addr = false;
+    taskEXIT_CRITICAL();
+    if (got) {
+        lte_backoff_ok(&s_backoff);
+        s_info.recoveries = 0;
+    }
+    return got;
 }
 
 static void ppp_begin(void)
@@ -616,20 +632,22 @@ static int plain_ppp(void)
         }
         wait_events(0, 5000);
     }
+    taskENTER_CRITICAL();
+    s_events &= ~EV_PPP_DOWN;  // the last session's (recover's ppp_stop): not this one's
+    taskEXIT_CRITICAL();
     request(REQ_PLAIN_PPP);
     ppp_begin();
     bool had = false;
     for (;;) {
-        uint32_t e = wait_events(EV_PPP_DOWN, 5000);
-        if (s_ppp_up && !had) {
-            had = true;
-            lte_backoff_ok(&s_backoff);
-            s_info.recoveries = 0;
-        }
-        if (e)
-            return had ? PLAIN_DOWN : PLAIN_NO_ADDR;
-        if (!had && ms() - t0 >= limit)
+        bool down = wait_events(EV_PPP_DOWN, 5000) != 0;
+        switch (lte_plain_wait(&had, took_addr(), down, ms() - t0, limit)) {
+        case LTE_PLAIN_NO_ADDR:
             return PLAIN_NO_ADDR;
+        case LTE_PLAIN_DOWN:
+            return PLAIN_DOWN;
+        default:
+            break;
+        }
     }
 }
 
@@ -727,10 +745,7 @@ static void lte_task(void *arg)
                     SLOG_I("lte", "SIM ready");
                 }
             }
-            if (s_ppp_up) {
-                lte_backoff_ok(&s_backoff);  // an address: the waits back to 2 minutes
-                s_info.recoveries = 0;
-            }
+            took_addr();  // an address since the last poll, kept or not: the waits back to 2 minutes
             if (no_sim || s_ppp_up)
                 last_addr = ms();  // NO SIM: nothing dialled, nothing missed
             else if (!s_ppp_running && registered())

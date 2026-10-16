@@ -48,4 +48,11 @@ typedef struct {
 #define LTE_BACKOFF_CAP 3
 uint32_t lte_backoff_limit(const lte_backoff_t *b);
 lte_action_t lte_backoff_step(lte_backoff_t *b);
-void lte_backoff_ok(lte_backoff_t *b);  // an address
+void lte_backoff_ok(lte_backoff_t *b);
+
+/** One wake of the wait for PPP on the plain UART (Plan 10b code review). */
+typedef enum { LTE_PLAIN_WAIT, LTE_PLAIN_NO_ADDR, LTE_PLAIN_DOWN } lte_plain_t;
+/** `had` (in/out): an address in this session; `got`: one came since the last wake (even if PPP lost it
+ *  since); `down`: PPP reported down. Before an address, only the deadline ends the wait (NO_ADDR, a backoff
+ *  step): an early DOWN, stale or a refusal, waits for it. After one, the session runs until DOWN. */
+lte_plain_t lte_plain_wait(bool *had, bool got, bool down, uint32_t elapsed_ms, uint32_t limit_ms);  // an address

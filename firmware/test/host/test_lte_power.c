@@ -157,10 +157,30 @@ static void test_backoff(void)
     CHECK(lte_supervise(T, T - 1000, T - 60000, false, false, 30 * min) == LTE_ACT_RECOVER, "a silent module: RECOVER at once, whatever the limit");
 }
 
+// Plan 10b code review (Codex): one wake of the plain-UART PPP wait. Only the deadline counts a step,
+// and an address seen at any wake (even one PPP lost before it) ends the session as DOWN, not NO_ADDR.
+static void test_plain_wait(void)
+{
+    bool had = false;
+    CHECK(lte_plain_wait(&had, false, true, 1000, LTE_NO_ADDR_MS) == LTE_PLAIN_WAIT,
+          "an early DOWN (a stale one from the last session, a refused PPP) waits for the deadline");
+    CHECK(lte_plain_wait(&had, false, false, LTE_NO_ADDR_MS - 1, LTE_NO_ADDR_MS) == LTE_PLAIN_WAIT, "before the deadline: wait");
+    CHECK(lte_plain_wait(&had, false, false, LTE_NO_ADDR_MS, LTE_NO_ADDR_MS) == LTE_PLAIN_NO_ADDR, "the deadline, no address: a step");
+    had = false;
+    CHECK(lte_plain_wait(&had, true, true, 1000, LTE_NO_ADDR_MS) == LTE_PLAIN_DOWN && had,
+          "up then down between two wakes: DOWN, the address counted");
+    had = false;
+    CHECK(lte_plain_wait(&had, true, false, 1000, LTE_NO_ADDR_MS) == LTE_PLAIN_WAIT && had, "an address: the session runs");
+    CHECK(lte_plain_wait(&had, false, false, 10 * LTE_NO_ADDR_MS, LTE_NO_ADDR_MS) == LTE_PLAIN_WAIT,
+          "with an address, no deadline: it runs until PPP goes down");
+    CHECK(lte_plain_wait(&had, false, true, 10 * LTE_NO_ADDR_MS, LTE_NO_ADDR_MS) == LTE_PLAIN_DOWN, "then DOWN");
+}
+
 int main(void)
 {
     test_paths();
     test_backoff();
+    test_plain_wait();
     test_pulses();
     test_supervise();
     printf("test_lte_power: %s\n", failures ? "FAILED" : "ok");

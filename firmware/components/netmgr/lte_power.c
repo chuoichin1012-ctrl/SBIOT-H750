@@ -53,3 +53,12 @@ lte_action_t lte_backoff_step(lte_backoff_t *b)
 }
 
 void lte_backoff_ok(lte_backoff_t *b) { b->fails = 0; }
+
+lte_plain_t lte_plain_wait(bool *had, bool got, bool down, uint32_t elapsed_ms, uint32_t limit_ms)
+{
+    if (got)
+        *had = true;
+    if (*had)
+        return down ? LTE_PLAIN_DOWN : LTE_PLAIN_WAIT;
+    return elapsed_ms >= limit_ms ? LTE_PLAIN_NO_ADDR : LTE_PLAIN_WAIT;
+}

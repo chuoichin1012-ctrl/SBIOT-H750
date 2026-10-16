@@ -829,8 +829,13 @@ static void give_up(const char *why, const char *step)
     SLOG_E("edge", "Edge stays off: %s (%s)", why, step);
 }
 
+static bool s_enabled;  // edge_start ran: Edge was on at boot (Plan 10c)
+
+bool edge_enabled(void) { return s_enabled; }
+
 void edge_start(void)
 {
+    s_enabled = true;
     json_alloc_install();  // so every failed cJSON allocation of the load is counted (the web does it later too)
     // The model's text in a heap buffer for the load only, freed before the Edge tasks start (Plan 09c ruling 4).
     char *buf = malloc(CFG_EDGE_MAX + 1);

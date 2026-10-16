@@ -35,6 +35,10 @@ export function systemPortClash(system: Obj, port1: Obj | null, port2: Obj | nul
       if (p && listenOf(port) === p && !out[key]) out[key] = `UART${n} listens on TCP port ${p}, which ${what} uses: choose another port.`;
     }
   }
+  // The console listens only while it is on (websocketTarget 0 = off); then it cannot share the web's port.
+  const web = Number(system.webPort);
+  if (!out.websocketPort && Number(system.websocketTarget) > 0 && web && Number(system.websocketPort) === web)
+    out.websocketPort = `The web interface uses TCP port ${web}: choose another port for the WebSocket console.`;
   return out;
 }
 

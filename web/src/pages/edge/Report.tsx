@@ -1,5 +1,5 @@
 import { range } from '../../lib/device';
-import { templateError } from '../../lib/edge';
+import { reportModeError, templateError } from '../../lib/edge';
 import { templateError26k } from '../../lib/rules';
 import type { DeviceInfo, Values } from '../../lib/types';
 import { EN_DIS, QOS, topicError, type FieldDef } from '../../lib/validate';
@@ -9,7 +9,7 @@ const query = (v: Values) => Number(v.remoteAccess) === 1;
 const report = (v: Values) => Number(v.reporting) === 1;
 
 /** Fields of the "Query & report" tab. Alibaba/AWS/Azure channels were removed. */
-export function reportDefs(dev: DeviceInfo, nodeNames: string[]): FieldDef[] {
+export function reportDefs(dev: DeviceInfo, nodeNames: string[], anyOnChange: boolean): FieldDef[] {
   return [
     {
       id: 'channel', label: 'Send through', kind: 'select',
@@ -28,7 +28,7 @@ export function reportDefs(dev: DeviceInfo, nodeNames: string[]): FieldDef[] {
 
     {
       id: 'reporting', label: 'Data reporting', kind: 'select', options: EN_DIS,
-      check: (_, v) => report(v) && !v.periodic && !v.scheduled ? 'Choose periodic or scheduled reporting below.' : null,
+      check: (_, v) => (report(v) ? reportModeError(v, anyOnChange) : null),
     },
     { id: 'reportTopic', label: 'Report topic', kind: 'text', maxLength: 72, show: (v) => report(v) && mqtt(v), check: (t) => topicError(String(t), false) },
     { id: 'reportQos', label: 'Report QoS', kind: 'select', options: QOS, show: (v) => report(v) && mqtt(v) },

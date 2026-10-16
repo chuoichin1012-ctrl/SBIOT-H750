@@ -10,6 +10,8 @@
 void mqttgw_start(const cJSON *sys);
 /** /api/status mqtt.state: NOT RUNNING, CONNECTING, CONNECTED, REFUSED, NO CA CERTIFICATE, NO CLIENT CERTIFICATE,
  * NO MEMORY. */
+/** MQTT was on at boot (its config then): what /api/status reports until the restart (Plan 10c, Codex Minor 12). */
+bool mqttgw_enabled(void);
 void mqttgw_status(char *state, size_t len);
 /** A message into the outbox (Edge's reports and replies); false when MQTT does not run, the broker is away without
  * bufferOffline, or the outbox has no room. Never waits on the network. */

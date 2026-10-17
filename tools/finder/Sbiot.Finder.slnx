@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Sbiot.Finder.Protocol/Sbiot.Finder.Protocol.csproj" />
+  <Project Path="Sbiot.Finder.Tests/Sbiot.Finder.Tests.csproj" />
+</Solution>

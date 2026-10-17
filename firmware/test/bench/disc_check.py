@@ -1,6 +1,7 @@
 """Plan 12 bench: FinderTool's protocol against the board (spec 2026-10-17-lan-discovery-design.md §4).
 Windows sends the broadcasts (WSL is behind NAT): win_peer.py disc. Never sends `factory` (the SIM is locked:
-a factory reset sets priority 1 and LTE would attach). Leaves the board at 192.168.0.7.
+a factory reset sets priority 1 and LTE would attach). Leaves the board's network as it found it (Plan 11b: on
+the bench's routed LAN, DHCP or static; bench_env follows the address).
 
     python3 disc_check.py
 """
@@ -11,6 +12,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bench_env  # noqa: E402
 import board  # noqa: E402
 import bridge_check as bc  # noqa: E402  (peer, wait_peer, WIN)
 import web_check as w  # noqa: E402
@@ -66,6 +68,7 @@ def back(mac, boot, limit=120):
     while time.time() - t < limit:
         for f in search(mac):
             if f['boot'] > boot:
+                bench_env.set_board(f['eth']['ip'])  # a restart may bring a new DHCP lease (Plan 11b)
                 return f
         time.sleep(3)
     return None
@@ -130,7 +133,9 @@ def main():
     mac, boot = me['mac'], me['boot']
     home = me['net']  # the board's own saved settings: put back as they were
     away = dict(home, ipMode=1, ip='10.10.0.7', netmask='255.255.255.0', gateway='10.10.0.1')
-    check(me['eth']['ip'] == '192.168.0.7' and home['ip'] == '192.168.0.7' and me['web'] == 80 and me['model'] == 'SBIOT-H750',
+    home_ip = me['eth']['ip']
+    bench_env.set_board(home_ip)
+    check(home_ip == bc.GW and me['web'] == 80 and me['model'] == 'SBIOT-H750',
           'found: running and saved addresses, web port, model (%s)' % json.dumps(me))
     check(all(k in me for k in ('fw', 'hostname')), 'found: fw and hostname')
     check(search('02:00:00:00:00:01') == [], 'a search for another MAC: no reply')
@@ -148,13 +153,15 @@ def main():
         check(a is not None and a.get('ok') is True, 'set 10.10.0.7/24 (another subnet than Windows): ack ok')
         f = back(mac, boot)
         check(f is not None and f['eth']['ip'] == '10.10.0.7' and f['net'] == away,
-              'found again at 10.10.0.7 after its restart, from 192.168.0.10')
+              'found again at 10.10.0.7 after its restart, from %s' % bc.WIN)
         boot = f['boot'] if f else boot
     finally:
         a = command('set', mac, home)
-        check(a is not None and a.get('ok') is True, 'set back to 192.168.0.7: ack ok')
+        check(a is not None and a.get('ok') is True, 'set back to the saved settings: ack ok')
         f = back(mac, boot)
-        check(f is not None and f['eth']['ip'] == '192.168.0.7' and f['net'] == home, 'found again at 192.168.0.7, settings as before')
+        if f:
+            bench_env.set_board(f['eth']['ip'])
+        check(f is not None and f['net'] == home, 'found again at %s, settings as before' % (f['eth']['ip'] if f else '-'))
         boot = f['boot'] if f else boot
     _, net = w.get_json('/api/config/network')
     check(net == orig, 'network is exactly as before the bench: LTE fields, priority and the rest kept')

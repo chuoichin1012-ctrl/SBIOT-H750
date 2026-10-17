@@ -149,6 +149,19 @@ static void test_mon_line(void)
     CHECK(!strcmp(out, "TX not sent\n") && n == 12, "an empty TX record: the frame above did not go out (%s)", out);
 }
 
+// The console's drain waits for a client whose queue is full while it keeps reading, so the rest of a long write is
+// delivered, not dropped (Codex review r2); a client that has read nothing for WEB_MON_STUCK_MS no longer holds it.
+static void test_mon_wait(void)
+{
+    uint64_t since = 0;
+    CHECK(!web_mon_wait(100, 4096, &since, 1000) && since == 0, "room in the queue: no wait");
+    CHECK(web_mon_wait(4400, 4096, &since, 1000) && since == 1000, "a full queue: wait, from now");
+    CHECK(web_mon_wait(4400, 4096, &since, 1000 + WEB_MON_STUCK_MS - 1), "still full, not yet stuck: wait");
+    CHECK(!web_mon_wait(4400, 4096, &since, 1000 + WEB_MON_STUCK_MS), "full for the stuck time: no longer waited for");
+    CHECK(!web_mon_wait(10, 4096, &since, 9000) && since == 0, "it read again: counted from the next fill");
+    CHECK(web_mon_wait(5000, 4096, &since, 9100), "and waited for again");
+}
+
 static size_t s_chunks[4], s_nchunks;
 static void chunk(const uint8_t *d, size_t len, void *ctx)
 {
@@ -178,6 +191,7 @@ int main(void)
 {
     test_mon_line();
     test_mon_each();
+    test_mon_wait();
     test_send_stall();
     test_token();
     test_decode();

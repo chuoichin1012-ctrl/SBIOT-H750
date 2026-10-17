@@ -240,3 +240,14 @@ void web_mon_each(const uint8_t *data, size_t len, size_t max, void (*fn)(const 
         off += n;
     } while (off < len);
 }
+
+bool web_mon_wait(size_t queued, size_t high, uint64_t *full_since, uint64_t now_ms)
+{
+    if (queued < high) {
+        *full_since = 0;
+        return false;
+    }
+    if (!*full_since)
+        *full_since = now_ms;
+    return now_ms - *full_since < WEB_MON_STUCK_MS;
+}

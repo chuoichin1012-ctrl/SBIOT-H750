@@ -200,18 +200,38 @@ static void handler(struct mg_connection *c, int ev, void *ev_data)
     }
 }
 
+// A client's data: [0, 8) its accept time (the handshake limit), [8, 16) when its send queue filled (web_mon_wait).
+#define FULL_SINCE 8
+
+/** True while a client that keeps reading has a full queue: the next messages wait for the next poll, so the rest
+ * of a long write reaches it whole (Codex review r2). One that read nothing for WEB_MON_STUCK_MS holds no one. */
+static bool clients_behind(void)
+{
+    bool wait = false;
+    uint64_t now = ms_now();
+    for (struct mg_connection *x = s_mgr.conns; x; x = x->next) {
+        if (!x->is_websocket)
+            continue;
+        uint64_t since;
+        memcpy(&since, x->data + FULL_SINCE, sizeof since);
+        wait |= web_mon_wait(x->send.len, WEB_SEND_HIGH, &since, now);
+        memcpy(x->data + FULL_SINCE, &since, sizeof since);
+    }
+    return wait;
+}
+
 // After each poll: the log lines or the port's frames, as text, to every client that keeps reading.
 static void drain(void)
 {
     static char line[1 + SERIAL_FRAME_MAX] __attribute__((section(".axi_bss")));
     static char text[WEB_MON_LINE_MAX] __attribute__((section(".axi_bss")));
     size_t n;
-    while ((n = xMessageBufferReceive(s_mb, line, sizeof line, 0)) > 0) {
+    while (!clients_behind() && (n = xMessageBufferReceive(s_mb, line, sizeof line, 0)) > 0) {
         size_t tn = s_target == 3 ? 0 : web_mon_line(text, sizeof text, line[0] != 0, (const uint8_t *)line + 1, n - 1);
         for (struct mg_connection *x = s_mgr.conns; x; x = x->next) {
             if (!x->is_websocket)
                 continue;
-            if (x->send.len >= WEB_SEND_HIGH) {
+            if (x->send.len >= WEB_SEND_HIGH) {  // stuck: it reads nothing, so it gets nothing
                 s_dropped++;
                 continue;
             }

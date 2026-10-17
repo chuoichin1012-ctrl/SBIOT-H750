@@ -408,12 +408,13 @@ static void test_device_clock(void)
     const char *text = NULL;
     char buf[20];
     int64_t ms = clock_device_ms(0, 0, tz);
-    // sys_time and sys_unix_time in the gateway's time zone (the user, 2026-10-17), as the display shows it
+    // sys_time in the gateway's time zone, as the display shows it; sys_unix_time is UTC, as Unix time is (the user,
+    // 2026-10-17)
     CHECK(edge_sys_value(EDGE_SYS_TIME, ms, tz, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_TEXT && !strcmp(text, "2020-01-01 00:00:00"),
           "sys_time at power-on, UTC+7, no real time: the display's 2020-01-01 00:00:00 (%s)", text);
     CHECK(edge_sys_value(EDGE_SYS_UNIX_TIME, ms, tz, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_NUMBER &&
-              num == (double)(ms / 1000 + tz * 3600),
-          "sys_unix_time: its seconds, local");
+              num == (double)(ms / 1000),
+          "sys_unix_time: its seconds, UTC");
 }
 
 static void test_sys(void)
@@ -432,8 +433,8 @@ static void test_sys(void)
     CHECK(edge_sys_value(EDGE_SYS_TIME, ms, 7, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_TEXT && !strcmp(text, "2026-10-16 17:00:05"),
           "sys_time at UTC+7: local text (%s)", text);
     CHECK(edge_sys_value(EDGE_SYS_UNIX_TIME, ms, 7, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_NUMBER &&
-              num == (double)(ms / 1000 + 7 * 3600),
-          "sys_unix_time at UTC+7: shifted by the zone");
+              num == (double)(ms / 1000),
+          "sys_unix_time at UTC+7: the same UTC seconds, whatever the zone");
     CHECK(edge_sys_value(EDGE_SYS_TIME, ms, -5, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_TEXT && !strcmp(text, "2026-10-16 05:00:05"),
           "sys_time at UTC-5 (%s)", text);
     CHECK(edge_sys_value(EDGE_SYS_UNIX_TIME, 0, 7, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_NO_VALUE &&

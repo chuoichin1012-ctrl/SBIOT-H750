@@ -348,9 +348,9 @@ edge_kind_t edge_sys_value(int field, int64_t utc_ms, int tz_hours, const char *
     }
     if (utc_ms <= 0)
         return EDGE_NO_VALUE;  // no clock: the failure placeholder, never a made-up time
-    if (field == EDGE_SYS_UNIX_TIME)  // local, as sys_time (the user, 2026-10-17; the reference unit's are UTC)
-        return *num_out = (double)(utc_ms / 1000 + (int64_t)tz_hours * 3600), EDGE_NUMBER;
-    clock_format(utc_ms / 1000, tz_hours, buf);
+    if (field == EDGE_SYS_UNIX_TIME)  // UTC, as Unix time is: a server adds its own zone (the user, 2026-10-17)
+        return *num_out = (double)(utc_ms / 1000), EDGE_NUMBER;
+    clock_format(utc_ms / 1000, tz_hours, buf);  // local text, as the display (the user, 2026-10-17)
     return *text_out = buf, EDGE_TEXT;
 }
 

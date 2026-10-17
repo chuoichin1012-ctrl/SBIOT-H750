@@ -969,7 +969,7 @@ Chép từ `src/` ở gốc, rồi sửa trực tiếp:
   - Chạy trên đồng hồ này:
     - phần hiển thị (`/api/status` `time`, dòng trạng thái của console), kèm `clockSet: false` khi giờ chưa thật;
     - report theo `schedule`: hourly, 15 phút và mỗi phút tính từ lúc bật nguồn (chạy ngay trong phút đầu tiên); daily hh:mm là hh:mm sau khi bật nguồn;
-    - `sys_time` và `sys_unix_time` **theo múi giờ cài trên gateway** (người dùng, 2026-10-17; máy tham chiếu dùng UTC): `sys_time` là chuỗi giờ địa phương, `sys_unix_time` là số giây Unix cộng độ lệch múi giờ. Ví dụ ở UTC+7, lúc bật nguồn cả màn hình lẫn `sys_time` đều đọc 2020-01-01 00:00:00;
+    - `sys_time` là chuỗi **giờ địa phương theo múi giờ cài trên gateway** (người dùng, 2026-10-17; máy tham chiếu dùng GMT). `sys_unix_time` là số giây Unix, **theo UTC** như định nghĩa của Unix time, để server tự đổi theo múi giờ của nó. Ví dụ ở UTC+7, lúc bật nguồn cả màn hình lẫn `sys_time` đều đọc 2020-01-01 00:00:00, còn `sys_unix_time` là 1577811600 (2019-12-31 17:00:00 UTC);
     - 6 timer IO: một timer 08:00 chạy sau 8 giờ kể từ khi bật nguồn.
   - Khi giờ thật tới, đồng hồ nhảy sang giờ thật:
     - timer IO không bắn bù qua cú nhảy (giới hạn `IO_MAX_CATCH_UP_S`);

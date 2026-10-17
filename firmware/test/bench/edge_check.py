@@ -351,9 +351,9 @@ def case_basic():
     check(r.get('k') == 'const' and r.get('sn') == s['system']['sn'] and r.get('mac') == s['system']['mac'],
           'template constants kept, sys_sn and sys_mac filled')
     # No real time: the device clock (PR #28, spec §10.4): 2020-01-01 00:00 local at power-on plus the uptime; sys_time
-    # and sys_unix_time in the gateway's zone (the user, 2026-10-17), so from 2020-01-01 00:00 on (and before 2021).
+    # is local text from 2020-01-01 00:00, sys_unix_time its UTC seconds (the user, 2026-10-17), before 2021.
     ts, ut = r.get('ts'), r.get('ut')
-    check(isinstance(ts, str) and ts[:4] == '2020' and isinstance(ut, (int, float)) and 1577836800 <= ut < 1609459200,
+    check(isinstance(ts, str) and ts[:4] == '2020' and isinstance(ut, (int, float)) and 1577750400 <= ut < 1609459200,
           'no real time: sys_time and sys_unix_time carry the device clock (%r, %r)' % (ts, ut))
     check(full, 'status: every point read (%s)' % status_now)
     fc3 = [(a, n) for _, u, fc, a, n in slave.log if u == 5 and fc == 3]
@@ -417,8 +417,9 @@ def case_schedule():
     local = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=tz)).strftime('%Y-%m-%d %H:')
     check(got and isinstance(r.get('ut'), (int, float)) and r['ts'].startswith(local[:11]),
           'clock set: a report at the minute, sys_unix_time a number, sys_time local text (%s, first %s)' % (r, first))
-    check(got and abs(datetime.datetime.strptime(r['ts'], '%Y-%m-%d %H:%M:%S').replace(tzinfo=datetime.timezone.utc).timestamp() - r['ut']) < 1,
-          'sys_time and sys_unix_time agree (both local)')
+    check(got and abs(datetime.datetime.strptime(r['ts'], '%Y-%m-%d %H:%M:%S').replace(tzinfo=datetime.timezone.utc).timestamp()
+                      - tz * 3600 - r['ut']) < 1,
+          'sys_time (local) and sys_unix_time (UTC) agree')
 
 
 def connect(port=23):

@@ -651,6 +651,39 @@ store_err_t store_set_text(const char *name, const char *text, size_t len, char 
     return e;
 }
 
+store_err_t store_patch(const char *name, const cJSON *fields, char *err, size_t errlen)
+{
+    err[0] = '\0';
+    LOCK();  // held to the end, from the read to the write: store_set_text below nests (a recursive mutex on the board)
+    if (!store_known(name) || !strcmp(name, EDGE) || cfg_is_list(&s_env, name) || !cJSON_IsObject(fields)) {
+        UNLOCK();
+        snprintf(err, errlen, "Unknown settings \"%s\".", name ? name : "");
+        return STORE_ENOTFOUND;
+    }
+    int i = cache_find(name);
+    cJSON *doc = i >= 0 ? cJSON_ParseWithLength(s_pool + s_cache[i].off, s_cache[i].len) : NULL;
+    bool ok = doc != NULL;
+    for (const cJSON *f = fields->child; ok && f; f = f->next) {
+        cJSON *v = cJSON_Duplicate(f, true);
+        ok = v && (cJSON_GetObjectItemCaseSensitive(doc, f->string) ? cJSON_ReplaceItemInObjectCaseSensitive(doc, f->string, v)
+                                                                   : cJSON_AddItemToObject(doc, f->string, v));
+        if (!ok)
+            cJSON_Delete(v);
+    }
+    char *text = ok ? cJSON_PrintUnformatted(doc) : NULL;
+    cJSON_Delete(doc);
+    store_err_t e;
+    if (!text) {
+        snprintf(err, errlen, "The gateway does not have enough free memory to save these settings.");
+        e = STORE_ENOMEM;
+    } else {
+        e = store_set_text(name, text, strlen(text), err, errlen);
+    }
+    UNLOCK();
+    free(text);
+    return e;
+}
+
 // ---- edgeDevices -------------------------------------------------------------------------------
 
 // The one edgeDevices session (Plan 09c ruling 2): its records are written as the body arrives, under a

@@ -1,4 +1,4 @@
-# Tìm gateway trong LAN và cấu hình Ethernet bằng SBIOT Finder
+# Tìm gateway trong LAN và cấu hình Ethernet bằng FinderTool
 
 Ngày 2026-10-17. Người dùng yêu cầu chức năng giống *Windows configuration utility* của USR-M100: tìm thiết bị bằng broadcast, đổi cấu hình mạng, khởi động lại, khôi phục mặc định, mở Web UI. Spec chính: `2026-10-14-stm32-firmware-design.md` (§10.5 trỏ tới tài liệu này).
 
@@ -9,6 +9,7 @@ Ngày 2026-10-17. Người dùng yêu cầu chức năng giống *Windows config
 - **Quyết định của người dùng:**
   - tool riêng của SBIOT, giao thức do chúng ta định nghĩa; không tương thích với tool của USR;
   - app Windows có giao diện, viết bằng WinForms;
+  - tên app là **FinderTool** (`FinderTool.exe`); dùng logo và màu của SBIOT (logo từ `docs/SBIOT.ai`, nền trong suốt);
   - mọi gói đều gửi broadcast, kể cả lệnh gửi tới gateway đã tìm thấy;
   - **không có tài khoản hay mật khẩu**: gói đúng format quy định (§2.1) là gateway làm. Giữ tool đơn giản.
 - **Không làm:**
@@ -112,13 +113,13 @@ Mỗi gateway chờ ngẫu nhiên 0–200 ms (`board_rand32`), để các câu t
   - Web UI (`rules.ts`) từ chối 48600 ở mọi cổng local của port1/port2;
   - nếu một config cũ vẫn dùng cổng này, bridge bind thất bại và báo lỗi như mọi lần bind thất bại hiện nay; `disc` vẫn chạy.
 
-## 3. SBIOT Finder (Windows)
+## 3. FinderTool (Windows)
 
 - `stm32/tools/finder/`, .NET 10:
   - `Sbiot.Finder.Protocol` (`net10.0`): dựng và đọc gói, broadcast UDP theo từng adapter, ghép câu trả lời theo `id`;
   - `Sbiot.Finder` (`net10.0-windows`, WinForms): giao diện;
   - `Sbiot.Finder.Tests` (xUnit, `net10.0`): chạy được trên Linux/WSL.
-- **Phát hành:** `dotnet publish -r win-x64 --self-contained -p:PublishSingleFile=true`, ra một file `SbiotFinder.exe`, không cần cài đặt.
+- **Phát hành:** `dotnet publish -r win-x64 --self-contained -p:PublishSingleFile=true`, ra một file `FinderTool.exe`, không cần cài đặt.
 - **Cửa sổ chính:**
   - danh sách adapter IPv4 của PC. Tool bind socket vào địa chỉ của adapter được chọn rồi mới gửi broadcast, vì PC nhiều card thì broadcast mặc định có thể đi sai card;
   - nút **Search**: gửi `search` rồi chờ 2 s. Bảng hiện MAC, SN, IP (`eth`), hostname, model, firmware; mỗi MAC một dòng, lần trả lời sau thay lần trước;

@@ -205,7 +205,7 @@ export function PortPage(props: { path?: string; n?: string; tab?: string }) {
   };
   // The listen port's clash with the other UART or the web, shown on the field as it is edited (Plan 09b).
   const clash = checked ? listenClash(n, f.values, others.data!.other, others.data!.system) : null;
-  const disc = discPortClash(f.values);  // UDP 48600 is SBIOT Finder's (Plan 12)
+  const disc = discPortClash(f.values);  // UDP 48600 is FinderTool's (Plan 12)
   const errors: Record<string, string> = { ...f.errors, ...(clash ? { listenPort: clash } : {}), ...(disc ? { localPort: disc } : {}) };
   const p = { values: f.values, errors, onChange };
   const serialErr = serial.some((x) => errors[x.id]);

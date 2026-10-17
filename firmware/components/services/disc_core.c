@@ -1,4 +1,4 @@
-// SBIOT Finder's packets on the gateway (Plan 12, stm32/docs/specs/2026-10-17-lan-discovery-design.md §2):
+// FinderTool's packets on the gateway (Plan 12, stm32/docs/specs/2026-10-17-lan-discovery-design.md §2):
 // parse and check, the `found` and `ack` replies. Pure C, host-tested (test_disc_core).
 #include "disc_core.h"
 #include <stdio.h>

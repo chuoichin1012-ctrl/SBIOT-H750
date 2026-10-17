@@ -5,7 +5,7 @@ using Sbiot.Finder.Protocol;
 
 namespace Sbiot.Finder;
 
-/// <summary>SBIOT Finder (Plan 12, spec §3): pick the adapter, Search, act on the selected gateway.</summary>
+/// <summary>FinderTool (Plan 12, spec §3): pick the adapter, Search, act on the selected gateway.</summary>
 sealed class MainForm : Form
 {
     readonly ComboBox adapter = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 360 };
@@ -20,7 +20,7 @@ sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "SBIOT Finder";
+        Text = "FinderTool";
         Icon = Brand.AppIcon();
         BackColor = Color.White;
         search.BackColor = Brand.Blue;  // the main action, in the brand's blue as the Web UI's buttons

@@ -1,4 +1,4 @@
-"""Plan 12 bench: SBIOT Finder's protocol against the board (spec 2026-10-17-lan-discovery-design.md §4).
+"""Plan 12 bench: FinderTool's protocol against the board (spec 2026-10-17-lan-discovery-design.md §4).
 Windows sends the broadcasts (WSL is behind NAT): win_peer.py disc. Never sends `factory` (the SIM is locked:
 a factory reset sets priority 1 and LTE would attach). Leaves the board at 192.168.0.7.
 

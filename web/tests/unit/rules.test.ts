@@ -121,14 +121,14 @@ test('reporting only on change is allowed when a point reports on change (Plan 1
   assert.equal(reportModeError({ ...v, periodic: true }, false), null);
 });
 
-test('the local port 48600 is SBIOT Finder\'s', () => {
-  assert.equal(discPortClash({ workMode: 1, localPort: 48600 }), 'UDP port 48600 is reserved for SBIOT Finder: choose another local port.');
+test('the local port 48600 is FinderTool\'s', () => {
+  assert.equal(discPortClash({ workMode: 1, localPort: 48600 }), 'UDP port 48600 is reserved for FinderTool: choose another local port.');
   assert.equal(discPortClash({ workMode: 1, localPort: 4000 }), null);
   assert.equal(discPortClash({ workMode: 3, listenPort: 48600, localPort: 0 }), null);
 });
 
 test('a multicast UDP client without a local port binds its remote port: 48600 is refused there too', () => {
-  const m = 'UDP port 48600 is reserved for SBIOT Finder: choose another local port.';
+  const m = 'UDP port 48600 is reserved for FinderTool: choose another local port.';
   assert.equal(discPortClash({ workMode: 0, socketMode: 4, localPort: 0, remotePort: 48600 }), m);
   assert.equal(discPortClash({ workMode: 0, socketMode: 4, localPort: 5000, remotePort: 48600 }), null);
   assert.equal(discPortClash({ workMode: 0, socketMode: 0, localPort: 0, remotePort: 48600 }), null);

@@ -9,7 +9,7 @@ public sealed record Found(string Mac, string Sn, string Model, string Fw, strin
 
 public sealed record Ack(string Mac, bool Ok, string? Err);
 
-/// <summary>SBIOT Finder's packets (spec §2): built byte for byte as disc_vectors.json has them.</summary>
+/// <summary>FinderTool's packets (spec §2): built byte for byte as disc_vectors.json has them.</summary>
 public static class Packets
 {
     public const int Port = 48600;

@@ -274,7 +274,7 @@ Thang ưu tiên của FreeRTOS là 0–31 (`configMAX_PRIORITIES` = 32). `n` là
 | `mqtt_io` | 1 | 4 KB | 5 | Hai chiều: subscribe → serial, serial → outbox |
 | `web` | 1 | 8 KB | 5 | `mg_mgr` của `webPort` |
 | `console` | 1 | 4 KB | 5 | `mg_mgr` riêng của `websocketPort` |
-| `disc` | 1 | 6 KB (AXI) | 5 | SBIOT Finder: UDP 48600 trên Ethernet, tìm gateway, đổi cấu hình Ethernet, restart, factory reset (§10.5, Plan 12) |
+| `disc` | 1 | 6 KB (AXI) | 5 | FinderTool: UDP 48600 trên Ethernet, tìm gateway, đổi cấu hình Ethernet, restart, factory reset (§10.5, Plan 12) |
 | `edge_bus[n]` | 0–2 | 6 KB | 5 | Poll thiết bị trên bus của cổng n (chỉ tạo khi cổng có thiết bị) |
 | `edge_tcpN` | ≤ 5 | 5 KB | 5 | Mỗi thiết bị Modbus TCP một task |
 | `lte` | 1 | 6 KB | 5 | EC600U: nguồn, AT, CMUX, PPP, tín hiệu, phục hồi |
@@ -962,9 +962,9 @@ Chép từ `src/` ở gốc, rồi sửa trực tiếp:
   - **phần hiển thị** (giờ trên `/api/status` và dòng trạng thái của console) đọc 2020-01-01 00:00:00 cộng uptime, kèm `clockSet: false` (Plan 08b). Đây chỉ là hiển thị: TLS, timer IO, log và `sys_time` vẫn thấy "chưa có giờ". `POST /api/time` không nhận năm trước 2024, nên giờ hiển thị này không thể bị đặt lại vào đồng hồ.
 - Nguồn giờ giữ như ESP32: NTP hoặc `POST /api/time`. **Không thêm** RTC giữ giờ hay giờ mạng LTE.
 
-### 10.5 Tìm gateway trong LAN (SBIOT Finder)
+### 10.5 Tìm gateway trong LAN (FinderTool)
 
-Giao thức UDP 48600 để tìm gateway, đổi cấu hình Ethernet, restart và khôi phục mặc định, cùng tool Windows `SbiotFinder.exe`: xem `2026-10-17-lan-discovery-design.md`.
+Giao thức UDP 48600 để tìm gateway, đổi cấu hình Ethernet, restart và khôi phục mặc định, cùng tool Windows `FinderTool.exe`: xem `2026-10-17-lan-discovery-design.md`.
 
 ## 11. Bootloader, OTA và an toàn
 

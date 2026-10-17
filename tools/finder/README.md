@@ -1,4 +1,4 @@
-# SBIOT Finder
+# FinderTool
 
 A Windows tool that finds SBIOT gateways on the LAN, also ones in another subnet. It shows each gateway's MAC, SN, IP and firmware, and opens its Web UI. It can also change a gateway's Ethernet settings, restart it, or factory-reset it. It works like the configuration utility of the USR-M100.
 
@@ -6,7 +6,7 @@ Protocol and design: `stm32/docs/specs/2026-10-17-lan-discovery-design.md`. Gate
 
 ## Use
 
-1. Run `SbiotFinder.exe`. It is one self-contained file; nothing needs to be installed. On the first run, Windows asks whether to allow it through the firewall: allow it on private networks.
+1. Run `FinderTool.exe`. It is one self-contained file; nothing needs to be installed. On the first run, Windows asks whether to allow it through the firewall: allow it on private networks.
 2. Pick the network adapter that is on the gateways' LAN, then press **Search**. Every gateway on that switch answers within 2 s.
 3. To act on a gateway, select its row:
    - Double-click the row to open the gateway's Web UI.
@@ -32,6 +32,6 @@ dotnet test                       # the protocol tests; disc_vectors.json is sha
 dotnet publish Sbiot.Finder -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -o out
 ```
 
-`out/SbiotFinder.exe` (about 50 MB, compressed) is all you need to ship.
+`out/FinderTool.exe` (about 50 MB, compressed) is all you need to ship.
 
 The icon and the header logo are in `Sbiot.Finder/Resources`: `make_icon.py` builds them from `assets/app-icons/sbiot` and from `docs/SBIOT.ai` (page 2, the full-colour logo). Run it again only when the logo changes.

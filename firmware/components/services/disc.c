@@ -1,4 +1,4 @@
-// The `disc` task (Plan 12): SBIOT Finder's packets on UDP 48600, Ethernet only, every reply broadcast.
+// The `disc` task (Plan 12): FinderTool's packets on UDP 48600, Ethernet only, every reply broadcast.
 // Packet logic is disc_core's; here the socket, the store and the restart (spec §2.3-§2.4).
 #include "disc.h"
 #include <stdio.h>
@@ -99,7 +99,7 @@ static void handle(int fd, const char *buf, int n, uint16_t port)
         cJSON *f = disc_net_json(&q.net);
         store_err_t e = f ? store_patch("network", f, err, sizeof err) : STORE_ENOMEM;
         cJSON_Delete(f);
-        SLOG_W("disc", "network set by SBIOT Finder: %s %s (%s)", q.net.ip_mode ? "static" : "DHCP", q.net.ip,
+        SLOG_W("disc", "network set by FinderTool: %s %s (%s)", q.net.ip_mode ? "static" : "DHCP", q.net.ip,
                e == STORE_OK ? "saved, restarting" : "not saved");
         ack(fd, port, q.id, e == STORE_OK ? NULL : "store");
         if (e == STORE_OK)
@@ -107,12 +107,12 @@ static void handle(int fd, const char *buf, int n, uint16_t port)
         return;
     }
     case DISC_RESTART:
-        SLOG_W("disc", "restart requested by SBIOT Finder");
+        SLOG_W("disc", "restart requested by FinderTool");
         ack(fd, port, q.id, NULL);
         sysmgr_restart_later(1000);
         return;
     case DISC_FACTORY: {
-        SLOG_W("disc", "factory reset requested by SBIOT Finder");
+        SLOG_W("disc", "factory reset requested by FinderTool");
         store_err_t e = store_factory_reset();  // restarts the gateway itself in 1.5 s, whatever the result
         ack(fd, port, q.id, e == STORE_OK ? NULL : "store");
         return;
@@ -126,7 +126,7 @@ static int try_open(void)
 {
     int fd = open_socket();
     if (fd == -2 && !s_told) {
-        SLOG_E("disc", "cannot bind UDP port %u on Ethernet: SBIOT Finder will not find this gateway", DISC_PORT);
+        SLOG_E("disc", "cannot bind UDP port %u on Ethernet: FinderTool will not find this gateway", DISC_PORT);
         s_told = true;
     }
     return fd;

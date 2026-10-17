@@ -13,14 +13,14 @@ static class Brand
 
     public static Image Logo() => Image.FromStream(Res("sbiot-logo.png"));
 
-    /// <summary>The window's header: the logo on white, the tool's name, an orange rule below (as the Web UI's tabs).</summary>
+    /// <summary>The window's header: the logo on white, "FinderTool", an orange rule below (as the Web UI's tabs).</summary>
     public static Control Header()
     {
         var head = new Panel { Dock = DockStyle.Top, Height = 64, BackColor = Color.White, Padding = new Padding(12, 9, 12, 9) };
         var logo = new PictureBox { Image = Logo(), SizeMode = PictureBoxSizeMode.Zoom, Dock = DockStyle.Left, Width = 176 };
         var name = new Label
         {
-            Text = "Finder", AutoSize = false, Dock = DockStyle.Left, Width = 120, ForeColor = Blue,
+            Text = "FinderTool", AutoSize = false, Dock = DockStyle.Left, Width = 180, ForeColor = Blue,
             Font = new Font("Segoe UI", 16f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(10, 0, 0, 2),
         };
         var rule = new Panel { Dock = DockStyle.Bottom, Height = 3, BackColor = Orange };

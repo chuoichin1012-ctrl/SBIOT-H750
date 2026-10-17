@@ -246,7 +246,7 @@ static void init_task(void *arg)
         cJSON_Delete(pc);
     }
     bench_serial_init();
-    disc_start(sys);  // Plan 12: before the bridges, so UDP 48600 is SBIOT Finder's
+    disc_start(sys);  // Plan 12: before the bridges, so UDP 48600 is FinderTool's
     services_start(sys);  // spec §6.3 step 6: the bridges after serial, before the web
     if (webapi_start(sys))
         blog("app: web FAILED\r\n");

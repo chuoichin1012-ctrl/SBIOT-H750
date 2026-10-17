@@ -45,7 +45,7 @@ cJSON *store_get(const char *name);
 store_err_t store_set_text(const char *name, const char *text, size_t len, char *err, size_t errlen);
 /** Replaces (or adds) each member of the object `fields` in the object config `name`, keeping every other member
  *  (unknown keys too), then saves it as store_set_text does. The store lock is held from the read to the write, so
- *  a save from another task cannot fall between them (Plan 12, SBIOT Finder's `set`). STORE_ENOMEM writes nothing. */
+ *  a save from another task cannot fall between them (Plan 12, FinderTool's `set`). STORE_ENOMEM writes nothing. */
 store_err_t store_patch(const char *name, const cJSON *fields, char *err, size_t errlen);
 
 /**

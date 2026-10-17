@@ -10,6 +10,9 @@ MODE tcpserver  port, secs, delay_ms (listen only after), send_hex + send_ms (to
      udp        port, secs, send_hex + send_ms + to=host:port
      http       port, secs, reply (the body)
      mcast      group, port, iface, send_hex, send_ms
+     manyclients host, port, n, secs: n TCP connections held (Plan 11b)
+     slowget    host, port, secs: GET / of the UI read at 1 KB/s (Plan 11b)
+     tlsset     pm, p1, p2, secs, cert, key: three TLS listeners in one process, one clock (Plan 11b)
      disc       iface, port (48600), secs, send (the packet, hex): broadcast from iface, one event per reply (Plan 12)
      stuckpair  host, port, secs: two clients of a TCP server, one never reading, one logging what it got
      tlsserver  port, secs, cert, key (Windows paths), clientca (require a client certificate), send_hex +
@@ -427,8 +430,96 @@ def stuckpair(args):
     ok.close()
 
 
+
+def manyclients(args):
+    """host, port, n, secs: n TCP connections to host:port, held (Plan 11b, scenario A of spec §12.3)."""
+    socks = []
+    for i in range(int(args['n'])):
+        try:
+            socks.append(socket.create_connection((args['host'], int(args['port'])), 5))
+        except OSError as e:
+            out(ev='refused', i=i, err=str(e))
+    out(ev='connected', n=len(socks), port=int(args['port']))
+    while time.time() - T0 < float(args.get('secs', 60)):
+        time.sleep(0.5)
+    for c in socks:
+        c.close()
+
+
+def slowget(args):
+    """host, port, secs: GET / of the UI, read 1 KB a second (Plan 11b, scenario B)."""
+    c = socket.create_connection((args['host'], int(args.get('port', 80))), 10)
+    c.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+    c.sendall(b'GET / HTTP/1.1\r\nHost: gw\r\nAccept-Encoding: gzip\r\n\r\n')
+    c.settimeout(5)
+    got = 0
+    while time.time() - T0 < float(args.get('secs', 60)):
+        try:
+            d = c.recv(1024)
+        except socket.timeout:
+            continue
+        if not d:
+            break
+        got += len(d)
+        time.sleep(1)
+    out(ev='slow', got=got)
+    c.close()
+
+
+def tlsset(args):
+    """pm, p1, p2, secs, cert, key: three TLS listeners in one process, so their times share one clock (Plan 11b,
+    scenario B; Codex): pm (MQTT) completes the handshake and never answers (no CONNACK), p1 (UART1's TLS client)
+    holds the session, p2 answers HTTPS "OK". Events accept/hs/hsfail with the port and t."""
+    ctx = tls_ctx(args, [])
+    secs = float(args.get('secs', 60))
+
+    def conn(c, port, kind):
+        try:
+            t = ctx.wrap_socket(c, server_side=True)
+            out(ev='hs', port=port)
+            t.settimeout(1)
+            while time.time() - T0 < secs:
+                try:
+                    d = t.recv(4096)
+                except socket.timeout:
+                    continue
+                if not d:
+                    break
+                if kind == 'https' and b'\r\n\r\n' in d:
+                    t.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK')
+                    break
+        except (OSError, ssl.SSLError) as e:
+            out(ev='hsfail', port=port, err=str(e)[:80])
+        finally:
+            c.close()
+
+    def serve(port, kind):
+        ls = socket.socket()
+        ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        ls.bind(('0.0.0.0', port))
+        ls.listen(8)
+        ls.settimeout(0.2)
+        while time.time() - T0 < secs:
+            try:
+                c, _ = ls.accept()
+            except socket.timeout:
+                continue
+            out(ev='accept', port=port)
+            threading.Thread(target=conn, args=(c, port, kind), daemon=True).start()
+        ls.close()
+
+    ts = [threading.Thread(target=serve, args=(int(args[k]), kind), daemon=True)
+          for k, kind in (('pm', 'mqtt'), ('p1', 'tls'), ('p2', 'https'))]
+    for t in ts:
+        t.start()
+    out(ev='listen')
+    for t in ts:
+        t.join()
+
+
 if __name__ == '__main__':
     mode = sys.argv[1]
     a = dict(x.split('=', 1) for x in sys.argv[2:])
     {'tcpserver': tcpserver, 'udp': udp, 'http': http, 'mcast': mcast, 'stuckpair': stuckpair, 'tlsserver': tlsserver,
-     'https': https, 'mqttrelay': mqttrelay, 'disc': disc}[mode](a)
+     'https': https, 'mqttrelay': mqttrelay, 'disc': disc,
+     'manyclients': manyclients, 'slowget': slowget, 'tlsset': tlsset}[mode](a)

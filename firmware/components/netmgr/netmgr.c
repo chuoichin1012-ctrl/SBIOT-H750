@@ -370,3 +370,11 @@ void netmgr_status(net_status_t *out)
     pool(&out->udp_pcb, lwip_stats.memp[MEMP_UDP_PCB]);
     UNLOCK_TCPIP_CORE();
 }
+
+bool netmgr_eth_ifname(char out[6])
+{
+    LOCK_TCPIP_CORE();
+    bool ok = s_added && netif_index_to_name(netif_get_index(&s_netif), out) != NULL;
+    UNLOCK_TCPIP_CORE();
+    return ok;
+}

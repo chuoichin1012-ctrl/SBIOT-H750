@@ -13,6 +13,7 @@
 #include "lte.h"
 #include "lte_uart.h"
 #include "netmgr.h"
+#include "disc.h"
 #include "serial.h"
 #include "uart_drv.h"
 #include "sysmgr.h"
@@ -245,6 +246,7 @@ static void init_task(void *arg)
         cJSON_Delete(pc);
     }
     bench_serial_init();
+    disc_start(sys);  // Plan 12: before the bridges, so UDP 48600 is SBIOT Finder's
     services_start(sys);  // spec §6.3 step 6: the bridges after serial, before the web
     if (webapi_start(sys))
         blog("app: web FAILED\r\n");

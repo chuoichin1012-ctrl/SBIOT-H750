@@ -10,6 +10,7 @@ MODE tcpserver  port, secs, delay_ms (listen only after), send_hex + send_ms (to
      udp        port, secs, send_hex + send_ms + to=host:port
      http       port, secs, reply (the body)
      mcast      group, port, iface, send_hex, send_ms
+     disc       iface, port (48600), secs, send (the packet, hex): broadcast from iface, one event per reply (Plan 12)
      stuckpair  host, port, secs: two clients of a TCP server, one never reading, one logging what it got
      tlsserver  port, secs, cert, key (Windows paths), clientca (require a client certificate), send_hex +
                 send_ms (after the handshake), big=N (one send of N bytes after the handshake), silent=1 (accept
@@ -390,6 +391,20 @@ def mcast(args):
     out(ev='sent')
 
 
+def disc(args):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    s.bind((args['iface'], 0))  # the LAN adapter: the broadcast leaves by it, the replies come back to it
+    s.settimeout(0.1)
+    s.sendto(bytes.fromhex(args['send']), ('255.255.255.255', int(args.get('port', 48600))))
+    while time.time() - T0 < float(args.get('secs', 3)):
+        try:
+            d, a = s.recvfrom(2048)
+        except socket.timeout:
+            continue
+        out(ev='reply', text=d.decode('utf-8', 'replace'), peer=a[0])
+
+
 def stuckpair(args):
     """Two clients of the board's TCP server: one never reads (a tiny window), one reads and logs."""
     stuck = socket.socket()
@@ -416,4 +431,4 @@ if __name__ == '__main__':
     mode = sys.argv[1]
     a = dict(x.split('=', 1) for x in sys.argv[2:])
     {'tcpserver': tcpserver, 'udp': udp, 'http': http, 'mcast': mcast, 'stuckpair': stuckpair, 'tlsserver': tlsserver,
-     'https': https, 'mqttrelay': mqttrelay}[mode](a)
+     'https': https, 'mqttrelay': mqttrelay, 'disc': disc}[mode](a)

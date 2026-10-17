@@ -7,6 +7,10 @@
 
 #define FDB_REGION 0x100000u
 
+static volatile uint32_t s_erased;  // sectors erased since boot (store_progress)
+
+uint32_t fal_nor_erased(void) { return s_erased; }
+
 static nor_t *s_nor;
 
 static bool s_read_failed;
@@ -59,6 +63,7 @@ static int dev_erase(long off, size_t size)
             s_read_failed = true;
             return -1;
         }
+        s_erased++;
         store_port_progress();
     }
     return (int)size;

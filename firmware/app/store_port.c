@@ -8,6 +8,7 @@
 #include "blog.h"
 #include "now_us.h"
 #include "sysmgr.h"
+#include "store.h"
 #include "wdog.h"
 
 static StaticSemaphore_t s_mem;
@@ -17,7 +18,13 @@ void store_port_lock(void)
 {
     if (!s_lock)  // first used by init (store_init), before any other task touches the store
         s_lock = xSemaphoreCreateRecursiveMutexStatic(&s_mem);
-    xSemaphoreTakeRecursive(s_lock, portMAX_DELAY);
+    // In 1 s slices: while the holder makes progress (a factory reset or a GC erasing: store_progress) this wait
+    // is progress too and beats the waiter's heartbeat; a holder that stopped moving beats nothing, so the
+    // supervisor still restarts a stuck store (review 3 P2-3: disc or web waiting through a 40 s factory reset).
+    uint32_t seen = store_progress();
+    while (xSemaphoreTakeRecursive(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE)
+        if (store_wait_progressed(&seen))
+            wdog_hb_beat_self();
 }
 
 void store_port_unlock(void) { xSemaphoreGiveRecursive(s_lock); }

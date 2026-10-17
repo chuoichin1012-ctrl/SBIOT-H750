@@ -673,7 +673,14 @@ static void test_certs_and_factory_reset(void)
     free(model);
     store_log_append("a line to keep", 14);
     long erases = s_erases, progress = s_progress;
+    uint32_t seen = store_progress(), seen0 = seen;
+    CHECK(!store_wait_progressed(&seen), "no erase yet: a task waiting for the lock has nothing to report");
     CHECK(store_factory_reset() == STORE_OK, "factory reset");
+    // Review 3 P2-3: a task that waits for the store lock while the reset holds it beats only when the holder
+    // has erased since its last look (the board's store_port_lock), never unconditionally.
+    CHECK(store_progress() - seen0 == (uint32_t)(s_erases - erases), "the store counts every erase (%u)",
+          (unsigned)(store_progress() - seen0));
+    CHECK(store_wait_progressed(&seen) && !store_wait_progressed(&seen), "progress seen once, then nothing new");
     BALANCED("factory reset");
     CHECK(s_erases > erases && s_progress - progress == s_erases - erases,
           "every sector the reset erases reports progress (%ld of %ld)", s_progress - progress, s_erases - erases);

@@ -3,10 +3,11 @@
 // the unit tests run this file in Node as compiled (tests/unit/edgeModel.test.ts).
 import { ioPoints, uartOptions } from './device.js';
 import {
-  DATA_TYPES, MAX_DEVICES, MAX_ETH, FUNCTION_CODES, SOURCES, VIRTUAL_FC, allNodeNames, dataTypesFor, exposedSpan, exposedUnit,
-  fixedName, formulaError, ioRegister, isReserved, modbusAddress, nameError, regsOf,
+  DATA_TYPES, LINKAGE_CONDITIONS, MAX_DEVICES, MAX_ETH, FUNCTION_CODES, SOURCES, VIRTUAL_FC, allNodeNames, dataTypesFor,
+  exposedSpan, exposedUnit, fixedName, formulaError, ioRegister, isFollow, isReserved, modbusAddress, nameError, regsOf,
+  usesLower, usesUpper,
 } from './edge.js';
-import type { DeviceInfo, EdgeNode, EdgeSlave, Values } from './types.js';
+import type { DeviceInfo, EdgeNode, EdgeSlave, LinkageEvent, Values } from './types.js';
 import { formErrors, type FieldDef, type Options } from './validate.js';
 
 export const polled = (s: EdgeSlave) => s.source === 'uart' || s.source === 'eth';
@@ -201,3 +202,55 @@ export function modelErrors(dev: DeviceInfo, slaves: EdgeSlave[], ioAddr: number
   return out;
 }
 
+const ACTIONS: Options = [[0, 'No action'], [1, 'Open (NO)'], [2, 'Close (NC)'], [3, 'Toggle']];
+const choices = (list: string[]): Options => list.map((x) => [x, x] as const);
+
+/** Accepts integers and decimals; thresholds are not whole numbers only. */
+const decimal = (min: number, max: number) => (v: unknown) => {
+  const n = Number(v);
+  return v === '' || !Number.isFinite(n) ? 'Enter a number.' : n < min || n > max ? `Enter ${min}–${max}.` : null;
+};
+
+/** One linkage event's fields (the Linkage dialog, and the check Save runs: review 3 P2-2). */
+export function linkageDefs(e: LinkageEvent, names: string[], taken: string[], outputs: string[]): FieldDef[] {
+  return [
+    { id: 'name', label: 'Event name', kind: 'text', maxLength: 16, required: true, check: (v) => nameError(String(v), taken) },
+    { id: 'enable', label: 'Active', kind: 'check', help: 'Run this event' },
+    // An inactive event needs no point or output (Codex): turning it off is how an event broken by an import is kept.
+    { id: 'point', label: 'Watch point', kind: 'select', options: choices(names), placeholder: 'Choose…', required: !!e.enable },
+    { id: 'cond', label: 'Trigger when', kind: 'select', options: LINKAGE_CONDITIONS },
+    { id: 'lower', label: 'Lower threshold', kind: 'text', required: true, show: () => usesLower(e.cond), check: decimal(-1e9, 1e9), help: 'AI points are in µA, 0–20000' },
+    {
+      id: 'upper', label: 'Upper threshold', kind: 'text', required: true, show: () => usesUpper(e.cond), check: (v) =>
+        decimal(-1e9, 1e9)(v) ?? (usesLower(e.cond) && Number(v) < Number(e.lower) ? 'Must be at least the lower threshold.' : null),
+    },
+    { id: 'output', label: 'Output', kind: 'select', options: choices(outputs), placeholder: 'Choose…', required: !!e.enable },
+    { id: 'action', label: 'Output action', kind: 'select', options: ACTIONS, show: () => !isFollow(e.cond) },
+    { id: 'cycle', label: 'Check every', kind: 'number', min: 0, max: 10000, unit: 'ms' },
+    { id: 'minInterval', label: 'Minimum gap between triggers', kind: 'number', min: 500, max: 10000, unit: 'ms' },
+    { id: 'desc', label: 'Description', kind: 'text', maxLength: 64 },
+  ];
+}
+
+/** Every active linkage event checked against the model as it is now (review 3 P2-2): a CSV import may drop the
+ *  point an event watches, and the gateway then skips the event at boot while the UI still shows it on. */
+export function linkageErrors(dev: DeviceInfo, slaves: EdgeSlave[], linkage: LinkageEvent[]): string[] {
+  const names = allNodeNames(slaves);
+  const outputs = ioPoints(dev, 'do');
+  const out: string[] = [];
+  linkage.forEach((e, i) => {
+    if (!e.enable) return;
+    const taken = linkage.filter((_, k) => k !== i).map((x) => x.name);
+    const errs = importErrors(linkageDefs(e, names, taken, outputs), e as unknown as Values);
+    for (const [id, msg] of Object.entries(errs)) out.push(`${e.name}: ${id}: ${msg}`);
+  });
+  return out;
+}
+
+/** The IO page's Modbus address against the saved Edge model (review 3 P2-1): a slave ID another device is
+ *  answered on or mapped to (the router picks the first match, so a write would reach the IO). No baseline to go
+ *  stale (Codex): a clash at the address chosen is refused whenever it is chosen. */
+export function ioAddressClash(dev: DeviceInfo, slaves: EdgeSlave[], addr: number): string | null {
+  const clash = modelErrors(dev, slaves, addr).find((e) => e.includes(`Slave ID ${addr} `));
+  return clash ? `Slave ID ${addr} clashes with the Edge model: ${clash}` : null;
+}

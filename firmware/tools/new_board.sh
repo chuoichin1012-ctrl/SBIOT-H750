@@ -61,7 +61,7 @@ bound=$(grep 'flash: bound to' <<<"$out") || fail "bind printed no record"
 step "flash: bootloader and app, the console read through the first boot (${SBIOT_COM:-COM4})"
 # The first boot after flash.sh's reset is the one to check: it seeds the factory firmware from this app. The console
 # is opened first, so that boot is read from its first line.
-(cd "$fw/test/bench" && FLASH="$tools/flash.sh" BUILD="$dir" python3 "$tools/new_board_check.py") ||
+FLASH="$tools/flash.sh" BUILD="$dir" python3 "$tools/new_board_check.py" ||
     fail "the first boot is not as expected (see above)"
 
 if [ "$rdp" = 1 ]; then

@@ -27,5 +27,11 @@ class Judge(unittest.TestCase):
         self.assertFalse(all(nb.judge([l for l in NEW if l != 'bind: ok']).values()), 'no bind line')
 
 
+class Launch(unittest.TestCase):
+    def test_board_module_found_from_tools(self):  # new_board.sh runs it as tools/new_board_check.py (Codex r2)
+        b = nb.load_board()
+        self.assertTrue(callable(getattr(b, 'listen', None)) and callable(getattr(b, 'hard_reset', None)))
+
+
 if __name__ == '__main__':
     unittest.main()

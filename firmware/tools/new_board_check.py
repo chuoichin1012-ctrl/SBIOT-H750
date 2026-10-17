@@ -1,6 +1,6 @@
 """new_board.sh's check: runs `flash.sh both` with the UART7 console open and reads the first boot after it. A new
 board seeds its factory firmware from the app just flashed; the record is checked, the app starts, the store mounts,
-and nothing halts or fails. Run from stm32/firmware/test/bench (board.py); FLASH and BUILD from the environment.
+and nothing halts or fails. FLASH and BUILD come from the environment.
 Exit 0 when all of it holds."""
 import os
 import subprocess
@@ -21,8 +21,15 @@ def judge(lines):
     }
 
 
+def load_board():
+    """test/bench/board.py (the console over the ST-Link's COM port), from wherever this script is run."""
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'test', 'bench'))
+    import board
+    return board
+
+
 def main():
-    import board  # test/bench/board.py: the console over the ST-Link's COM port
+    board = load_board()
     flash = lambda: subprocess.run([os.environ['FLASH'], 'both', os.environ['BUILD']], check=True)
     lines = [l for _, l in board.listen(90, during=flash)]
     for l in lines:

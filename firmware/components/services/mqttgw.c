@@ -255,6 +255,10 @@ bool mqttgw_publish(const char *topic, const void *data, size_t len, int qos, bo
     return topic && enqueue(topic, strlen(topic), data, len, qos, retain);
 }
 
+static void (*volatile s_on_connect)(void);
+
+void mqttgw_on_connect(void (*fn)(void)) { s_on_connect = fn; }
+
 bool mqttgw_add_listener(const char *topic, int qos, mqttgw_rx_fn fn)
 {
     if (!s_running || !topic || !*topic)
@@ -501,6 +505,9 @@ static bool dial(void)
         drop_connection();
         return false;
     }
+    void (*up)(void) = s_on_connect;
+    if (up)
+        up();  // Edge: the current values once (outside review 3)
     return true;
 }
 

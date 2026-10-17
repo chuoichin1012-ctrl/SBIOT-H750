@@ -5,6 +5,7 @@ import type { Options } from './validate';
 
 export const MAX_NODES = 200; // across all slaves (Plan 09e)
 export const MAX_ETH = 5; // Modbus TCP sources
+export const MAX_DEVICES = 64; // edgeDevices entries the firmware loads (cfgmodel.c)
 export const MAX_EVENTS = 10; // linkage events
 
 const NAME = /^[A-Za-z0-9_.-]{1,16}$/;
@@ -379,5 +380,6 @@ export function fromCsv(text: string, dev: DeviceInfo): { slaves: EdgeSlave[]; e
   if (dup.length) errors.push(`Duplicate point names: ${[...new Set(dup)].join(', ')}.`);
   if (names.length > MAX_NODES) errors.push(`The file has ${names.length} points; the limit is ${MAX_NODES}.`);
   if (slaves.filter((s) => s.source === 'eth').length > MAX_ETH) errors.push(`At most ${MAX_ETH} Modbus TCP devices.`);
+  if (slaves.length > MAX_DEVICES) errors.push(`The file has ${slaves.length} devices; the limit is ${MAX_DEVICES}.`);
   return { slaves, errors };
 }

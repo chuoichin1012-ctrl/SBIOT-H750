@@ -17,6 +17,7 @@
   "include": [
     "tests/unit/*.ts",
     "src/lib/rules.ts",
-    "src/lib/validate.ts"
+    "src/lib/validate.ts",
+    "src/lib/edgeModel.ts"
   ]
 }

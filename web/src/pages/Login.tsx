@@ -35,11 +35,11 @@ export function LoginPage(props: { reason?: string }) {
           )}
 
           <div class="mt-5 space-y-4">
-            <Stacked label="User name" htmlFor="login-user">
-              <TextInput id="login-user" autocomplete="username" autoFocus maxLength={16} value={user} onInput={setUser} />
+            <Stacked label="User name" htmlFor="login-user" required>
+              <TextInput id="login-user" required autocomplete="username" autoFocus maxLength={16} value={user} onInput={setUser} />
             </Stacked>
-            <Stacked label="Password" htmlFor="login-pass" error={error ?? undefined} alert>
-              <PasswordInput id="login-pass" autocomplete="current-password" maxLength={16} value={password}
+            <Stacked label="Password" htmlFor="login-pass" error={error ?? undefined} alert required>
+              <PasswordInput id="login-pass" required autocomplete="current-password" maxLength={16} value={password}
                 onInput={setPassword} errorId={error ? 'login-pass-err' : undefined} />
             </Stacked>
           </div>

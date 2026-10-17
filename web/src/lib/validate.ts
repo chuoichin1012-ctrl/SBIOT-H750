@@ -17,9 +17,11 @@ export interface FieldDef {
   /** Also accept 0 outside [min, max] (e.g. "0 or 60..65535"). */
   zeroOk?: boolean;
   maxLength?: number;
+  /** Must be filled in; shown with a `*`. A required select must hold one of its options. */
   required?: boolean;
   unit?: string;
   help?: string;
+  /** Text: the hint inside an empty input. Select: the entry shown until a choice is made ("Choose…"). */
   placeholder?: string;
   /** Monospace input (topics, hex, formulas). */
   mono?: boolean;
@@ -88,13 +90,23 @@ export function topicError(topic: string, subscribe: boolean): string | null {
   return null;
 }
 
+export const optionsOf = (def: FieldDef, values: Values): Options =>
+  typeof def.options === 'function' ? def.options(values) : def.options ?? [];
+
+/** Fields that cannot be left empty: numbers and addresses always, others when flagged. */
+export const isRequired = (def: FieldDef) => !!def.required || def.kind === 'number' || def.kind === 'ipv4';
+
 export function fieldError(def: FieldDef, values: Values): string | null {
   const v = values[def.id];
+  if ((def.kind === 'select' || def.kind === 'radio') && def.required) {
+    // Also catches a choice that has gone away, e.g. a point renamed since the event was saved.
+    if (!optionsOf(def, values).some(([o]) => String(o) === String(v ?? ''))) return 'Choose one.';
+  }
   if (def.kind === 'check' || def.kind === 'select' || def.kind === 'radio' || def.kind === 'flags') {
     return def.check ? def.check(v, values) : null;
   }
   const s = String(v ?? '').trim();
-  if (!s) return def.required || def.kind === 'number' || def.kind === 'ipv4' ? 'Required.' : null;
+  if (!s) return isRequired(def) ? 'Required.' : null;
   // Bytes, as the firmware's buffers count them: "é" takes two (Codex 09b review).
   if (def.maxLength && new TextEncoder().encode(String(v ?? '')).length > def.maxLength) return `Use at most ${def.maxLength} bytes (an accented letter takes 2).`;
   if (def.kind === 'number') {
@@ -119,7 +131,7 @@ export function coerce(values: Values, defs: FieldDef[]): Values {
     else if (d.kind === 'number' || d.kind === 'flags') {
       if (typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))) out[d.id] = Number(v);
     } else if (d.kind === 'select' || d.kind === 'radio') {
-      const opts = typeof d.options === 'function' ? d.options(out) : d.options ?? [];
+      const opts = optionsOf(d, out);
       if (typeof opts[0]?.[0] === 'number' && typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))) out[d.id] = Number(v);
     }
   }

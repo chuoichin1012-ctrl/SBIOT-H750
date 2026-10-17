@@ -5,7 +5,7 @@
 import type { ComponentChildren } from 'preact';
 import { useState } from 'preact/hooks';
 import type { Val, Values } from '../lib/types';
-import type { FieldDef, Options } from '../lib/validate';
+import { isRequired, optionsOf, type FieldDef, type Options } from '../lib/validate';
 import { Button } from './ui';
 
 // ---- Primitives ------------------------------------------------------------
@@ -15,6 +15,8 @@ interface Common {
   disabled?: boolean;
   /** Error text id, for aria-describedby; also marks the control invalid. */
   errorId?: string;
+  /** Announced to screen readers; the visible `*` is on the label. */
+  required?: boolean;
   'aria-label'?: string;
 }
 
@@ -22,16 +24,29 @@ const a11y = (p: Common) => ({
   id: p.id,
   disabled: p.disabled,
   'aria-label': p['aria-label'],
+  'aria-required': p.required || undefined,
   'aria-invalid': p.errorId ? true : undefined,
   'aria-describedby': p.errorId,
 });
 
-/** Select whose value keeps the option type (number options give numbers). */
-export function Select(props: Common & { value: Val | undefined; options: Options; onChange: (v: string | number) => void; class?: string }) {
+/**
+ * Select whose value keeps the option type (number options give numbers). With a `placeholder`, a value
+ * that is not one of the options shows the placeholder, which cannot be picked from the list.
+ */
+export function Select(props: Common & {
+  value: Val | undefined;
+  options: Options;
+  onChange: (v: string | number) => void;
+  placeholder?: string;
+  class?: string;
+}) {
   const numeric = typeof props.options[0]?.[0] === 'number';
+  const value = String(props.value ?? '');
+  const known = props.options.some(([v]) => String(v) === value);
   return (
-    <select {...a11y(props)} class={`input ${props.class ?? ''}`} value={String(props.value ?? '')}
+    <select {...a11y(props)} class={`input ${props.class ?? ''}`} value={props.placeholder !== undefined && !known ? '' : value}
       onChange={(e) => props.onChange(numeric ? Number(e.currentTarget.value) : e.currentTarget.value)}>
+      {props.placeholder !== undefined && <option value="" disabled hidden>{props.placeholder}</option>}
       {props.options.map(([v, label]) => <option key={v} value={String(v)}>{label}</option>)}
     </select>
   );
@@ -102,11 +117,19 @@ const Message = (props: { id?: string; error?: string; help?: string; alert?: bo
     <p class="mt-1 text-[13px] text-muted">{props.help}</p>
   ) : null;
 
+/** The label text, with a `*` when the field cannot be left empty. */
+const LabelText = (props: { label: string; required?: boolean }) => (
+  <>
+    {props.label}
+    {props.required && <span class="ml-0.5 text-led-err" aria-hidden="true">*</span>}
+  </>
+);
+
 /** Label left, control right; the standard settings row. */
-export function Row(props: { label: string; htmlFor?: string; help?: string; error?: string; children: ComponentChildren }) {
+export function Row(props: { label: string; htmlFor?: string; help?: string; error?: string; required?: boolean; children: ComponentChildren }) {
   return (
     <div class="grid gap-x-6 gap-y-1 border-b border-line/70 py-2.5 last:border-b-0 sm:grid-cols-[minmax(0,14rem)_minmax(0,1fr)]">
-      <label for={props.htmlFor} class="pt-1.5 text-muted">{props.label}</label>
+      <label for={props.htmlFor} class="pt-1.5 text-muted"><LabelText label={props.label} required={props.required} /></label>
       <div class="min-w-0 max-w-md">
         {props.children}
         <Message id={props.htmlFor && `${props.htmlFor}-err`} error={props.error} help={props.help} />
@@ -123,12 +146,13 @@ export function Stacked(props: {
   error?: string;
   /** Announce the error when it appears (errors shown after a submit). */
   alert?: boolean;
+  required?: boolean;
   children: ComponentChildren;
   class?: string;
 }) {
   return (
     <div class={`min-w-0 ${props.class ?? ''}`}>
-      <label for={props.htmlFor} class="mb-1 block text-[13px] text-muted">{props.label}</label>
+      <label for={props.htmlFor} class="mb-1 block text-[13px] text-muted"><LabelText label={props.label} required={props.required} /></label>
       {props.children}
       <Message id={props.htmlFor && `${props.htmlFor}-err`} error={props.error} help={props.help} alert={props.alert} />
     </div>
@@ -137,9 +161,6 @@ export function Stacked(props: {
 
 // ---- FieldDef rendering ------------------------------------------------------
 
-const optionsOf = (def: FieldDef, values: Values): Options =>
-  typeof def.options === 'function' ? def.options(values) : def.options ?? [];
-
 export function Control(props: { def: FieldDef; values: Values; error?: string; idPrefix?: string; onChange: (id: string, v: Val) => void }) {
   const { def, values, onChange } = props;
   const v = values[def.id];
@@ -147,12 +168,13 @@ export function Control(props: { def: FieldDef; values: Values; error?: string; 
     id: `${props.idPrefix ?? 'f-'}${def.id}`,
     disabled: def.disabled?.(values) ?? false,
   };
+  common.required = isRequired(def) && !common.disabled;
   if (props.error) common.errorId = `${common.id}-err`;
   const set = (x: Val) => onChange(def.id, x);
 
   switch (def.kind) {
     case 'select':
-      return <Select {...common} value={v} options={optionsOf(def, values)} onChange={set} />;
+      return <Select {...common} value={v} options={optionsOf(def, values)} placeholder={def.placeholder} onChange={set} />;
     case 'check':
       return (
         <div class="pt-1.5">
@@ -219,6 +241,7 @@ export function Fields(props: {
 }) {
   const prefix = props.idPrefix ?? 'f-';
   const visible = props.defs.filter((d) => !d.show || d.show(props.values));
+  const required = (def: FieldDef) => isRequired(def) && !def.disabled?.(props.values);
   const control = (def: FieldDef) => (
     <Control def={def} values={props.values} error={props.errors[def.id]} idPrefix={prefix} onChange={props.onChange} />
   );
@@ -234,7 +257,7 @@ export function Fields(props: {
                 label={def.label} onChange={(on) => props.onChange(def.id, on)} />
             </div>
           ) : (
-            <Stacked key={def.id} label={def.label} htmlFor={`${prefix}${def.id}`} error={props.errors[def.id]}
+            <Stacked key={def.id} label={def.label} htmlFor={`${prefix}${def.id}`} error={props.errors[def.id]} required={required(def)}
               class={def.wide ? 'sm:col-span-2' : ''}>
               {control(def)}
             </Stacked>
@@ -246,7 +269,7 @@ export function Fields(props: {
   return (
     <>
       {visible.map((def) => (
-        <Row key={def.id} label={def.label} htmlFor={`${prefix}${def.id}`} error={props.errors[def.id]} help={hint(def)}>
+        <Row key={def.id} label={def.label} htmlFor={`${prefix}${def.id}`} error={props.errors[def.id]} help={hint(def)} required={required(def)}>
           {control(def)}
         </Row>
       ))}

@@ -201,23 +201,34 @@ static uint64_t rx_quiet_since(sport_t *p)
     return ts_get(&p->last_rx_us);
 }
 
-// 485 collision avoidance: wait until nothing was received for rs485IdleTime.
-static void wait_idle_bus(sport_t *p)
+// 485 collision avoidance: wait until nothing was received for rs485IdleTime. False when the bus did not
+// go quiet that long within the idle time plus `timeout_ms`: nothing is sent then (a busy bus is never
+// talked over).
+static bool wait_idle_bus(sport_t *p, uint32_t timeout_ms)
 {
     if (!p->anticollision || !p->idle_ms)
-        return;
-    for (int guard = 0; guard < 200; guard++) {
+        return true;
+    const uint64_t until = now_us() + ((uint64_t)p->idle_ms + timeout_ms) * 1000u;
+    for (;;) {
         uint64_t since = rx_quiet_since(p);  // first: it may stamp now
-        uint64_t quiet_ms = (now_us() - since) / 1000u;
+        uint64_t now = now_us();
+        uint64_t quiet_ms = now > since ? (now - since) / 1000u : 0;
         if (quiet_ms >= p->idle_ms)
-            return;
-        vTaskDelay(ticks((uint32_t)(p->idle_ms - quiet_ms + 1)));
+            return true;
+        if (now >= until)
+            return false;
+        uint32_t need_ms = (uint32_t)(p->idle_ms - quiet_ms + 1), left_ms = (uint32_t)((until - now + 999u) / 1000u);
+        vTaskDelay(ticks(need_ms < left_ms ? need_ms : left_ms));
     }
 }
 
 static int send_raw(sport_t *p, const uint8_t *data, size_t len, uint32_t timeout_ms)
 {
-    wait_idle_bus(p);
+    if (!wait_idle_bus(p, timeout_ms)) {
+        SLOG_W("serial", "UART%d: the 485 bus was not idle for %lu ms, %u bytes not sent", p->n, (unsigned long)p->idle_ms,
+               (unsigned)len);
+        return -1;
+    }
     int r = uart_drv_write(p->n, data, len, timeout_ms);
     if (r == 0)
         p->tx += (uint32_t)len;
@@ -234,7 +245,7 @@ int serial_write(int port, const uint8_t *data, size_t len, uint32_t timeout_ms)
         return -1;
     if (xSemaphoreTake(p->bus, ticks(timeout_ms)) != pdTRUE) {
         SLOG_W("serial", "UART%d busy for %lu ms, %u bytes not sent", port, (unsigned long)timeout_ms, (unsigned)len);
-        return -1;
+        return SERIAL_BUSY;
     }
     int r = send_raw(p, data, len, timeout_ms);
     ts_set(&p->reply_until_us, now_us() + (uint64_t)p->reply_window_ms * 1000u);

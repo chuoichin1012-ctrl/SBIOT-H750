@@ -383,3 +383,60 @@ export function fromCsv(text: string, dev: DeviceInfo): { slaves: EdgeSlave[]; e
   if (slaves.length > MAX_DEVICES) errors.push(`The file has ${slaves.length} devices; the limit is ${MAX_DEVICES}.`);
   return { slaves, errors };
 }
+
+// ---- the stored model, as the firmware reads it ----------------------------------------------------------
+
+// cfgmodel.c ITEM_SLAVE and ITEM_NODE: what the gateway's loader starts each device and point from.
+const ITEM_SLAVE = { name: 'Device1', source: 'uart', uart: 1, ip: '192.168.0.201', ethPort: 502, protocol: 'modbus', addr: '1',
+  poll: 1000, mapEn: false, mapAddr: 1, merge: false };
+const ITEM_NODE = { name: 'Node1', fc: 3, reg: 0, di: '00000000', dtype: 'uint16', timeout: 200, onChange: false, range: 1,
+  mapEn: false, mapAddr: 0, formula: '', ioPoint: '', ioReport: 0, upper: 0, lower: 0 };
+
+/** One field as cfgmodel's take() coerces it: a bool from a bool, a nonzero number, "1" or "true"; a number from a
+ *  number, a bool or a numeric string; text from text. Anything else keeps the item's value. */
+function coerce(base: unknown, v: unknown): unknown {
+  if (v === undefined || v === null) return base;
+  if (typeof base === 'boolean') {
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'number') return v !== 0;
+    if (typeof v === 'string') return v === '1' || v === 'true';
+    return base;
+  }
+  if (typeof base === 'number') {
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (typeof v === 'boolean') return v ? 1 : 0;
+    if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) return Number(v);
+    return base;
+  }
+  return typeof v === 'string' ? v : base;
+}
+
+function overlay<T extends Record<string, unknown>>(base: T, raw: unknown): T {
+  const src = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(base)) out[k] = coerce(base[k], src[k]);
+  return out as T;
+}
+
+/** edgeDevices as GET returns them, read as the gateway's loader reads them: every field the dialogs need, a missing
+ *  one from cfgmodel's item defaults, the loader's coercions. The UI writes whole documents, but a stored one may
+ *  come from elsewhere (the bench, an API client). */
+export function normalizeSlaves(raw: unknown): EdgeSlave[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((d) => {
+    const nodes = d && typeof d === 'object' && Array.isArray((d as { nodes?: unknown }).nodes) ? (d as { nodes: unknown[] }).nodes : [];
+    const slave = { ...overlay(ITEM_SLAVE, d), nodes: nodes.map((n) => overlay(ITEM_NODE, n)) } as unknown as EdgeSlave;
+    // The loader's names and registers for the built-in IO and the calculated device (cfgmodel.c, Codex r2).
+    const fixed = fixedName(slave.source);
+    if (fixed) slave.name = fixed;
+    if (slave.source === 'io') {
+      slave.nodes = slave.nodes.map((n) => {
+        const r = ioRegister(n.ioPoint);
+        return r ? { ...n, name: n.ioPoint, fc: r.fc, reg: r.reg, dtype: r.dtype } : n;
+      });
+    } else if (slave.source === 'virtual') {
+      slave.nodes = slave.nodes.map((n) => ({ ...n, fc: VIRTUAL_FC }));
+    }
+    return slave;
+  });
+}

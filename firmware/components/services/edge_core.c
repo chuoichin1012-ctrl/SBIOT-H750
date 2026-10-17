@@ -291,20 +291,22 @@ int edge_link_step(edge_link_t *l, int64_t now_ms, bool valid, double value, boo
     if (!valid)
         return EDGE_DO_KEEP;  // a failed point never drives an output
     bool state = edge_condition(l->cond, value, l->lower, l->upper);
-    if (now_ms - l->last_fire < l->min_ms)
-        return EDGE_DO_KEEP;
+    bool rose = state && !l->last_state;
+    l->last_state = state;  // every valid check is recorded; minInterval only holds back the action (outside review)
+    bool waiting = l->has_fired && now_ms - l->last_fire < l->min_ms;
     int act = EDGE_DO_KEEP;
     if (l->cond <= 1) {  // follow / opposite: the output mirrors the condition
-        if (do_now != state) {
+        if (!waiting && do_now != state) {
             act = state ? EDGE_DO_ON : EDGE_DO_OFF;
             l->last_fire = now_ms;
+            l->has_fired = true;
         }
-    } else if (state && !l->last_state) {  // a threshold: act when it becomes true
+    } else if (rose && !waiting) {  // a threshold: act when it becomes true; an edge during the wait is dropped
         act = l->action == 1 ? EDGE_DO_OFF : l->action == 2 ? EDGE_DO_ON : l->action == 3 ? (do_now ? EDGE_DO_OFF : EDGE_DO_ON) : EDGE_DO_KEEP;
         *fired = true;
         l->last_fire = now_ms;
+        l->has_fired = true;
     }
-    l->last_state = state;
     return act;
 }
 

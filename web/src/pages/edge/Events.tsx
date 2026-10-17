@@ -2,10 +2,10 @@ import { useState } from 'preact/hooks';
 import type { EdgeConfig } from '../../lib/api';
 import { ioPoints, useDevice } from '../../lib/device';
 import { LINKAGE_CONDITIONS, MAX_EVENTS, allNodeNames, blankLinkage } from '../../lib/edge';
-import { linkageDefs } from '../../lib/edgeModel';
+import { linkageCondition, linkageDefs, linkageOutput } from '../../lib/edgeModel';
 import type { LinkageEvent } from '../../lib/types';
 import { confirmAction } from '../../components/feedback';
-import { Button, ItemList, Notice, Panel } from '../../components/ui';
+import { Button, DataTable, Led, Notice, Panel, type Column } from '../../components/ui';
 import { EditDialog } from './EditDialog';
 
 /** Numeric text fields are kept as strings while typing; store numbers. */
@@ -19,7 +19,7 @@ function EventList<T extends { name: string; enable: boolean; desc: string }>(pr
   title: string;
   noun: string;
   items: T[];
-  summary: (e: T) => string;
+  columns: Column<T>[];
   canAdd: boolean;
   blocked?: string;
   onAdd: () => void;
@@ -39,14 +39,14 @@ function EventList<T extends { name: string; enable: boolean; desc: string }>(pr
       }
     >
       {props.blocked && <p class="px-4 pt-3 text-[13px] text-muted">{props.blocked}</p>}
-      <ItemList items={props.items} keyOf={(e) => e.name} empty={`No ${props.noun}s yet.`}
-        render={(e, i) => ({
-          led: e.enable ? 'ok' : 'off',
-          title: e.name,
-          detail: `${props.summary(e)}${e.desc ? `. ${e.desc}` : ''}`,
-          onEdit: () => props.onEdit(i),
-          onDelete: () => props.onDelete(i),
-        })} />
+      <DataTable rows={props.items} keyOf={(e) => e.name} empty={`No ${props.noun}s yet.`}
+        onEdit={props.onEdit} onDelete={props.onDelete}
+        columns={[
+          { head: 'On', cell: (e) => <Led state={e.enable ? 'ok' : 'off'} label={<span class="sr-only">{e.enable ? 'on' : 'off'}</span>} /> },
+          { head: 'Name', cell: (e) => <span class="font-medium">{e.name}</span> },
+          ...props.columns,
+          { head: 'Description', cell: (e) => <span class="text-muted">{e.desc}</span> },
+        ]} />
     </Panel>
   );
 }
@@ -69,7 +69,12 @@ export function Linkage(props: { cfg: EdgeConfig; onChange: (cfg: EdgeConfig) =>
         items={cfg.linkage}
         canAdd={names.length > 0 && outputs.length > 0}
         blocked={!names.length ? 'Add points under Data acquisition first.' : !outputs.length ? 'This unit has no digital outputs.' : undefined}
-        summary={(e) => `${e.point}: ${cond(e.cond)} → ${e.output}`}
+        columns={[
+          { head: 'Point', cell: (e) => e.point },
+          { head: 'Condition', cell: (e) => <span title={cond(e.cond)}>{linkageCondition(e)}</span> },
+          { head: 'Output', cell: (e) => linkageOutput(e) },
+          { head: 'Check / gap', cell: (e) => `${e.cycle} / ${e.minInterval} ms` },
+        ]}
         onAdd={() => setEdit('new')}
         onEdit={setEdit}
         onDelete={async (i) => {

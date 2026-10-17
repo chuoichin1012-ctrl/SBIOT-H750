@@ -110,7 +110,7 @@ typedef struct {
     int cond, cycle_ms, min_ms, out, action;
     double lower, upper;
     int64_t next_check, last_fire;
-    bool last_state;
+    bool last_state, has_fired;  // has_fired: minInterval counts from a trigger, so none before the first
     struct edge_pt *pt;  // what it watches (edge_rt)
     char name[EDGE_NAME_MAX], desc[65];
 } edge_link_t;

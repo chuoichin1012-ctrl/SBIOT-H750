@@ -102,3 +102,28 @@ export function edgeBodyError(slaves: unknown): string | null {
     ? `The devices and points take ${n.toLocaleString('en-US').replace(/,/g, ' ')} bytes; the gateway takes at most 96 000. Remove points or shorten names and formulas.`
     : null;
 }
+
+/** Whether an MQTT filter matches a topic, as the broker and mqtt_topic_match do: "+" one level, "#" the rest
+ *  (the parent level too). */
+export function topicMatches(filter: string, topic: string): boolean {
+  if (topic.startsWith('$') && (filter.startsWith('+') || filter.startsWith('#'))) return false;  // broker internals
+  const f = filter.split('/');
+  const t = topic.split('/');
+  for (let i = 0; i < f.length; i++) {
+    if (f[i] === '#') return true;
+    if (i >= t.length) return false;
+    if (f[i] !== '+' && f[i] !== t[i]) return false;
+  }
+  return f.length === t.length;
+}
+
+/** Edge's remote query over MQTT: a request topic that also matches the reply topic would hear its own replies
+ *  as requests (outside review 2). */
+export function replyLoopError(report: Obj): string | null {
+  if (Number(report.channel) !== 0 || Number(report.remoteAccess) !== 1) return null;
+  const req = String(report.requestTopic ?? '');
+  const rep = String(report.replyTopic ?? '');
+  return req && rep && topicMatches(req, rep)
+    ? 'The request topic also matches the reply topic: replies would come back as requests. Use separate branches, e.g. …/request/# and …/reply.'
+    : null;
+}

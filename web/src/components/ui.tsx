@@ -232,6 +232,8 @@ export interface Column<T> {
   head: string;
   cell: (row: T, i: number) => ComponentChildren;
   align?: 'right';
+  /** Kept on one line (addresses). */
+  nowrap?: boolean;
 }
 
 export function DataTable<T>(props: {
@@ -241,10 +243,13 @@ export function DataTable<T>(props: {
   empty?: ComponentChildren;
   onEdit?: (i: number) => void;
   onDelete?: (i: number) => void;
+  /** Rows to pick from: the first cell selects its row, the selected one is shaded. */
+  selected?: number;
+  onSelect?: (i: number) => void;
 }) {
   if (!props.rows.length && props.empty) return <Empty>{props.empty}</Empty>;
   const actions = props.onEdit || props.onDelete;
-  const align = (c: Column<T>) => (c.align === 'right' ? 'text-right' : '');
+  const align = (c: Column<T>) => `${c.align === 'right' ? 'text-right' : ''} ${c.nowrap ? 'whitespace-nowrap' : ''}`;
   return (
     <div class="overflow-x-auto">
       <table class="w-full text-left">
@@ -256,8 +261,16 @@ export function DataTable<T>(props: {
         </thead>
         <tbody class="num">
           {props.rows.map((r, i) => (
-            <tr key={props.keyOf(r, i)} class="border-b border-line/70 last:border-b-0">
-              {props.columns.map((c) => <td key={c.head} class={`px-4 py-2 ${align(c)}`}>{c.cell(r, i)}</td>)}
+            <tr key={props.keyOf(r, i)} class={`border-b border-line/70 last:border-b-0 ${props.selected === i ? 'bg-canvas' : ''}`}>
+              {props.columns.map((c, k) => (
+                <td key={c.head} class={`px-4 py-2 ${align(c)}`}>
+                  {k === 0 && props.onSelect ? (
+                    <button type="button" class="text-left" onClick={() => props.onSelect!(i)} aria-pressed={props.selected === i}>
+                      {c.cell(r, i)}
+                    </button>
+                  ) : c.cell(r, i)}
+                </td>
+              ))}
               {actions && (
                 <td class="px-4 py-2 text-right whitespace-nowrap">
                   <span class="inline-flex gap-1.5">

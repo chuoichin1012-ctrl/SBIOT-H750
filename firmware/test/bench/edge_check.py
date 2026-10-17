@@ -795,6 +795,39 @@ def case_mqtt():
         brk.stop()
 
 
+def case_resync():
+    """Outside review 3: once MQTT connects again, Edge sends the current values, also with on-change reports only and
+    nothing changed (a change queued while away may have expired in the outbox, its baseline moved on)."""
+    import mqtt_check as mc
+    brk = mc.main_broker().start()
+    slave = None
+    try:
+        r = mc.relay(25)
+        ok = mc.post('mqtt', mc.mqtt_cfg(retryInterval=3)) and mc.post('mqttPublish', []) and mc.post('mqttSubscribe', [])
+        check(ok and setup([plc()], report={'channel': 0, 'reporting': 1, 'periodic': False, 'reportTopic': 'edge/report',
+                                            'reportQos': 1, 'template': json.dumps({'t': 't'})}),
+              'set up: channel 0 (MQTT), on-change reports only, template {"t": "t"}')
+        slave = BusSlave()
+        slave.start()
+        sub = mc.Sub('edge/report', qos=1)
+        check(wait(lambda: sub.payloads('edge/report'), 20), 'the first report (t had no reported value)')
+        bc.wait_peer(r, 1)  # the relay ends: MQTT is away
+        check(wait(lambda: mc.state() != 'CONNECTED', 20), 'MQTT away (%s)' % mc.state())
+        n0 = len(sub.payloads('edge/report'))
+        r = mc.relay(30)
+        check(wait(lambda: mc.state() == 'CONNECTED', 20), 'MQTT connected again')
+        got = wait(lambda: len(sub.payloads('edge/report')) > n0, 10)
+        last = sub.payloads('edge/report')[-1] if sub.payloads('edge/report') else b'{}'
+        check(got and json.loads(last).get('t') == 25, 'after the reconnect, a report of the current values, nothing changed (%s)' % last)
+        sub.stop()
+        bc.wait_peer(r, 1)
+    finally:
+        if slave:
+            slave.close()
+        mc.post('mqtt', mc.mqtt_cfg(enabled=0, host=''))
+        brk.stop()
+
+
 def case_memory():
     nodes = lambda n, base, **kw: [dict({'name': '%s%d' % (base, i), 'reg': 20 + i, 'timeout': 300}, **kw) for i in range(n)]
     devs = [plc(nodes=nodes(80, 'p')), {'name': 'b2', 'addr': '9', 'uart': 2, 'poll': 2000, 'nodes': nodes(60, 'q')}]
@@ -860,8 +893,8 @@ def case_onedevice():
         slave, tcp = start_all(secs=45)
         full = wait(lambda: status() == 'RUNNING 200/200', 25, 0.5)
         state = status()
-        time.sleep(max(0, 32 - 25))  # the headroom is logged once, 30 s in
-        m = wait(lambda: re.search(r'edge: stack headroom: (.*) bytes', log_text()), 10, 1)
+        # the headroom is logged once, 30 s after Edge starts: waited for, not timed (the log reads fast since Plan 11b)
+        m = wait(lambda: re.search(r'edge: stack headroom: (.*) bytes', log_text()), 45, 1)
         slave.close()
         bc.wait_peer(tcp, 1)
         rooms = dict(re.findall(r'(edge_\w+) (\d+)', m.group(1))) if m else {}
@@ -871,7 +904,7 @@ def case_onedevice():
 
 CASES = {'basic': case_basic, 'change': case_change, 'schedule': case_schedule, 'remote': case_remote, 'split': case_split,
          'gwrtu': case_gwrtu, 'contention': case_contention, 'dead': case_dead, 'late': case_late, 'shortreport': case_shortreport,
-         'partial': case_partial, 'bigreport': case_bigreport, 'memory': case_memory, 'di': case_di, 'mqtt': case_mqtt,
+         'partial': case_partial, 'bigreport': case_bigreport, 'memory': case_memory, 'di': case_di, 'mqtt': case_mqtt, 'resync': case_resync,
          'onedevice': case_onedevice}
 
 

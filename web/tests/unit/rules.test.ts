@@ -1,7 +1,7 @@
 // Unit tests for src/lib/rules.ts (Plan 09b T4): npm run test:unit (tsc to CommonJS, then node --test).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { EDGE_BODY_MAX, REPORT_MAX, body, discPortClash, edgeBodyError, listenClash, systemPortClash, templateError26k, templateSize } from '../../src/lib/rules.js';
+import { EDGE_BODY_MAX, REPORT_MAX, body, discPortClash, edgeBodyError, listenClash, replyLoopError, systemPortClash, templateError26k, templateSize, topicMatches } from '../../src/lib/rules.js';
 import { reportModeError, templateError } from '../../src/lib/edge.js';
 import { convertData, fieldError } from '../../src/lib/validate.js';
 
@@ -132,4 +132,26 @@ test('a multicast UDP client without a local port binds its remote port: 48600 i
   assert.equal(discPortClash({ workMode: 0, socketMode: 4, localPort: 0, remotePort: 48600 }), m);
   assert.equal(discPortClash({ workMode: 0, socketMode: 4, localPort: 5000, remotePort: 48600 }), null);
   assert.equal(discPortClash({ workMode: 0, socketMode: 0, localPort: 0, remotePort: 48600 }), null);
+});
+
+test('an MQTT filter matches topics as a broker does (+ one level, # the rest, the parent too)', () => {
+  assert.equal(topicMatches('sbiot/gw/#', 'sbiot/gw/reply'), true);
+  assert.equal(topicMatches('sbiot/gw/#', 'sbiot/gw'), true);
+  assert.equal(topicMatches('#', 'a/b'), true);
+  assert.equal(topicMatches('sbiot/+/reply', 'sbiot/gw/reply'), true);
+  assert.equal(topicMatches('sbiot/+', 'sbiot/gw/reply'), false);
+  assert.equal(topicMatches('sbiot/gw/request/#', 'sbiot/gw/reply'), false);
+  assert.equal(topicMatches('sbiot/gw/reply', 'sbiot/gw/reply'), true);
+  assert.equal(topicMatches('sbiot/gw/reply', 'sbiot/gw/Reply'), false);
+  assert.equal(topicMatches('#', '$device/reply'), false);  // $ topics never match a leading wildcard (mqttutil.c)
+  assert.equal(topicMatches('+/reply', '$device/reply'), false);
+  assert.equal(topicMatches('$device/#', '$device/reply'), true);
+});
+
+test('a request topic that also matches the reply topic is refused: replies would come back as requests (outside review 2)', () => {
+  const q = { channel: 0, remoteAccess: 1, requestTopic: 'sbiot/gw/#', replyTopic: 'sbiot/gw/reply' };
+  assert.match(replyLoopError(q) ?? '', /reply/);
+  assert.equal(replyLoopError({ ...q, requestTopic: 'sbiot/gw/request/#' }), null);
+  assert.equal(replyLoopError({ ...q, remoteAccess: 0 }), null);  // no remote query: no request topic
+  assert.equal(replyLoopError({ ...q, channel: 1 }), null);  // over a UART socket: no topics
 });

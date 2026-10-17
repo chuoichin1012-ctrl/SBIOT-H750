@@ -661,11 +661,12 @@ static edge_kind_t slot_value(void *ctx, void *slot, double *v, const char **out
     return edge_sys_value((int)(s - s_sys_handle), sysmgr_now_ms(), sysmgr_serial(), s_mac, APP_VERSION, v, out_text, buf);
 }
 
-static void report(const char *why)
+/** One report of every slot's current value; true once it is handed over (MQTT's outbox or the bridge). */
+static bool report(const char *why)
 {
     static int64_t s_warned;
     if (!s_tmpl || !s_report || !cache_lock())
-        return;
+        return false;
     size_t n = edge_tmpl_render(s_tmpl, slot_value, NULL, s_report, s_report_max);
     for (int i = 0; n && i < s_npts; i++) {
         M.snap_value[i] = M.pts[i].value;
@@ -674,7 +675,7 @@ static void report(const char *why)
     cache_unlock();
     if (!n) {
         SLOG_W("edge", "report (%s) did not fit in %u bytes", why, (unsigned)s_report_max);
-        return;
+        return false;
     }
     bool ok = R.channel > 0 ? bridge_send(R.channel, (const uint8_t *)s_report, n)
                             : mqttgw_publish(R.report_topic, s_report, n, R.report_qos, R.report_retain);
@@ -687,15 +688,27 @@ static void report(const char *why)
             else
                 SLOG_W("edge", "report (%s) not sent: UART%d's socket has no peer", why, R.channel);
         }
-        return;
+        return false;
     }
     if (!cache_lock())
-        return;
+        return true;
     for (int i = 0; i < s_npts; i++) {
         M.pts[i].reported = M.snap_value[i];
         M.pts[i].reported_valid = M.snap_valid[i];
     }
     cache_unlock();
+    return true;
+}
+
+// MQTT connected (again): the next report carries the current values, whatever changed or not. A change sent while
+// MQTT was away may have expired in the outbox after its baseline moved on (outside review 3). Kept until a report
+// is handed over: an outbox still full is tried again at the next wake.
+static volatile bool s_resync;
+
+static void mqtt_up(void)
+{
+    s_resync = true;
+    report_soon();
 }
 
 // ---- tasks ----------------------------------------------------------------------------------------------
@@ -804,8 +817,13 @@ static void rpt_task(void *arg)
             wait = 10000;  // a long interval in slices: the next report is still due at next_periodic
         if (wait < 1)
             wait = 1;
-        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait)))
+        bool woke = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait));
+        if (s_resync) {
+            if (report("reconnect"))  // a whole report: it carries any change too
+                s_resync = false;
+        } else if (woke) {
             report("change");
+        }
         if (R.periodic && now_ms() >= next_periodic) {
             next_periodic += (int64_t)R.interval_s * 1000;  // fixed cadence, no drift
             if (next_periodic < now_ms())
@@ -1009,6 +1027,8 @@ void edge_start(void)
     if (R.reporting && s_tmpl)
         s_tasks[s_ntasks++] = s_rpt_task = xTaskCreateStatic(rpt_task, "edge_rpt", c.stack_bytes[task] / sizeof(StackType_t), NULL, PRIO_RPT, M.stacks[task],
                                        M.tcbs[task]);
+    if (s_rpt_task && R.channel == 0)
+        mqttgw_on_connect(mqtt_up);
     // mqttgw_start ran first (Plan 09 ruling 10): the listener is subscribed on each connect.
     if (R.channel == 0 && R.remote && !mqttgw_add_listener(R.req_topic, R.req_qos, mqtt_remote))
         SLOG_W("edge", "remote access over MQTT is off: MQTT does not run, or the request topic is empty");

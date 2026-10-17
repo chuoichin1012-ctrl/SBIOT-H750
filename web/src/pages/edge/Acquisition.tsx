@@ -3,12 +3,12 @@ import type { EdgeConfig } from '../../lib/api';
 import { useDevice } from '../../lib/device';
 import {
   DATA_TYPES, MAX_DEVICES, MAX_NODES, VIRTUAL_FC, allNodeNames, blankNode, blankSlave, exposedSpan, fixedName, fromCsv, ioRegister, isReserved,
-  modbusAddress, nextName, nodeCount, readText, referencesTo, sourceLabel, toCsv,
+  modbusAddress, nextName, nodeCount, readText, referencesTo, toCsv,
 } from '../../lib/edge';
-import { modelErrors, nodeDefs, polled, slaveDefs } from '../../lib/edgeModel';
+import { modelErrors, nodeDefs, slaveDefs } from '../../lib/edgeModel';
 import type { EdgeNode, EdgeSlave } from '../../lib/types';
 import { confirmAction, toast } from '../../components/feedback';
-import { Button, DataTable, Empty, ItemList, Panel } from '../../components/ui';
+import { Button, DataTable, Empty, Panel } from '../../components/ui';
 import { edgeBodyError } from '../../lib/rules';
 import { EditDialog } from './EditDialog';
 
@@ -102,7 +102,7 @@ export function Acquisition(props: { cfg: EdgeConfig; ioAddr: number; problems: 
         </div>
       )}
 
-      <div class="grid gap-x-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+      <div class="grid gap-x-4 lg:grid-cols-2">
         <Panel title="Devices" flush
           aside={
             <span class="flex items-center gap-3">
@@ -111,16 +111,17 @@ export function Acquisition(props: { cfg: EdgeConfig; ioAddr: number; problems: 
                 onClick={() => setEditing({ kind: 'slave', index: null })}>Add device</Button>
             </span>
           }>
-          <ItemList items={cfg.slaves} keyOf={(s) => s.name} empty="Add the first device the gateway should read from."
-            render={(s, i) => ({
-              title: s.name,
-              detail: `${sourceLabel(s)}${polled(s) ? `, address ${s.addr}` : s.source === 'virtual' ? `, slave ID ${s.addr}`
-                : s.source === 'io' ? `, slave ID ${ioAddr}` : ''}${s.mapEn ? ` → ${s.mapAddr}` : ''}, ${s.nodes.length} points`,
-              selected: i === sel,
-              onSelect: () => setSel(i),
-              onEdit: () => setEditing({ kind: 'slave', index: i }),
-              onDelete: () => removeSlave(i),
-            })} />
+          <DataTable rows={cfg.slaves} keyOf={(s) => s.name} empty="Add the first device the gateway should read from."
+            selected={sel} onSelect={setSel}
+            onEdit={(i) => setEditing({ kind: 'slave', index: i })} onDelete={removeSlave}
+            columns={[
+              { head: 'Name', cell: (s) => <span class="font-medium">{s.name}</span> },
+              {
+                head: 'Port', nowrap: true,
+                cell: (s) => (s.source === 'uart' ? `UART${s.uart}` : s.source === 'eth' ? `${s.ip}:${s.ethPort}` : s.source === 'io' ? 'IO' : 'Calculated'),
+              },
+              { head: 'Address', nowrap: true, cell: (s) => `${s.source === 'io' ? ioAddr : s.addr}${s.mapEn ? ` → ${s.mapAddr}` : ''}` },
+            ]} />
         </Panel>
 
         <Panel

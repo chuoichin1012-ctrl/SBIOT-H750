@@ -330,6 +330,23 @@ static void test_link(void)
     CHECK(edge_link_step(&mi, 1000, true, 60, false, &fired) == EDGE_DO_ON, "fires");
     edge_link_step(&mi, 1100, true, 10, true, &fired);
     CHECK(edge_link_step(&mi, 1200, true, 60, true, &fired) == EDGE_DO_KEEP && !fired, "minInterval holds it back");
+    // A condition gone false during minInterval is still seen (outside review, 2026-10-17): ON >= 50, OFF <= 45 on
+    // the same point, checked every 1 s, minInterval 5 s. At 14 s the OFF event acts; ON sees its condition false.
+    edge_link_t on = {.enable = true, .cond = 2, .lower = 50, .action = 2, .cycle_ms = 1000, .min_ms = 5000};
+    CHECK(edge_link_step(&on, 10000, true, 60, false, &fired) == EDGE_DO_ON && fired, "ON at 10 s");
+    CHECK(edge_link_step(&on, 14000, true, 40, false, &fired) == EDGE_DO_KEEP && !fired, "14 s: false, in the wait");
+    CHECK(edge_link_step(&on, 15000, true, 60, false, &fired) == EDGE_DO_ON && fired,
+          "15 s: true again after the wait: ON acts (the false at 14 s was recorded)");
+    // An edge inside the wait is dropped, not kept for later: the condition must go false and true again.
+    edge_link_t d = {.enable = true, .cond = 2, .lower = 50, .action = 2, .cycle_ms = 1000, .min_ms = 5000};
+    edge_link_step(&d, 10000, true, 60, false, &fired);
+    edge_link_step(&d, 11000, true, 40, true, &fired);
+    CHECK(edge_link_step(&d, 12000, true, 60, true, &fired) == EDGE_DO_KEEP && !fired, "an edge in the wait: dropped");
+    CHECK(edge_link_step(&d, 16000, true, 60, false, &fired) == EDGE_DO_KEEP && !fired, "and not acted on after the wait");
+    // A condition true from the first check, before minInterval has run since boot, still acts: the gap counts from
+    // a trigger, and there was none (Codex review).
+    edge_link_t first = {.enable = true, .cond = 2, .lower = 50, .action = 2, .cycle_ms = 1000, .min_ms = 10000};
+    CHECK(edge_link_step(&first, 2000, true, 60, false, &fired) == EDGE_DO_ON && fired, "true at the first check: acts");
     edge_link_t g = {.enable = true, .cond = 2, .lower = 50, .action = 3};
     CHECK(edge_link_step(&g, 0, true, 60, true, &fired) == EDGE_DO_OFF, "toggle");
     edge_link_t off = {.enable = false, .cond = 0};

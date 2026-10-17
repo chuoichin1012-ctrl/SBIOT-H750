@@ -20,3 +20,5 @@ bool mqttgw_publish(const char *topic, const void *data, size_t len, int qos, bo
  * once when connected, and again after each connect. False when MQTT does not run or the table is full. */
 typedef void (*mqttgw_rx_fn)(const uint8_t *data, size_t len);
 bool mqttgw_add_listener(const char *topic, int qos, mqttgw_rx_fn fn);
+/** fn runs in the `mqtt` task after each successful connect; it must not wait (Edge only raises a flag). */
+void mqttgw_on_connect(void (*fn)(void));

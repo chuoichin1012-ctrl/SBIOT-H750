@@ -1,8 +1,8 @@
 // Unit tests for src/lib/edgeModel.ts: the whole-model checks Save runs (code review P2-2, P2-3, P2-4).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_DEVICES, allNodeNames, blankLinkage, blankNode, blankSlave, fromCsv, toCsv } from '../../src/lib/edge.js';
-import { ioAddressClash, linkageDefs, linkageErrors, modelErrors, slaveDefs } from '../../src/lib/edgeModel.js';
+import { MAX_DEVICES, allNodeNames, blankLinkage, blankNode, blankSlave, fromCsv, normalizeSlaves, toCsv } from '../../src/lib/edge.js';
+import { ioAddressClash, linkageCondition, linkageDefs, linkageErrors, linkageOutput, modelErrors, slaveDefs } from '../../src/lib/edgeModel.js';
 import type { DeviceInfo, EdgeSlave, Values } from '../../src/lib/types.js';
 import { formErrors } from '../../src/lib/validate.js';
 
@@ -94,4 +94,62 @@ test('an active event that names a point no longer in the model blocks Save', ()
   const off = { ...ev, enable: false };
   const dialog = formErrors(linkageDefs(off, allNodeNames(imported), [], ['DO1', 'DO2']), off as unknown as Values);
   assert.equal(Object.keys(dialog).join(','), '', 'unticking Active passes Done');
+});
+
+test('a stored Edge model with missing fields is read as the firmware reads it, so every dialog opens (Edit point crashed on no ioPoint)', () => {
+  const [s] = normalizeSlaves([{ name: 'plc', addr: '5', uart: 1, poll: 1000, nodes: [{ name: 't', reg: 10, dtype: 'int16', onChange: true }] }]);
+  // cfgmodel's ITEM_SLAVE and ITEM_NODE fill what is missing (Codex review), as the gateway's loader does
+  assert.equal(s.source, 'uart');
+  assert.equal(s.protocol, 'modbus');
+  assert.equal(s.mapEn, false);
+  assert.equal(s.ethPort, 502);
+  const [n] = s.nodes;
+  assert.equal(n.ioPoint, '');
+  assert.equal(n.di, '00000000');
+  assert.equal(n.formula, '');
+  assert.equal(n.fc, 3);
+  assert.equal(n.timeout, 200);
+  assert.equal(n.range, 1);
+  assert.equal(n.onChange, true);  // what is there is kept
+  assert.equal(n.dtype, 'int16');
+  const [d] = normalizeSlaves([{ name: 'x', nodes: [{ name: 'a', onChange: 1, mapEn: '1', reg: '7' }] }]);
+  assert.equal(d.poll, 1000);
+  assert.equal(d.uart, 1);
+  assert.equal(d.nodes[0].dtype, 'uint16');
+  assert.equal(d.nodes[0].onChange, true);  // the loader's coercions: a nonzero number, "1" or "true", a numeric string
+  assert.equal(d.nodes[0].mapEn, true);
+  assert.equal(d.nodes[0].reg, 7);
+  assert.equal(normalizeSlaves(null as unknown as []).length, 0);
+});
+
+test('a linkage row shows its condition with the thresholds and its output with the action (the user: a table)', () => {
+  const e = { ...blankLinkage([]), point: 't', output: 'DO2', lower: 50, upper: 60, action: 2 };
+  assert.equal(linkageCondition({ ...e, cond: 2 }), '≥ 50');
+  assert.equal(linkageCondition({ ...e, cond: 3 }), '≤ 60');
+  assert.equal(linkageCondition({ ...e, cond: 4 }), '50 – 60');
+  assert.equal(linkageCondition({ ...e, cond: 5 }), 'outside 50 – 60');
+  assert.equal(linkageCondition({ ...e, cond: 6 }), '> 50');
+  assert.equal(linkageCondition({ ...e, cond: 7 }), '< 60');
+  assert.equal(linkageCondition({ ...e, cond: 0 }), 'follows');
+  assert.equal(linkageCondition({ ...e, cond: 1 }), 'opposite');
+  assert.equal(linkageOutput({ ...e, cond: 2 }), 'DO2 · Close (NC)');
+  assert.equal(linkageOutput({ ...e, cond: 0 }), 'DO2');  // follow/opposite: the output mirrors the point
+  assert.equal(linkageOutput({ ...e, cond: 2, output: '' }), '—');
+});
+
+test('the built-in IO and the calculated device are read with the loader names and registers (Codex r2)', () => {
+  const [io, v] = normalizeSlaves([{ source: 'io', nodes: [{ ioPoint: 'DO1' }, { ioPoint: 'AI2' }] },
+    { source: 'virtual', nodes: [{ name: 'avg', fc: 3, dtype: 'float32_abcd', formula: '=%s+1,t' }] }]);
+  assert.equal(io.name, 'SBIOT_IO');
+  assert.equal(io.nodes[0].name, 'DO1');  // an IO point takes its channel's name, register and type
+  assert.equal(io.nodes[0].fc, 1);
+  assert.equal(io.nodes[0].reg, 0);
+  assert.equal(io.nodes[0].dtype, 'bool');
+  assert.equal(io.nodes[1].name, 'AI2');
+  assert.equal(io.nodes[1].fc, 4);
+  assert.equal(io.nodes[1].reg, 2);
+  assert.equal(io.nodes[1].dtype, 'float32_abcd');
+  assert.equal(v.name, 'SBIOT_VIRTUAL');
+  assert.equal(v.nodes[0].fc, 4);  // virtual points are input registers
+  assert.equal(v.nodes[0].name, 'avg');
 });

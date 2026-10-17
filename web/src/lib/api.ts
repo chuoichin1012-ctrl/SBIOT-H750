@@ -22,6 +22,7 @@ import type {
   DeviceInfo, EdgeSlave, IoState, LinkageEvent, StatusInfo, Values,
 } from './types';
 import { body } from './rules';
+import { normalizeSlaves } from './edge';
 
 export class ApiError extends Error {}
 
@@ -162,7 +163,7 @@ export async function getEdge(): Promise<EdgeConfig> {
     getJson<Values>('./api/config/edgeReport'),
     getJson<LinkageEvent[]>('./api/config/edgeLinkage'),
   ]);
-  return { enabled: !!edge.enabled, slaves, report, linkage };
+  return { enabled: !!edge.enabled, slaves: normalizeSlaves(slaves), report, linkage };
 }
 
 // ---- Writes --------------------------------------------------------------

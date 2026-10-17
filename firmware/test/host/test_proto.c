@@ -483,8 +483,12 @@ static void test_rwprot(void)
     // writes disabled
     rw("{\"rw_prot\":{\"Ver\":\"1.0.1\",\"dir\":\"down\",\"id\":\"1\",\"w_data\":[{\"name\":\"humidity\",\"value\":\"1\"}]}}",
        "{\"rw_prot\":{\"Ver\":\"1.0.1\",\"dir\":\"up\",\"id\":\"1\",\"w_data\":[{\"name\":\"humidity\",\"value\":\"1\",\"err\":\"1\"}]}}", NULL);
+    // a reply (dir up) is not a request: no answer, so a request topic that also matches the reply topic cannot
+    // loop (outside review 2); the caller passes it on as not Edge's
+    rw("{\"rw_prot\":{\"Ver\":\"1.0.1\",\"dir\":\"up\",\"id\":\"9\",\"r_data\":[]}}", NULL, wr);
+    rw("{\"rw_prot\":{\"Ver\":\"1.0.1\",\"dir\":\"up\",\"err\":\"1\"}}", NULL, wr);
     // bad header / no data -> error protocol (as valid JSON)
-    rw("{\"rw_prot\":{\"Ver\":\"1.0.1\",\"dir\":\"up\",\"id\":\"9\",\"r_data\":[]}}",
+    rw("{\"rw_prot\":{\"dir\":\"down\",\"id\":\"9\",\"r_data\":[]}}",
        "{\"rw_prot\":{\"Ver\":\"1.0.1\",\"dir\":\"up\",\"id\":\"9\",\"err\":\"1\"}}", wr);
     rw("{\"rw_prot\":{\"Ver\":\"1.0.1\",\"dir\":\"down\"}}", "{\"rw_prot\":{\"Ver\":\"1.0.1\",\"dir\":\"up\",\"err\":\"1\"}}", wr);
     // at most 5 reads

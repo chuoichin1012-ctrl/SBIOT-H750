@@ -88,6 +88,11 @@ void store_subscribe(store_listener_t fn, void *ctx);
  * refused from its start, the defaults are read back, and the gateway restarts (store_port_restart),
  * whatever the outcome; STORE_EFLASH when a database could not be reset (Plan 09b ruling 2). */
 store_err_t store_factory_reset(void);
+/** Sectors the store has erased since boot: its progress while it holds the lock (a factory reset, a GC). */
+uint32_t store_progress(void);
+/** For a task waiting for the store lock (review 3, P2-3): true when the holder erased since *seen (updated), so
+ *  the waiter may beat its heartbeat; false when nothing moved: a stuck holder still lets the supervisor act. */
+bool store_wait_progressed(uint32_t *seen);
 
 // ---- Small runtime state kept across restarts (DO outputs, the boot counter) ----
 store_err_t store_state_set(const char *key, const void *data, size_t len);

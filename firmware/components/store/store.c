@@ -980,6 +980,17 @@ store_err_t store_factory_reset(void)
     return ok ? STORE_OK : STORE_EFLASH;
 }
 
+uint32_t store_progress(void) { return fal_nor_erased(); }
+
+bool store_wait_progressed(uint32_t *seen)
+{
+    uint32_t now = fal_nor_erased();
+    if (now == *seen)
+        return false;
+    *seen = now;
+    return true;
+}
+
 store_err_t store_state_set(const char *key, const void *data, size_t len)
 {
     char k[FDB_KV_NAME_MAX];

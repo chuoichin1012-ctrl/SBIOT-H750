@@ -3,7 +3,7 @@ import * as api from '../../lib/api';
 import { useDevice } from '../../lib/device';
 import { session } from '../../lib/auth';
 import { allNodeNames, anyOnChange } from '../../lib/edge';
-import { modelErrors } from '../../lib/edgeModel';
+import { linkageErrors, modelErrors } from '../../lib/edgeModel';
 import { useAsync } from '../../lib/hooks';
 import { edgeBodyError } from '../../lib/rules';
 import { useSaver } from '../../lib/save';
@@ -74,6 +74,8 @@ export function EdgePage(props: { path?: string; tab?: string }) {
   // taking a mapped slave ID), and the gateway loads only what these checks accept.
   const problems = cfg.enabled && ioAddr !== null ? modelErrors(dev, cfg.slaves, ioAddr) : [];
   const mBad = problems.length > 0;
+  // Every active linkage event against the model now (review 3 P2-2): an import may drop the point it watches.
+  const linkBad = cfg.enabled ? linkageErrors(dev, cfg.slaves, cfg.linkage) : [];
   const ioWait = cfg.enabled && ioAddr === null;
 
   return (
@@ -110,11 +112,12 @@ export function EdgePage(props: { path?: string; tab?: string }) {
 
       <SaveBar
         busy={save.busy}
-        disabled={rBad || sizeBad || mBad || ioWait || !dirty}
+        disabled={rBad || sizeBad || mBad || linkBad.length > 0 || ioWait || !dirty}
         label="Save edge settings"
         busyLabel={`Saving ${step}…`}
         note={sizeBad ? 'The data acquisition model is too large for the gateway.'
           : mBad ? `Data acquisition: ${problems[0]}${problems.length > 1 ? ` (and ${problems.length - 1} more)` : ''}`
+          : linkBad.length ? `Linkage: ${linkBad[0]}${linkBad.length > 1 ? ` (and ${linkBad.length - 1} more)` : ''}. Fix, turn off or delete the event.`
           : ioWait ? (ioCfg.error ? 'The IO settings could not be read, so the devices cannot be checked. Reload the page.' : 'Checking the devices…')
           : rBad ? 'Query & report has fields that need attention.' : dirty ? 'Unsaved changes. They are kept while you visit other pages, until you save or discard.' : undefined}
         onSave={() => save.run(async () => {

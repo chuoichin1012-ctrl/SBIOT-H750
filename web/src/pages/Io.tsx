@@ -2,6 +2,7 @@ import type { ComponentChildren } from 'preact';
 import { useMemo, useState } from 'preact/hooks';
 import * as api from '../lib/api';
 import { ioPoints, range, useDevice } from '../lib/device';
+import { ioAddressClash } from '../lib/edgeModel';
 import { useAsync, useForm, useInterval } from '../lib/hooks';
 import { useSaver } from '../lib/save';
 import type { DeviceInfo, Values } from '../lib/types';
@@ -199,9 +200,18 @@ function Functions() {
   const defs = useMemo(() => functionDefs(d), [d]);
   const f = useForm(() => api.getValues('io'), defs.all);
   const save = useSaver();
+  // The new Modbus address against the saved Edge model (review 3 P2-1): it must not take a slave ID a device is
+  // mapped to, or a write meant for that device would switch a local DO. Unknown model: Save waits.
+  const edge = useAsync(api.getEdge);
+  const saved = useAsync(() => api.getValues('io'));
 
   if (!f.ready) return <Pending error={f.error} retry={f.reload} />;
-  const p = { values: f.values, errors: f.errors, onChange: f.set };
+  const checked = !!edge.data && !!saved.data;
+  const clash = checked && edge.data!.enabled
+    ? ioAddressClash(d, edge.data!.slaves, Number(f.values.modbusAddress), Number(saved.data!.modbusAddress) || 100)
+    : null;
+  const errors = clash ? { ...f.errors, modbusAddress: clash } : f.errors;
+  const p = { values: f.values, errors, onChange: f.set };
 
   return (
     <>
@@ -222,7 +232,8 @@ function Functions() {
       {defs.analog.length > 0 && <Panel title="Analog outputs"><Fields defs={defs.analog} {...p} /></Panel>}
       <SaveBar
         busy={save.busy}
-        invalid={!f.valid}
+        invalid={!f.valid || !!clash || !checked}
+        note={edge.error || saved.error ? 'The Edge model could not be read to check the Modbus address: reload the page.' : undefined}
         onSave={() => save.run(() => api.saveValues('io', f.values), { restart: true, after: f.reload })}
       />
     </>

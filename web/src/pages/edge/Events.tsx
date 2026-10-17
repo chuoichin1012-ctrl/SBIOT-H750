@@ -1,43 +1,12 @@
 import { useState } from 'preact/hooks';
 import type { EdgeConfig } from '../../lib/api';
 import { ioPoints, useDevice } from '../../lib/device';
-import {
-  LINKAGE_CONDITIONS, MAX_EVENTS, allNodeNames, blankLinkage, isFollow, nameError, usesLower, usesUpper,
-} from '../../lib/edge';
+import { LINKAGE_CONDITIONS, MAX_EVENTS, allNodeNames, blankLinkage } from '../../lib/edge';
+import { linkageDefs } from '../../lib/edgeModel';
 import type { LinkageEvent } from '../../lib/types';
-import type { FieldDef, Options } from '../../lib/validate';
 import { confirmAction } from '../../components/feedback';
 import { Button, ItemList, Notice, Panel } from '../../components/ui';
 import { EditDialog } from './EditDialog';
-
-const ACTIONS: Options = [[0, 'No action'], [1, 'Open (NO)'], [2, 'Close (NC)'], [3, 'Toggle']];
-const choices = (list: string[]): Options => list.map((x) => [x, x] as const);
-
-/** Accepts integers and decimals; thresholds are not whole numbers only. */
-const decimal = (min: number, max: number) => (v: unknown) => {
-  const n = Number(v);
-  return v === '' || !Number.isFinite(n) ? 'Enter a number.' : n < min || n > max ? `Enter ${min}–${max}.` : null;
-};
-
-function linkageDefs(e: LinkageEvent, names: string[], taken: string[], outputs: string[]): FieldDef[] {
-  return [
-    { id: 'name', label: 'Event name', kind: 'text', maxLength: 16, required: true, check: (v) => nameError(String(v), taken) },
-    { id: 'enable', label: 'Active', kind: 'check', help: 'Run this event' },
-    { id: 'point', label: 'Watch point', kind: 'select', options: choices(names), placeholder: 'Choose…', required: true },
-    { id: 'cond', label: 'Trigger when', kind: 'select', options: LINKAGE_CONDITIONS },
-    { id: 'lower', label: 'Lower threshold', kind: 'text', required: true, show: () => usesLower(e.cond), check: decimal(-1e9, 1e9), help: 'AI points are in µA, 0–20000' },
-    {
-      id: 'upper', label: 'Upper threshold', kind: 'text', required: true, show: () => usesUpper(e.cond), check: (v) =>
-        decimal(-1e9, 1e9)(v) ?? (usesLower(e.cond) && Number(v) < Number(e.lower) ? 'Must be at least the lower threshold.' : null),
-    },
-    { id: 'output', label: 'Output', kind: 'select', options: choices(outputs), placeholder: 'Choose…', required: true },
-    { id: 'action', label: 'Output action', kind: 'select', options: ACTIONS, show: () => !isFollow(e.cond) },
-    { id: 'cycle', label: 'Check every', kind: 'number', min: 0, max: 10000, unit: 'ms' },
-    { id: 'minInterval', label: 'Minimum gap between triggers', kind: 'number', min: 500, max: 10000, unit: 'ms' },
-    { id: 'desc', label: 'Description', kind: 'text', maxLength: 64 },
-  ];
-}
-
 
 /** Numeric text fields are kept as strings while typing; store numbers. */
 function numbers<T extends object>(e: T, keys: (keyof T)[]): T {

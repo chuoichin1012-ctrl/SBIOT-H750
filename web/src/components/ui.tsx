@@ -243,7 +243,8 @@ export function DataTable<T>(props: {
   empty?: ComponentChildren;
   onEdit?: (i: number) => void;
   onDelete?: (i: number) => void;
-  /** Rows to pick from: the first cell selects its row, the selected one is shaded. */
+  /** Rows to pick from: a click anywhere on a row but its buttons selects it (the first cell is also a button, for
+   *  the keyboard); the selected one is shaded. */
   selected?: number;
   onSelect?: (i: number) => void;
 }) {
@@ -261,7 +262,8 @@ export function DataTable<T>(props: {
         </thead>
         <tbody class="num">
           {props.rows.map((r, i) => (
-            <tr key={props.keyOf(r, i)} class={`border-b border-line/70 last:border-b-0 ${props.selected === i ? 'bg-canvas' : ''}`}>
+            <tr key={props.keyOf(r, i)} onClick={props.onSelect && (() => props.onSelect!(i))}
+              class={`border-b border-line/70 last:border-b-0 ${props.selected === i ? 'bg-canvas' : ''} ${props.onSelect ? 'cursor-pointer hover:bg-canvas/60' : ''}`}>
               {props.columns.map((c, k) => (
                 <td key={c.head} class={`px-4 py-2 ${align(c)}`}>
                   {k === 0 && props.onSelect ? (
@@ -272,7 +274,7 @@ export function DataTable<T>(props: {
                 </td>
               ))}
               {actions && (
-                <td class="px-4 py-2 text-right whitespace-nowrap">
+                <td class="px-4 py-2 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                   <span class="inline-flex gap-1.5">
                     {props.onEdit && <Button size="sm" onClick={() => props.onEdit!(i)}>Edit</Button>}
                     {props.onDelete && <Button size="sm" onClick={() => props.onDelete!(i)}>Delete</Button>}

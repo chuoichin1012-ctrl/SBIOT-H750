@@ -106,6 +106,7 @@ export function edgeBodyError(slaves: unknown): string | null {
 /** Whether an MQTT filter matches a topic, as the broker and mqtt_topic_match do: "+" one level, "#" the rest
  *  (the parent level too). */
 export function topicMatches(filter: string, topic: string): boolean {
+  if (topic.startsWith('$') && (filter.startsWith('+') || filter.startsWith('#'))) return false;  // broker internals
   const f = filter.split('/');
   const t = topic.split('/');
   for (let i = 0; i < f.length; i++) {

@@ -386,29 +386,45 @@ export function fromCsv(text: string, dev: DeviceInfo): { slaves: EdgeSlave[]; e
 
 // ---- the stored model, as the firmware reads it ----------------------------------------------------------
 
-const str = (v: unknown) => (typeof v === 'string' ? v : '');
-const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
-const bool = (v: unknown) => v === true;
+// cfgmodel.c ITEM_SLAVE and ITEM_NODE: what the gateway's loader starts each device and point from.
+const ITEM_SLAVE = { name: 'Device1', source: 'uart', uart: 1, ip: '192.168.0.201', ethPort: 502, protocol: 'modbus', addr: '1',
+  poll: 1000, mapEn: false, mapAddr: 1, merge: false };
+const ITEM_NODE = { name: 'Node1', fc: 3, reg: 0, di: '00000000', dtype: 'uint16', timeout: 200, onChange: false, range: 1,
+  mapEn: false, mapAddr: 0, formula: '', ioPoint: '', ioReport: 0, upper: 0, lower: 0 };
 
-/** edgeDevices as GET returns them, with every field the dialogs read: a missing one takes the value the firmware
- *  gives it (edge_dev_from_json, edge_pt_from_json: 0, "", false; a bus device; Modbus; uint16). The UI writes
- *  whole documents, but a stored one may come from elsewhere (the bench, an API client). */
+/** One field as cfgmodel's take() coerces it: a bool from a bool, a nonzero number, "1" or "true"; a number from a
+ *  number, a bool or a numeric string; text from text. Anything else keeps the item's value. */
+function coerce(base: unknown, v: unknown): unknown {
+  if (v === undefined || v === null) return base;
+  if (typeof base === 'boolean') {
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'number') return v !== 0;
+    if (typeof v === 'string') return v === '1' || v === 'true';
+    return base;
+  }
+  if (typeof base === 'number') {
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (typeof v === 'boolean') return v ? 1 : 0;
+    if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) return Number(v);
+    return base;
+  }
+  return typeof v === 'string' ? v : base;
+}
+
+function overlay<T extends Record<string, unknown>>(base: T, raw: unknown): T {
+  const src = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(base)) out[k] = coerce(base[k], src[k]);
+  return out as T;
+}
+
+/** edgeDevices as GET returns them, read as the gateway's loader reads them: every field the dialogs need, a missing
+ *  one from cfgmodel's item defaults, the loader's coercions. The UI writes whole documents, but a stored one may
+ *  come from elsewhere (the bench, an API client). */
 export function normalizeSlaves(raw: unknown): EdgeSlave[] {
   if (!Array.isArray(raw)) return [];
-  return raw.map((d: Record<string, unknown>) => {
-    const source = (['eth', 'io', 'virtual'].includes(str(d.source)) ? d.source : 'uart') as EdgeSlave['source'];
-    const nodes = Array.isArray(d.nodes) ? d.nodes : [];
-    return {
-      name: str(d.name), source, uart: num(d.uart), ip: str(d.ip), ethPort: num(d.ethPort),
-      protocol: d.protocol === 'dlt645' ? 'dlt645' : 'modbus', addr: str(d.addr), poll: num(d.poll),
-      mapEn: bool(d.mapEn), mapAddr: num(d.mapAddr), merge: bool(d.merge),
-      nodes: nodes.map((n: Record<string, unknown>) => ({
-        name: str(n.name), fc: num(n.fc), reg: num(n.reg), di: str(n.di),
-        dtype: (DATA_TYPES.some(([t]) => t === n.dtype) ? n.dtype : 'uint16') as EdgeNode['dtype'],
-        timeout: num(n.timeout), onChange: bool(n.onChange), range: num(n.range), mapEn: bool(n.mapEn),
-        mapAddr: num(n.mapAddr), formula: str(n.formula), ioPoint: str(n.ioPoint), ioReport: num(n.ioReport),
-        upper: num(n.upper), lower: num(n.lower),
-      })),
-    };
+  return raw.map((d) => {
+    const nodes = d && typeof d === 'object' && Array.isArray((d as { nodes?: unknown }).nodes) ? (d as { nodes: unknown[] }).nodes : [];
+    return { ...overlay(ITEM_SLAVE, d), nodes: nodes.map((n) => overlay(ITEM_NODE, n)) } as unknown as EdgeSlave;
   });
 }

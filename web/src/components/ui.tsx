@@ -232,6 +232,8 @@ export interface Column<T> {
   head: string;
   cell: (row: T, i: number) => ComponentChildren;
   align?: 'right';
+  /** Kept on one line (addresses). */
+  nowrap?: boolean;
 }
 
 export function DataTable<T>(props: {
@@ -247,7 +249,7 @@ export function DataTable<T>(props: {
 }) {
   if (!props.rows.length && props.empty) return <Empty>{props.empty}</Empty>;
   const actions = props.onEdit || props.onDelete;
-  const align = (c: Column<T>) => (c.align === 'right' ? 'text-right' : '');
+  const align = (c: Column<T>) => `${c.align === 'right' ? 'text-right' : ''} ${c.nowrap ? 'whitespace-nowrap' : ''}`;
   return (
     <div class="overflow-x-auto">
       <table class="w-full text-left">

@@ -343,6 +343,10 @@ static void test_link(void)
     edge_link_step(&d, 11000, true, 40, true, &fired);
     CHECK(edge_link_step(&d, 12000, true, 60, true, &fired) == EDGE_DO_KEEP && !fired, "an edge in the wait: dropped");
     CHECK(edge_link_step(&d, 16000, true, 60, false, &fired) == EDGE_DO_KEEP && !fired, "and not acted on after the wait");
+    // A condition true from the first check, before minInterval has run since boot, still acts: the gap counts from
+    // a trigger, and there was none (Codex review).
+    edge_link_t first = {.enable = true, .cond = 2, .lower = 50, .action = 2, .cycle_ms = 1000, .min_ms = 10000};
+    CHECK(edge_link_step(&first, 2000, true, 60, false, &fired) == EDGE_DO_ON && fired, "true at the first check: acts");
     edge_link_t g = {.enable = true, .cond = 2, .lower = 50, .action = 3};
     CHECK(edge_link_step(&g, 0, true, 60, true, &fired) == EDGE_DO_OFF, "toggle");
     edge_link_t off = {.enable = false, .cond = 0};

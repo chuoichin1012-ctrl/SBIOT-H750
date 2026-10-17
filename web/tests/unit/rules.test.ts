@@ -143,6 +143,9 @@ test('an MQTT filter matches topics as a broker does (+ one level, # the rest, t
   assert.equal(topicMatches('sbiot/gw/request/#', 'sbiot/gw/reply'), false);
   assert.equal(topicMatches('sbiot/gw/reply', 'sbiot/gw/reply'), true);
   assert.equal(topicMatches('sbiot/gw/reply', 'sbiot/gw/Reply'), false);
+  assert.equal(topicMatches('#', '$device/reply'), false);  // $ topics never match a leading wildcard (mqttutil.c)
+  assert.equal(topicMatches('+/reply', '$device/reply'), false);
+  assert.equal(topicMatches('$device/#', '$device/reply'), true);
 });
 
 test('a request topic that also matches the reply topic is refused: replies would come back as requests (outside review 2)', () => {

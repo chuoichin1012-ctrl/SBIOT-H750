@@ -893,8 +893,8 @@ def case_onedevice():
         slave, tcp = start_all(secs=45)
         full = wait(lambda: status() == 'RUNNING 200/200', 25, 0.5)
         state = status()
-        time.sleep(max(0, 32 - 25))  # the headroom is logged once, 30 s in
-        m = wait(lambda: re.search(r'edge: stack headroom: (.*) bytes', log_text()), 10, 1)
+        # the headroom is logged once, 30 s after Edge starts: waited for, not timed (the log reads fast since Plan 11b)
+        m = wait(lambda: re.search(r'edge: stack headroom: (.*) bytes', log_text()), 45, 1)
         slave.close()
         bc.wait_peer(tcp, 1)
         rooms = dict(re.findall(r'(edge_\w+) (\d+)', m.group(1))) if m else {}

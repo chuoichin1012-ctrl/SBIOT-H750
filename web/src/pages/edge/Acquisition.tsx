@@ -3,9 +3,9 @@ import type { EdgeConfig } from '../../lib/api';
 import { useDevice } from '../../lib/device';
 import {
   DATA_TYPES, MAX_DEVICES, MAX_NODES, VIRTUAL_FC, allNodeNames, blankNode, blankSlave, exposedSpan, fixedName, fromCsv, ioRegister, isReserved,
-  modbusAddress, nextName, nodeCount, readText, referencesTo, sourceLabel, toCsv,
+  modbusAddress, nextName, nodeCount, readText, referencesTo, toCsv,
 } from '../../lib/edge';
-import { modelErrors, nodeDefs, polled, slaveDefs } from '../../lib/edgeModel';
+import { modelErrors, nodeDefs, slaveDefs } from '../../lib/edgeModel';
 import type { EdgeNode, EdgeSlave } from '../../lib/types';
 import { confirmAction, toast } from '../../components/feedback';
 import { Button, DataTable, Empty, Panel } from '../../components/ui';
@@ -102,7 +102,7 @@ export function Acquisition(props: { cfg: EdgeConfig; ioAddr: number; problems: 
         </div>
       )}
 
-      <div class="grid gap-x-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+      <div class="grid gap-x-4 lg:grid-cols-2">
         <Panel title="Devices" flush
           aside={
             <span class="flex items-center gap-3">
@@ -117,15 +117,10 @@ export function Acquisition(props: { cfg: EdgeConfig; ioAddr: number; problems: 
             columns={[
               { head: 'Name', cell: (s) => <span class="font-medium">{s.name}</span> },
               {
-                head: 'Port',
-                cell: (s) => (
-                  <span title={`${sourceLabel(s)}${polled(s) ? `, address ${s.addr}` : s.source === 'virtual' ? `, slave ID ${s.addr}`
-                    : s.source === 'io' ? `, slave ID ${ioAddr}` : ''}${s.mapEn ? ` → ${s.mapAddr}` : ''}`}>
-                    {s.source === 'uart' ? `UART${s.uart}` : s.source === 'eth' ? 'Ethernet' : s.source === 'io' ? 'IO' : 'Calculated'}
-                  </span>
-                ),
+                head: 'Port', nowrap: true,
+                cell: (s) => (s.source === 'uart' ? `UART${s.uart}` : s.source === 'eth' ? `${s.ip}:${s.ethPort}` : s.source === 'io' ? 'IO' : 'Calculated'),
               },
-              { head: 'Points', cell: (s) => s.nodes.length, align: 'right' },
+              { head: 'Address', nowrap: true, cell: (s) => `${s.source === 'io' ? ioAddr : s.addr}${s.mapEn ? ` → ${s.mapAddr}` : ''}` },
             ]} />
         </Panel>
 

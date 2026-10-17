@@ -274,6 +274,7 @@ Thang ưu tiên của FreeRTOS là 0–31 (`configMAX_PRIORITIES` = 32). `n` là
 | `mqtt_io` | 1 | 4 KB | 5 | Hai chiều: subscribe → serial, serial → outbox |
 | `web` | 1 | 8 KB | 5 | `mg_mgr` của `webPort` |
 | `console` | 1 | 4 KB | 5 | `mg_mgr` riêng của `websocketPort` |
+| `disc` | 1 | 6 KB (AXI) | 5 | FinderTool: UDP 48600 trên Ethernet, tìm gateway, đổi cấu hình Ethernet, restart, factory reset (§10.5, Plan 12) |
 | `edge_bus[n]` | 0–2 | 6 KB | 5 | Poll thiết bị trên bus của cổng n (chỉ tạo khi cổng có thiết bị) |
 | `edge_tcpN` | ≤ 5 | 5 KB | 5 | Mỗi thiết bị Modbus TCP một task |
 | `lte` | 1 | 6 KB | 5 | EC600U: nguồn, AT, CMUX, PPP, tín hiệu, phục hồi |
@@ -961,6 +962,10 @@ Chép từ `src/` ở gốc, rồi sửa trực tiếp:
   - **phần hiển thị** (giờ trên `/api/status` và dòng trạng thái của console) đọc 2020-01-01 00:00:00 cộng uptime, kèm `clockSet: false` (Plan 08b). Đây chỉ là hiển thị: TLS, timer IO, log và `sys_time` vẫn thấy "chưa có giờ". `POST /api/time` không nhận năm trước 2024, nên giờ hiển thị này không thể bị đặt lại vào đồng hồ.
 - Nguồn giờ giữ như ESP32: NTP hoặc `POST /api/time`. **Không thêm** RTC giữ giờ hay giờ mạng LTE.
 
+### 10.5 Tìm gateway trong LAN (FinderTool)
+
+Giao thức UDP 48600 để tìm gateway, đổi cấu hình Ethernet, restart và khôi phục mặc định, cùng tool Windows `FinderTool.exe`: xem `2026-10-17-lan-discovery-design.md`.
+
 ## 11. Bootloader, OTA và an toàn
 
 ### 11.1 Định dạng image
@@ -1070,7 +1075,7 @@ Logic quyết định và chép viết trong `boot/install.c` bằng C thuần, 
 
 - **SGM706 và IWDG1:** SGM706 có timeout tối thiểu 1,0 s, danh định 1,6 s (datasheet SGM706, trang 4). **Trên board hiện tại R20 (WDO → MR) chưa lắp**, nên SGM706 hết thời gian cũng không reset được MCU (đã thử trên bench: ngừng kick 60 s không reset). Vì vậy bootloader bật IWDG1 (LSI/32, reload 1600: 1,5–1,74 s theo dải LSI), và "kick" luôn nghĩa là đảo WDI **và** nạp lại IWDG1 (`board_kick()`); "ngừng kick" là ngừng cả hai. IWDG1 không tắt được cho tới lần reset sau và được đóng băng khi debugger dừng lõi. Khi R20 được lắp, cả hai cùng hoạt động. `wdog` nạp IWDG1 mỗi 50 ms và đảo WDI theo nhịp LED (Plan 11a). `/api/status` báo `iwdgMaxGapMs` (vòng `wdog`, tiêu chí < 400 ms) và `wdiMaxGapMs` (các lần đảo WDI, tiêu chí < 600 ms). **Đề xuất cho phần cứng:** lắp R20.
 - **Giám sát task bằng heartbeat** (người dùng, Plan 11a):
-  - mỗi task quan trọng báo heartbeat ít nhất mỗi 1/3 timeout của nó. Timeout: `tcpip`, `eth_rx`, `cmux_rx`, serial RX, `io`: 10 s; `web`, `console`: 30 s; `syslog`: 60 s; `mqtt`, `edge_ctl`, `edge_rpt`: 120 s; `lte`: 180 s; `mqtt_io` và task poll của Edge: 400 s (một lần ghi hay đọc point có thể chờ bus 60 s rồi chờ phản hồi 65,5 s); bridge: 600 s; mã ghi hộ task khác (ghi point Edge, chờ report) báo heartbeat cho chính task gọi (`wdog_hb_beat_self`);
+  - mỗi task quan trọng báo heartbeat ít nhất mỗi 1/3 timeout của nó. Timeout: `tcpip`, `eth_rx`, `cmux_rx`, serial RX, `io`: 10 s; `web`, `console`, `disc`: 30 s; `syslog`: 60 s; `mqtt`, `edge_ctl`, `edge_rpt`: 120 s; `lte`: 180 s; `mqtt_io` và task poll của Edge: 400 s (một lần ghi hay đọc point có thể chờ bus 60 s rồi chờ phản hồi 65,5 s); bridge: 600 s; mã ghi hộ task khác (ghi point Edge, chờ report) báo heartbeat cho chính task gọi (`wdog_hb_beat_self`);
   - chờ dữ liệu và ngủ theo lịch được chia lát để báo heartbeat, deadline nghiệp vụ giữ nguyên; chờ lock không báo heartbeat, nên lock kẹt sẽ làm board reset;
   - task quá hạn: `wdog` ghi lý do (tên task, số giây trễ, CRC) vào một cache line riêng trong `.noinit` ở SRAM4 (clean D-cache + DSB), rồi ngừng kick; IWDG1 reset board. Lần boot sau, sau khi store mount, nếu cờ reset là IWDG1 hoặc chân reset và không có cờ power-on/brown-out, log ghi `wdog: <task> stopped for <n> s: restarted`;
   - không kick từ idle task, vì idle bị đói hợp lệ khi TLS handshake, FlashDB dọn rác hay LAN bị flood.

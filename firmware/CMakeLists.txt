@@ -122,7 +122,7 @@ set(APP_OWN
   ${SYS}/clock.c ${SYS}/sysmgr.c ${WEB}/web_core.c ${WEB}/web.c ${WEB}/api.c ${WEB}/console.c ${WEB}/mg_port.c
   ${CMAKE_SOURCE_DIR}/components/arena/arena.c
   ${SER}/serial_frame.c ${SER}/uart_drv.c ${SER}/serial.c
-  ${IOM}/io_core.c ${IOM}/adc_core.c ${IOM}/adc_drv.c ${IOM}/iomgr.c ${IOM}/io_mb.c ${SVC}/bridge_core.c ${SVC}/edge_core.c ${SVC}/edge_rt.c ${PROTO}/edgecore.c ${PROTO}/rwprot.c ${PROTO}/mqttutil.c ${SVC}/tls_core.c ${SVC}/tls_port.c ${SVC}/tlsconn.c ${SVC}/net.c ${SVC}/bridge.c ${SVC}/services.c ${SVC}/mqtt_transport.c ${SVC}/mqtt_outbox.c ${SVC}/mqtt_sess.c ${SVC}/mqttgw.c ${PROTO}/modbus.c ${SYS}/reload.c app/bench_io.c)
+  ${IOM}/io_core.c ${IOM}/adc_core.c ${IOM}/adc_drv.c ${IOM}/iomgr.c ${IOM}/io_mb.c ${SVC}/bridge_core.c ${SVC}/disc_core.c ${SVC}/disc.c ${SVC}/edge_core.c ${SVC}/edge_rt.c ${PROTO}/edgecore.c ${PROTO}/rwprot.c ${PROTO}/mqttutil.c ${SVC}/tls_core.c ${SVC}/tls_port.c ${SVC}/tlsconn.c ${SVC}/net.c ${SVC}/bridge.c ${SVC}/services.c ${SVC}/mqtt_transport.c ${SVC}/mqtt_outbox.c ${SVC}/mqtt_sess.c ${SVC}/mqttgw.c ${PROTO}/modbus.c ${SYS}/reload.c app/bench_io.c)
 # The embedded UI (Plan 06b): tools/embed_web.py writes the gzip bytes as C arrays and their table.
 set(APP_WWW ${WEB}/www/www_files.c)
 if(NOT EXISTS ${APP_WWW})  # a build output (gitignored), not a source

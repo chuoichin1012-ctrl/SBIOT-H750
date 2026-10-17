@@ -34,6 +34,8 @@ struct netif;
 /** PPP's status (lte.c, in the tcpip thread): the cell link up with the DNS IPCP gave (0 for none), or down. The
  *  route and the DNS are chosen again. */
 void netmgr_cell(struct netif *nif, bool up, const uint32_t dns[2]);
+/** The Ethernet netif's lwIP name ("et0"), for SO_BINDTODEVICE; false while it is not added (Plan 12). */
+bool netmgr_eth_ifname(char out[6]);
 /** "ETH", "LTE" or "NONE": the link holding the default route. */
 const char *netmgr_route_name(void);
 /** The Internet check per link (Plan 10 ruling 14): an address and replies to the probe. */

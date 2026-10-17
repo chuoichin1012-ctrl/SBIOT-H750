@@ -59,8 +59,32 @@ static int64_t s_wall;
 static uint32_t s_uptime;
 static bool s_quiet;
 
+static int s_releases;  // the lock fell to depth 0 (Plan 12 task 1)
+
 void store_port_lock(void) { s_depth++; }
-void store_port_unlock(void) { s_depth--; }
+void store_port_unlock(void)
+{
+    if (--s_depth == 0)
+        s_releases++;
+}
+
+// Plan 12 task 1, the lock trace (Codex plan r1): inside store_patch, every cJSON allocation (the read is the parse
+// of the cached text) and every flash program (the write) must happen with the lock held, and the lock must not be
+// released between the first of them and the last.
+static bool s_tracing;
+static int s_trace_min = 1 << 30;              // the lowest lock depth seen
+static int s_rel_first = -1, s_rel_last = -1;  // s_releases at the first allocation, at the last program
+
+static void *trace_malloc(size_t n)
+{
+    if (s_tracing) {
+        if (s_depth < s_trace_min)
+            s_trace_min = s_depth;
+        if (s_rel_first < 0)
+            s_rel_first = s_releases;
+    }
+    return malloc(n);
+}
 int64_t store_port_wall_ms(void) { return s_wall; }
 static int s_restarts;
 void store_port_restart(void) { s_restarts++; }
@@ -125,6 +149,11 @@ static int counting_erase(nor_t *n, uint32_t off)
 
 static int tracing_program(nor_t *n, uint32_t off, const void *buf, uint32_t len)
 {
+    if (s_tracing) {
+        if (s_depth < s_trace_min)
+            s_trace_min = s_depth;
+        s_rel_last = s_releases;
+    }
     if (s_trace_from >= 0 && s_w.ops >= s_trace_from) {
         const uint8_t *b = buf;
         printf("    op %ld: program 0x%05x len %u: %02x %02x %02x %02x\n", s_w.ops, (unsigned)off, (unsigned)len, b[0],
@@ -472,6 +501,77 @@ static void test_with_defaults_oom(void)
     cJSON_InitHooks(NULL);
     CHECK(ok > 0 && oom > 0, "the sweep saw failures (%d) and a save (%d)", oom, ok);
     BALANCED("with_defaults out of memory");
+}
+
+// Plan 12 task 1: the tool's `set` merges the Ethernet fields; the rest of `network` stays, the lock is held
+// from the read to the write, so a Web save from another task waits for it.
+static void test_patch(void)
+{
+    flash_new(43);
+    reboot();
+    char err[200];
+    const char *mine = "{\"priority\":0,\"ipMode\":0,\"ip\":\"192.168.0.7\",\"apn\":\"m3-world\",\"future\":5}";
+    CHECK(store_set_text("network", mine, strlen(mine), err, sizeof err) == STORE_OK, "set network: %s", err);
+    cJSON *f = cJSON_Parse("{\"ipMode\":1,\"ip\":\"10.10.0.7\",\"netmask\":\"255.255.255.0\"}");
+    cJSON_Hooks th = {trace_malloc, free};
+    cJSON_InitHooks(&th);
+    s_tracing = true;
+    store_err_t pe = store_patch("network", f, err, sizeof err);
+    s_tracing = false;
+    cJSON_InitHooks(NULL);
+    CHECK(pe == STORE_OK, "patch: %s", err);
+    CHECK(s_trace_min >= 1, "the read and the write ran under the lock (lowest depth %d)", s_trace_min);
+    CHECK(s_rel_first >= 0 && s_rel_last == s_rel_first, "no release between the read and the write (%d, %d)", s_rel_first, s_rel_last);
+    BALANCED("store_patch");
+    for (int pass = 0; pass < 2; pass++) {  // the cache, then the flash after a reboot
+        char *t = store_get_json("network");
+        cJSON *d = cJSON_Parse(t);
+        CHECK(d && cJSON_GetObjectItem(d, "ipMode")->valueint == 1, "ipMode patched (%s)", t);
+        CHECK(d && !strcmp(cJSON_GetObjectItem(d, "ip")->valuestring, "10.10.0.7"), "ip patched");
+        CHECK(d && cJSON_GetObjectItem(d, "priority")->valueint == 0, "priority kept");
+        CHECK(d && !strcmp(cJSON_GetObjectItem(d, "apn")->valuestring, "m3-world"), "apn kept");
+        CHECK(d && cJSON_GetObjectItem(d, "future") && cJSON_GetObjectItem(d, "future")->valueint == 5, "an unknown key kept");
+        cJSON_Delete(d);
+        free(t);
+        reboot();
+    }
+    CHECK(store_patch("nonsense", f, err, sizeof err) == STORE_ENOTFOUND, "unknown name");
+    CHECK(store_patch("edgeDevices", f, err, sizeof err) == STORE_ENOTFOUND, "not edgeDevices");
+    cJSON *arr = cJSON_CreateArray();
+    CHECK(store_patch("network", arr, err, sizeof err) == STORE_ENOTFOUND, "fields must be an object");
+    cJSON_Delete(arr);
+    // Out of memory at each allocation in turn: STORE_ENOMEM and nothing written, or a whole save.
+    cJSON *g = cJSON_Parse("{\"ip\":\"10.10.0.9\"}");
+    char *cur = store_get_json("network");  // what a save must give: today's document with only ip changed
+    cJSON *want = cJSON_Parse(cur);
+    cJSON_ReplaceItemInObjectCaseSensitive(want, "ip", cJSON_CreateString("10.10.0.9"));
+    free(cur);
+    cJSON_Hooks hooks = {fail_malloc, free};
+    cJSON_InitHooks(&hooks);
+    for (int n = 0; n < 2000; n++) {
+        char *was = store_get_json("network");
+        s_alloc_fail_at = n;
+        store_err_t e = store_patch("network", g, err, sizeof err);
+        bool hit = s_alloc_fail_at < 0;
+        s_alloc_fail_at = -1;
+        char *now = store_get_json("network");
+        CHECK(e == STORE_OK || (e == STORE_ENOMEM && now && was && !strcmp(now, was)),
+              "allocation %d failed: STORE_ENOMEM with nothing written, or saved (%d)", n, e);
+        if (e == STORE_OK) {  // a save is the whole document: the field patched, every other member as it was
+            cJSON *d = now ? cJSON_Parse(now) : NULL;  // s_alloc_fail_at is -1 again: no failure here
+            CHECK(d && cJSON_Compare(d, want, true), "allocation %d: saved whole (%s)", n, now);
+            cJSON_Delete(d);
+        }
+        free(was);
+        free(now);
+        BALANCED("store_patch out of memory");
+        if (!hit)
+            break;
+    }
+    cJSON_InitHooks(NULL);
+    cJSON_Delete(want);
+    cJSON_Delete(g);
+    cJSON_Delete(f);
 }
 
 static int s_heard;
@@ -1990,6 +2090,7 @@ int main(void)
         test_set_get();
         test_revalidate_at_boot();
     test_with_defaults_oom();
+        test_patch();
         test_listeners_and_state();
         test_state_read_failures();
         test_certs_and_factory_reset();

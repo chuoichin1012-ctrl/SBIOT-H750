@@ -1,0 +1,10 @@
+Thank you for the r1 review (stm32/docs/review/disc-spec-review-r1.md). I revised stm32/docs/specs/2026-10-17-lan-discovery-design.md. Please re-review it (read-only):
+
+- Important 1: §2.3 step 6: do the operation, then ack its real result, then schedule the restart; factory acks after store_factory_reset returns (it always schedules its own 1.5 s restart). §3: ack wait 10 s; no ack = "outcome unknown", no automatic resend; after success poll search every 3 s for up to 120 s until `boot` grows (new `found` field `boot` = store_boot_count).
+- Important 2: `id` is in the request string; acks after a successful authentication are signed (`SBIOT-DISC1-ACK|user|nonce|id|op|mac|ok-or-err`); `auth`/`rng` acks are unsigned hints; the tool trusts a result only with a valid ack hmac; `found` is display data only.
+- Important 3: new `store_patch(name, fields)` reads the saved JSON, replaces the members, validates and writes under the store lock; keeps unknown keys; no write on parse/alloc failure; host test with a store_set_text between read and write.
+- Important 4: `found` now has `eth` (running Ethernet address) and `net` (the seven saved fields, read from the store per reply); `web` is the running port; DNS never from the running (possibly LTE) DNS.
+- Important 5: new §2.4 nonce: created at task start and on search when none/expired; 60 s by the FreeRTOS tick; consumed right after authentication succeeds, before validation and side effects; RNG failure = no nonce, `rng` error, no fallback.
+- Minors: port 48600 reserved (UI rule; disc starts before the bridge; a bridge conflict fails as bind failures do today); strict field formats and duplicate keys rejected before the HMAC string is built; constant-time tag comparison only; limitations (offline guessing, deliberate lockout) in §5. Commands are broadcast too (§2.1). SO_BINDTODEVICE as you suggested. Windows bench: different subnets and multiple adapters; the LTE-default-route case waits for a working SIM.
+
+Reply with remaining findings ranked (Critical / Important / Minor), then a verdict: APPROVED or CHANGES NEEDED.

@@ -6,7 +6,7 @@ CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Werror -O1 -g -fsanitize
 BUILD := build
 CFG := ../../components/cfgmodel/cfgmodel.c ../../components/proto/ipacl.c ../../components/proto/jsonscan.c
 
-all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/bind_sample.bin $(BUILD)/test_bind $(BUILD)/test_store $(BUILD)/test_store_small $(BUILD)/test_heap $(BUILD)/test_ip101 $(BUILD)/test_netcfg $(BUILD)/test_dhcp_dns $(BUILD)/test_rng $(BUILD)/test_clock $(BUILD)/test_web_core $(BUILD)/test_serial_frame $(BUILD)/test_io_core $(BUILD)/test_adc_core $(BUILD)/test_reload $(BUILD)/test_bridge_core $(BUILD)/test_io_mb $(BUILD)/test_tls_core $(BUILD)/test_tlsconn $(BUILD)/test_edge_core $(BUILD)/test_mqtt_wire $(BUILD)/test_mqtt_transport $(BUILD)/test_mqtt_outbox $(BUILD)/test_mqtt_session $(BUILD)/test_spi_nor $(BUILD)/test_cmux $(BUILD)/test_at_parse $(BUILD)/test_lte_power
+all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/test_text_small $(BUILD)/test_edge_text $(BUILD)/test_oom $(BUILD)/test_board $(BUILD)/test_ota $(BUILD)/mkimage_sample.img $(BUILD)/test_install $(BUILD)/bind_sample.bin $(BUILD)/test_bind $(BUILD)/test_store $(BUILD)/test_store_small $(BUILD)/test_heap $(BUILD)/test_ip101 $(BUILD)/test_netcfg $(BUILD)/test_disc_core $(BUILD)/test_dhcp_dns $(BUILD)/test_rng $(BUILD)/test_clock $(BUILD)/test_web_core $(BUILD)/test_serial_frame $(BUILD)/test_io_core $(BUILD)/test_adc_core $(BUILD)/test_reload $(BUILD)/test_bridge_core $(BUILD)/test_io_mb $(BUILD)/test_tls_core $(BUILD)/test_tlsconn $(BUILD)/test_edge_core $(BUILD)/test_mqtt_wire $(BUILD)/test_mqtt_transport $(BUILD)/test_mqtt_outbox $(BUILD)/test_mqtt_session $(BUILD)/test_spi_nor $(BUILD)/test_cmux $(BUILD)/test_at_parse $(BUILD)/test_lte_power
 	$(BUILD)/test_cfgmodel
 	$(BUILD)/test_proto
 	$(BUILD)/test_jsonscan
@@ -23,6 +23,7 @@ all: $(BUILD)/test_cfgmodel $(BUILD)/test_proto $(BUILD)/test_jsonscan $(BUILD)/
 	$(BUILD)/test_heap
 	$(BUILD)/test_ip101
 	$(BUILD)/test_netcfg
+	$(BUILD)/test_disc_core disc_vectors.json
 	$(BUILD)/test_dhcp_dns
 	$(BUILD)/test_rng
 	$(BUILD)/test_clock
@@ -164,6 +165,12 @@ $(BUILD)/test_ip101: test_ip101.c $(NET)/ip101.c
 $(BUILD)/test_netcfg: test_netcfg.c $(NET)/netcfg.c $(NET)/inet.c ../../components/ota/sha256.c $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -I$(NET)/include $^ -lm -o $@
+
+SVC := ../../components/services
+
+$(BUILD)/test_disc_core: test_disc_core.c $(SVC)/disc_core.c ../../components/proto/jsonscan.c $(NET)/netcfg.c $(NET)/inet.c ../../components/ota/sha256.c $(CJSON)/cJSON.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -I$(SVC)/include -I$(NET)/include $^ -lm -o $@
 
 # lwIP's own DHCP client and DNS on the host (NO_SYS), with the SBIOT patch. EXTRA adds flags (RED runs).
 LWIP := ../../third_party/lwip/src

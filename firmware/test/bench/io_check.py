@@ -235,9 +235,14 @@ def case_dido():
     w.restart()
     time.sleep(1)
     check(io().get('do', [False, False])[d] and wait_di(i, True, 0.5), 'keepOutputs 1: DO%d still on after a restart' % (d + 1))
+    # The restart that applies keepOutputs 0 still runs with 1 (configs apply at boot): the DO is held through it;
+    # the next restart, with keepOutputs 0, latches zeros (Restart Hold, spec §11.2 step 2).
     check(setup_io(keepOutputs=0), 'set up keepOutputs 0 (DO%d was on)' % (d + 1))
+    check(io().get('do', [False, False])[d], 'the restart that applied it still held DO%d' % (d + 1))
+    w.restart()
+    time.sleep(1)
     check(not io().get('do', [True, True])[d] and wait_di(i, False, 0.5),
-          'keepOutputs 0: DO%d off after the restart (the bootloader latched zeros)' % (d + 1))
+          'keepOutputs 0: DO%d off after the next restart (the bootloader latched zeros)' % (d + 1))
     # A timer, 30 s ahead (time enough for the restart that applies it); the clock set after the restart
     # (no RTC; the bench LAN has no NTP).
     hhmm = time.strftime('%H:%M:%S', time.localtime(time.time() + 30))
@@ -253,15 +258,22 @@ def case_dido():
 def case_reload():
     print('reload: watch the prompts; press and release the Reload button as asked')
     _, sysc = w.get_json('/api/config/system')
-    for hold, expect in ((1, False), (20, False), (5, True)):
+    # The user, 2026-10-17: released at 3 s up to 10 s restarts (settings kept), at 10-15 s restores the factory
+    # settings; shorter or longer: nothing. The factory case sets network.priority 1: LTE attaches (mind the SIM).
+    for hold, want in ((1, 'nothing'), (20, 'nothing'), (5, 'restart'), (12, 'factory settings')):
         sysc['hostname'] = 'reload-mark'
         w.req('POST', '/api/config/system', body=json.dumps(sysc).encode())
+        _, st = w.get_json('/api/status')
+        up0 = st['system']['uptime']
         input('hold Reload %d s, release, then press Enter: ' % hold)
         time.sleep(3)
         w.wait_up(30)
         _, now = w.get_json('/api/config/system')
+        _, st = w.get_json('/api/status')
         reset = now.get('hostname') != 'reload-mark'
-        check(reset == expect, 'Reload %d s: %s' % (hold, 'factory settings' if reset else 'nothing'))
+        restarted = st['system']['uptime'] < up0
+        got = 'factory settings' if reset else 'restart' if restarted else 'nothing'
+        check(got == want, 'Reload %d s: %s (want %s)' % (hold, got, want))
         sysc = now
     sysc['hostname'] = 'reload-mark'
     w.req('POST', '/api/config/system', body=json.dumps(sysc).encode())

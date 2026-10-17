@@ -140,8 +140,8 @@ static void io_task(void *arg)
         }
         bool pressed = HAL_GPIO_ReadPin(RELOAD_GPIO_Port, RELOAD_Pin) == GPIO_PIN_RESET;
         reload_ev_t ev = reload_step(&s_button, pressed, now);
-        if (!pressed)
-            wdog_set_button(0);  // LED WORK back to normal once the button is up
+        if (!s_button.down)
+            wdog_set_button(0);  // LED WORK back to normal once reload_step has the release (debounced; Codex)
         if (ev == RELOAD_HINT_RESTART) {
             wdog_set_button(1);
             blog("io: Reload held 3 s: release now to restart, or hold to 10 s to restore the factory settings\r\n");

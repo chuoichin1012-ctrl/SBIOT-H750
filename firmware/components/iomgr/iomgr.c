@@ -29,7 +29,6 @@ static reload_t s_button;
 static SemaphoreHandle_t s_lock;  // s_core and s_adc
 static StaticSemaphore_t s_lock_mem;
 static uint8_t s_latched;
-static int s_tz;
 static volatile bool s_factory;
 volatile bool g_io_trace;  // bench: log each change of the outputs and each AI window (bench_io.c 'D')
 static TaskHandle_t s_io, s_reload;
@@ -101,7 +100,7 @@ static void io_task(void *arg)
         io_core_tick(&s_core, now);
         if (now - last_timers >= TIMERS_MS) {
             last_timers = now;
-            restart = io_core_timers(&s_core, sysmgr_utc_ms() / 1000, s_tz, sysmgr_clock_set(), now);
+            restart = io_core_timers(&s_core, sysmgr_now_ms() / 1000, sysmgr_timezone(), true, now);  // the device clock
         }
         latch();
         unlock();
@@ -149,8 +148,6 @@ void iomgr_start(const cJSON *io, const cJSON *sys, nor_t *spi4)
     s_lock = xSemaphoreCreateMutexStatic(&s_lock_mem);
     io_cfg_t cfg;
     io_cfg_parse(io, &cfg);
-    const cJSON *tz = cJSON_GetObjectItemCaseSensitive(sys, "timezone");
-    s_tz = cJSON_IsNumber(tz) && tz->valueint >= -12 && tz->valueint <= 12 ? tz->valueint : 0;
     uint32_t now = now_ms();
     io_core_init(&s_core, &cfg, di_pins());
     uint8_t mask = 0;

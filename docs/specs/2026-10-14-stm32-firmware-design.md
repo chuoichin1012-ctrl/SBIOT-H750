@@ -954,12 +954,21 @@ Chép từ `src/` ở gốc, rồi sửa trực tiếp:
 
 ### 10.4 Giờ
 
-- NTP là tùy chọn. Chưa có giờ thì:
-  - report theo `interval`, `onChange` và ngưỡng AI vẫn chạy;
-  - report theo `schedule` và 6 timer chưa kích hoạt;
-  - các trường `sys_time` để trống;
-  - log ghi dạng `[boot N +hh:mm:ss]`;
-  - **phần hiển thị** (giờ trên `/api/status` và dòng trạng thái của console) đọc 2020-01-01 00:00:00 cộng uptime, kèm `clockSet: false` (Plan 08b). Đây chỉ là hiển thị: TLS, timer IO, log và `sys_time` vẫn thấy "chưa có giờ". `POST /api/time` không nhận năm trước 2024, nên giờ hiển thị này không thể bị đặt lại vào đồng hồ.
+- **Một đồng hồ duy nhất** (người dùng, 2026-10-17): `sysmgr_now_ms()` (`clock_device_ms`). Đã có giờ thật (NTP, hoặc `POST /api/time`) thì là giờ thật. Chưa có thì là đồng hồ đọc **2020-01-01 00:00:00 giờ địa phương lúc bật nguồn, cộng uptime**. NTP là tùy chọn; NTP bật mà không lấy được giờ (không có Internet) thì cũng như chưa có giờ.
+  - Chạy trên đồng hồ này:
+    - phần hiển thị (`/api/status` `time`, dòng trạng thái của console), kèm `clockSet: false` khi giờ chưa thật;
+    - report theo `schedule`: hourly, 15 phút và mỗi phút tính từ lúc bật nguồn (chạy ngay trong phút đầu tiên); daily hh:mm là hh:mm sau khi bật nguồn;
+    - `sys_time` (chuỗi UTC) và `sys_unix_time`. Ví dụ ở UTC+7, lúc bật nguồn màn hình đọc 2020-01-01 00:00:00, còn `sys_time` là 2019-12-31 17:00:00: hai cách đọc của cùng một đồng hồ;
+    - 6 timer IO: một timer 08:00 chạy sau 8 giờ kể từ khi bật nguồn.
+  - Khi giờ thật tới, đồng hồ nhảy sang giờ thật:
+    - timer IO không bắn bù qua cú nhảy (giới hạn `IO_MAX_CATCH_UP_S`);
+    - report theo lịch có thể gửi thêm một lần ngay trong phút đó nếu phút đó đúng lịch. Hai phút của hai đồng hồ khác nhau, nên chỉ các lần kiểm tra lặp lại trong cùng một phút là không gửi trùng.
+  - Chỉ nhận giờ thật (`sysmgr_utc_ms()`, 0 khi chưa có):
+    - TLS: ngày của chứng chỉ không bị kiểm khi chưa có giờ;
+    - kiểm chứng chỉ khi upload;
+    - giờ ghi trong log. Log trải qua nhiều lần khởi động, còn đồng hồ thiết bị bắt đầu lại từ 2020 ở mỗi lần, nên log vẫn ghi `[boot N +hh:mm:ss]`: cùng đồng hồ đó, kèm số lần boot.
+  - Múi giờ được đọc ngay sau khi init đọc config `system` (`sysmgr_set_zone`), trước khi IO và Edge chạy.
+  - `POST /api/time` không nhận năm trước 2024, nên giờ 2020 không thể bị đặt ngược vào làm giờ thật.
 - Nguồn giờ giữ như ESP32: NTP hoặc `POST /api/time`. **Không thêm** RTC giữ giờ hay giờ mạng LTE.
 
 ### 10.5 Tìm gateway trong LAN (FinderTool)

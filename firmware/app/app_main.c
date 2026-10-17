@@ -229,6 +229,7 @@ static void init_task(void *arg)
     cJSON *sys = store_get("system");
     if (!sys)
         sys = cfg_default(&env, "system");
+    sysmgr_set_zone(sys);  // before IO and Edge read the device clock (one source; Codex)
     // The IO (spec §6.3 step 4): keepOutputs restored, the factory record read, the ADC started.
     cJSON *ioc = store_get("io");
     if (!ioc)

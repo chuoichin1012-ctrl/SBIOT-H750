@@ -35,7 +35,7 @@ export function reportDefs(dev: DeviceInfo, nodeNames: string[], anyOnChange: bo
     { id: 'reportRetain', label: 'Report retained', kind: 'check', help: 'Retain report messages', show: (v) => report(v) && mqtt(v) },
     { id: 'periodic', label: 'Periodic', kind: 'check', help: 'Report at a fixed interval', show: report },
     { id: 'interval', label: 'Interval', kind: 'number', min: 1, max: 36000, unit: 's', show: (v) => report(v) && !!v.periodic },
-    { id: 'scheduled', label: 'Scheduled', kind: 'check', help: 'Report on the clock (needs NTP)', show: report },
+    { id: 'scheduled', label: 'Scheduled', kind: 'check', help: "Report on the gateway's clock (network time once set, else the time since power-on)", show: report },
     {
       id: 'schedule', label: 'Schedule', kind: 'select', show: (v) => report(v) && !!v.scheduled,
       options: [[0, 'Every hour, on the hour'], [1, 'Every 15 minutes'], [2, 'Every minute'], [3, 'Once a day at a set time']],

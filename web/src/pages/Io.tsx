@@ -204,7 +204,7 @@ function Functions() {
     <>
       <Panel><Fields defs={defs.general} {...p} /></Panel>
       <Panel title="Scheduled actions">
-        <p class="pt-1 text-[13px] text-muted">Timers run on the gateway clock. Turn on NTP in Settings so they fire at the right time.</p>
+        <p class="pt-1 text-[13px] text-muted">Timers run on the gateway clock: network time once set, else the time since power-on (2020-01-01 00:00 at start). Turn on NTP in Settings for real times.</p>
         <div class="grid gap-x-6 lg:grid-cols-2">
           {defs.timers.map((t, i) => (
             <fieldset key={i} class="mt-2 border-t border-line pt-1">

@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "clock.h"
 #include "io_core.h"
 
 static int failures;
@@ -198,6 +199,28 @@ static void test_persist(void)
 
 #define DAY0 1767225600  // 2026-01-01 00:00:00 UTC
 
+// The one device clock (the user, 2026-10-17): with no real time the timers run on 2020-01-01 00:00:00 local
+// plus the uptime, as iomgr passes sysmgr_now_ms() with clock_set true; the jump to a real time fires nothing.
+static void test_timers_device_clock(void)
+{
+    io_cfg_t cfg = cfg_of("{\"keepOutputs\":0,"
+                          "\"timer0Enabled\":1,\"timer0Time\":\"08:00:00\",\"timer0Action\":1,\"timer0Output\":0,\"timer0OutputAction\":1}");
+    io_core_t c;
+    io_core_init(&c, &cfg, 0x3);
+    int tz = 7;
+    uint64_t up = 8ull * 3600 * 1000 - 3000;  // 3 s before 8 h of uptime
+    for (int i = 0; i < 2; i++, up += 2000)
+        io_core_timers(&c, clock_device_ms(0, up, tz) / 1000, tz, true, 0);
+    CHECK(!io_core_do_get(&c, 0), "before 8 h of uptime: DO1 still off");
+    io_core_timers(&c, clock_device_ms(0, up + 1000, tz) / 1000, tz, true, 0);
+    CHECK(io_core_do_get(&c, 0), "08:00 on the device clock (8 h after power-on, UTC+7): DO1 on");
+    io_core_do_set(&c, 0, false, 0);
+    int64_t real = DAY0 + 8 * 3600 - tz * 3600 + 30;  // NTP answers: 08:00:30 local, a real day
+    io_core_timers(&c, clock_device_ms(real * 1000, up + 2000, tz) / 1000, tz, true, 0);
+    io_core_timers(&c, clock_device_ms((real + 1) * 1000, up + 3000, tz) / 1000, tz, true, 0);
+    CHECK(!io_core_do_get(&c, 0), "the jump from 2020 to the real time fires nothing");
+}
+
 static void test_timers(void)
 {
     io_cfg_t cfg = cfg_of("{\"keepOutputs\":0,"
@@ -256,6 +279,7 @@ int main(void)
     test_do();
     test_persist();
     test_timers();
+    test_timers_device_clock();
     printf("test_io_core: %s\n", failures ? "FAILED" : "ok");
     return failures ? 1 : 0;
 }

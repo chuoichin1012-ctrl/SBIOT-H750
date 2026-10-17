@@ -658,7 +658,7 @@ static edge_kind_t slot_value(void *ctx, void *slot, double *v, const char **out
         *v = p->value;
         return p->valid ? EDGE_NUMBER : EDGE_NO_VALUE;
     }
-    return edge_sys_value((int)(s - s_sys_handle), sysmgr_utc_ms(), sysmgr_serial(), s_mac, APP_VERSION, v, out_text, buf);
+    return edge_sys_value((int)(s - s_sys_handle), sysmgr_now_ms(), sysmgr_serial(), s_mac, APP_VERSION, v, out_text, buf);
 }
 
 static void report(const char *why)
@@ -812,7 +812,7 @@ static void rpt_task(void *arg)
                 next_periodic = now_ms() + (int64_t)R.interval_s * 1000;
             report("periodic");
         }
-        if (R.scheduled && edge_schedule_due(sysmgr_utc_ms() / 1000, sysmgr_timezone(), R.schedule, R.hour, R.minute, &last_minute)) {
+        if (R.scheduled && edge_schedule_due(sysmgr_now_ms() / 1000, sysmgr_timezone(), R.schedule, R.hour, R.minute, &last_minute)) {
             report("scheduled");
             SLOG_I("edge", "scheduled report sent");
         }

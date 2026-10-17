@@ -34,15 +34,18 @@ function functionDefs(d: DeviceInfo) {
   ];
   const outputs: FieldDef[] = d.io.do
     ? [
-        { id: 'keepOutputs', label: 'Keep outputs after restart', kind: 'select', options: ON_OFF },
+        {
+          id: 'keepOutputs', label: 'Keep outputs after restart', kind: 'select', options: ON_OFF,
+          help: 'Relays keep their state through a restart or a watchdog reset; after a power loss every output starts off.',
+        },
         ...range(d.io.do).flatMap((n): FieldDef[] => [
           {
             id: `do${n - 1}Mode`, label: `DO${n} action`, kind: 'select',
-            options: [[0, 'No action'], [1, 'Output hold (pulse, then back)'], [2, 'Timer flip (blink while on)']],
+            options: [[0, 'No action'], [1, 'Output hold (pulse, then back)'], [2, 'Timer flip (flips by itself)']],
           },
           {
             id: `do${n - 1}FlipDelay`, label: `DO${n} time`, kind: 'number', min: 1, max: 65535, unit: 's', show: (v) => Number(v[`do${n - 1}Mode`]) > 0,
-            help: 'Output hold: how long a switch lasts. Timer flip: the toggle period.',
+            help: 'Output hold: how long a switch lasts. Timer flip: the output flips every this many seconds, from start-up; a command sets it now and the flipping goes on.',
           },
         ]),
       ]

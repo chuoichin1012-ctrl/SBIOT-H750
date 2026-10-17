@@ -5,6 +5,8 @@
 #include "adc_core.h"
 #include "adc_drv.h"
 #include "blog.h"
+#include "board.h"
+#include "dohold.h"
 #include "io_core.h"
 #include "io_mb.h"
 #include "main.h"  // the pin names (app.ioc)
@@ -29,6 +31,10 @@ static reload_t s_button;
 static SemaphoreHandle_t s_lock;  // s_core and s_adc
 static StaticSemaphore_t s_lock_mem;
 static uint8_t s_latched;
+// Restart Hold (dohold.h): what the latch holds, for the next boot; at DO_HOLD_ADDR (app.ld, check_elf).
+static do_hold_t s_dohold __attribute__((section(".dohold"), aligned(32)));
+static uint8_t s_hold_cmd;
+static bool s_hold_valid;
 static volatile bool s_factory;
 volatile bool g_io_trace;  // bench: log each change of the outputs and each AI window (bench_io.c 'D')
 static TaskHandle_t s_io, s_reload;
@@ -39,18 +45,42 @@ static uint32_t now_ms(void) { return (uint32_t)(now_us() / 1000u); }
 static void lock(void) { xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock(void) { xSemaphoreGive(s_lock); }
 
-// The outputs to the 74HC573: D1/D2, then a pulse on LE (OE is low since board_latch_zero). Under s_lock.
+static void hold_flush(void)
+{
+    SCB_CleanDCache_by_Addr((uint32_t *)&s_dohold, sizeof s_dohold);  // in RAM before any reset (as hb_reason)
+    __DSB();
+}
+
+// The record, as now: written whenever the latch or what is commanded changes, and once at start (Codex).
+static void hold_publish(void)
+{
+    s_hold_cmd = io_core_commanded(&s_core);
+    do_hold_set(&s_dohold, s_core.cfg.keep, s_latched, s_hold_cmd);
+    hold_flush();
+    s_hold_valid = true;
+}
+
+// The outputs to the 74HC573: D1/D2, then a pulse on LE (OE is low since board_latch_init). The hold record is
+// invalidated before the latch changes and published after (Codex): a reset in between finds no record and
+// starts with everything off, never with a mask the latch does not hold. Under s_lock.
 static void latch(void)
 {
     uint8_t m = io_core_outputs(&s_core);
-    if (m == s_latched)
+    if (m == s_latched) {
+        if (!s_hold_valid || io_core_commanded(&s_core) != s_hold_cmd)
+            hold_publish();
         return;
+    }
+    do_hold_invalidate(&s_dohold);
+    hold_flush();
+    s_hold_valid = false;
     HAL_GPIO_WritePin(DO1_D_GPIO_Port, DO1_D_Pin, (m & 1) ? GPIO_PIN_SET : GPIO_PIN_RESET);
     HAL_GPIO_WritePin(DO2_D_GPIO_Port, DO2_D_Pin, (m & 2) ? GPIO_PIN_SET : GPIO_PIN_RESET);
     HAL_GPIO_WritePin(LATCH_LE_GPIO_Port, LATCH_LE_Pin, GPIO_PIN_SET);  // transparent: Q follows D
     (void)LATCH_LE_GPIO_Port->ODR;
     HAL_GPIO_WritePin(LATCH_LE_GPIO_Port, LATCH_LE_Pin, GPIO_PIN_RESET);  // latched
     s_latched = m;
+    hold_publish();
     if (g_io_trace)
         blog("io: outputs 0x%02x at %lu ms\r\n", m, (unsigned long)now_ms());
 }
@@ -108,9 +138,19 @@ static void io_task(void *arg)
             SLOG_W("io", "a timer restarts the gateway");
             sysmgr_restart_later(1000);
         }
-        reload_ev_t ev = reload_step(&s_button, HAL_GPIO_ReadPin(RELOAD_GPIO_Port, RELOAD_Pin) == GPIO_PIN_RESET, now);
-        if (ev == RELOAD_HINT) {
-            blog("io: Reload held 3 s: release now to restore the factory settings\r\n");
+        bool pressed = HAL_GPIO_ReadPin(RELOAD_GPIO_Port, RELOAD_Pin) == GPIO_PIN_RESET;
+        reload_ev_t ev = reload_step(&s_button, pressed, now);
+        if (!s_button.down)
+            wdog_set_button(0);  // LED WORK back to normal once reload_step has the release (debounced; Codex)
+        if (ev == RELOAD_HINT_RESTART) {
+            wdog_set_button(1);
+            blog("io: Reload held 3 s: release now to restart, or hold to 10 s to restore the factory settings\r\n");
+        } else if (ev == RELOAD_HINT_FACTORY) {
+            wdog_set_button(2);
+            blog("io: Reload held 10 s: release now to restore the factory settings (past 15 s: nothing)\r\n");
+        } else if (ev == RELOAD_RESTART) {
+            SLOG_W("io", "Reload button: restarting");
+            sysmgr_restart_later(500);
         } else if (ev == RELOAD_FACTORY) {
             s_factory = true;
             xTaskNotifyGive(s_reload);
@@ -130,33 +170,26 @@ static void reload_task(void *arg)
             if (store_factory_reset() != STORE_OK)  // the store restarts the gateway either way
                 SLOG_E("io", "some settings could not be erased");
         }
-        uint8_t mask;
-        lock();
-        bool save = io_core_persist_take(&s_core, &mask);
-        unlock();
-        if (save) {
-            bool ok = store_state_set("do", &mask, 1) == STORE_OK;
-            lock();
-            io_core_persist_done(&s_core, mask, ok);
-            unlock();
-        }
     }
 }
 
-void iomgr_start(const cJSON *io, const cJSON *sys, nor_t *spi4)
+void iomgr_start(const cJSON *io, const cJSON *sys, nor_t *spi4, bool held)
 {
     s_lock = xSemaphoreCreateMutexStatic(&s_lock_mem);
     io_cfg_t cfg;
     io_cfg_parse(io, &cfg);
     uint32_t now = now_ms();
     io_core_init(&s_core, &cfg, di_pins());
-    uint8_t mask = 0;
-    bool found = cfg.keep && store_state_get("do", &mask, 1) == 1;
-    io_core_restore(&s_core, mask, found, now);
-    s_latched = 0;  // board_latch_zero latched zeros
-    latch();
-    if (found)
-        blog("io: outputs restored (0x%02x)\r\n", mask);
+    // Restart Hold: on a held boot the latch still holds the record's mask and the outputs go on from what was
+    // commanded; otherwise board_latch_init latched zeros and everything starts off. Timer flips start either way.
+    uint8_t latched = 0, commanded = 0;
+    if (held && !do_hold_get(&s_dohold, &latched, &commanded))
+        held = false;  // cannot happen: the bootloader and app_main checked the same record
+    io_core_restore(&s_core, held ? commanded : 0, now);
+    s_latched = held ? latched : 0;
+    latch();  // may end a pulse cut by the reset; publishes the record either way
+    if (held)
+        blog("io: outputs held through the restart (latch 0x%02x)\r\n", latched);
     reload_init(&s_button);
     // The IO as a Modbus slave on both ports (io.modbusAddress, spec §6.4; the bridges ask it).
     static const io_mb_ops_t ops = {IO_DO, IO_DI, ADC_CH, iomgr_do_get, iomgr_do_set, iomgr_di_get, iomgr_ai_ua, iomgr_ai_ok};

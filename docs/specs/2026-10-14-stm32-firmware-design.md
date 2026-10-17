@@ -63,7 +63,7 @@ Lấy từ `docs/Job2.PDF`. Những mục có dấu (✓) phải đối chiếu 
 | SPI4 SCK / NSS / MISO / MOSI | PE2 / PE4 / PE5 / PE6 | GD25Q32ESIG 4 MB, dùng cho dữ liệu |
 | DI1 / DI2 | PB7 / PB6 | Opto LTV-814 cộng pull-up: **mức 0 nghĩa là ngõ vào đang tác động** (không có cổng đảo như GW100) |
 | DO1 / DO2 | PD10 / PD11 → 74HC573 D1/D2 | Q1/Q2 → S8050 → relay HF33F: mức cao làm relay hút |
-| 74HC573 LE / OE | PD14 / PD15 | R108 và R103 kéo xuống GND. Lúc cấp nguồn latch có trạng thái bất định (§11.2) |
+| 74HC573 LE / OE | PD14 / PD15 | R108 và R103 kéo xuống GND; C43 nối OE lên VCC (OE tạm cao lúc cấp nguồn). Board bench không hàn R103. Lúc cấp nguồn latch có trạng thái bất định (§11.2). Không do CubeMX cấu hình: `board_latch_init` tự cấu hình (Restart Hold, §11.2) |
 | AI1 / AI2 | PC2_C / PC3_C = **ADC3_INP0 / ADC3_INP1** (single-ended) | 4–20 mA qua shunt 120 Ω, LM2904 hệ số 0,499, nên ADC thấy 0,24–1,2 V. VREF+ = REF3030 3,0 V. ADC3 chạy **oversampling phần cứng, kích bằng timer, BDMA vòng vào SRAM4** (§6.6) |
 | WDI (SGM706) + LED WORK | PC10 | Qua Q6/Q3 |
 | LED_NET | PE11 | |
@@ -283,6 +283,12 @@ Thang ưu tiên của FreeRTOS là 0–31 (`configMAX_PRIORITIES` = 32). `n` là
 | `reload` | 1 | 2 KB | 3 | Nút Reload |
 | `syslog`, `idle` | 1 mỗi loại | 3 / 2 KB | 2 | Log, `idleRestart` |
 
+**Chế độ DO** (`do<i>Mode`, người dùng 2026-10-17, đối chiếu USR-M100 Bảng 17):
+- 0, No action: ngõ ra theo lệnh.
+- 1, Output hold: một lệnh đổi ngõ ra trong `do<i>FlipDelay` giây, rồi ngõ ra về trạng thái trước. Phải có lệnh.
+- 2, Timer flip: ngõ ra **tự đảo** mỗi `do<i>FlipDelay` giây, ngay từ lúc khởi động, không cần lệnh. Một lệnh (web, Modbus, MQTT/Edge, linkage, timer) đặt ngõ ra ngay, rồi ngõ ra tiếp tục đảo từ đó.
+- `keepOutputs` (Restart Hold) độc lập với chế độ, xem §11.2 bước 2.
+
 Stack của các task Edge (`edge_bus[n]`, `edge_tcpN`, `edge_ctl`, `edge_rpt`) cấp từ heap lúc boot, chỉ khi Edge bật và đúng theo cấu hình (Plan 08c), không nằm trong DTCM hay AXI tĩnh.
 
 Ngoài bảng trên còn có:
@@ -345,7 +351,7 @@ Code trên QSPI không được cấu hình lại chính đường đang dùng �
    1. `store`;
    2. `syslog`;
    3. `netmgr`. UART3 do `netmgr/lte` tự khởi tạo và sở hữu, không đi qua module `serial`;
-   4. `iomgr`, khôi phục `keepOutputs`;
+   4. `iomgr`: ngõ ra tiếp tục từ bản ghi Restart Hold khi lần boot này giữ latch (§11.2), các DO Timer flip bắt đầu đảo;
    5. `serial`, phải chạy trước mọi module subscribe cổng nối tiếp;
    6. `services`: bridge[n], MQTT và Edge khi được bật;
    7. `webapi`;
@@ -700,7 +706,7 @@ Những gì Plan 10b thêm (mất mạng lâu):
   - Các dịch vụ chỉ áp dụng nó **sau khi khởi động lại gateway**. Không có cấu hình lại khi đang chạy, nên `store` không cần listener cho các dịch vụ.
 - Giữ các quy tắc của bản ESP32:
   - chỉ ghi khi lưu cấu hình. Ngoại lệ là bộ đếm boot `st.boot`, ghi một lần nhỏ ở mỗi lần boot để log có dạng `[boot N …]` (`store.c:219`);
-  - trạng thái DO chỉ ghi khi bật `keepOutputs` và có thay đổi;
+  - trạng thái DO không còn ghi vào flash: Restart Hold giữ nó bằng chính latch (§11.2);
   - factory reset xóa `cfg`, `edge`, `cert` và giữ lại `log`;
   - log TSDB đánh khóa bằng số thứ tự tăng dần.
 - **Luồng cấu hình (Plan 09b, người dùng, 2026-10-16):**
@@ -1031,7 +1037,7 @@ Nguồn không bao giờ bị ghi. Mọi lần chờ flash đều có deadline, 
 
    Mất điện **trước khi** xóa xong sector đầu của staging thì staging có thể còn nguyên. Khi đó, lần boot thường sau đó vẫn cài nó, và người dùng phải giữ Reload lần nữa. Từ lúc xóa xong, image trong staging không bao giờ được cài lại.
 
-   Bước này không xóa cấu hình (`cfg`, `edge`, `cert`). Muốn về cấu hình gốc thì dùng Reload 3–15 s của app (§11.4).
+   Bước này không xóa cấu hình (`cfg`, `edge`, `cert`). Muốn về cấu hình gốc thì dùng Reload 10–15 s của app (§11.4).
 2. **Gieo firmware gốc** (chỉ một lần, ở lần boot đầu tiên sau khi sản xuất). Điều kiện: slot factory **chưa có magic** `SBIO` và `Q` hợp lệ. Khi đó `copy` Q → factory.
    - Thất bại thì chỉ in log rồi đi tiếp.
    - Magic được ghi sau cùng, nên mất điện giữa chừng thì lần boot sau gieo lại từ đầu.
@@ -1052,22 +1058,31 @@ Nguồn không bao giờ bị ghi. Mọi lần chờ flash đều có deadline, 
 
 **Trình tự mỗi lần boot:**
 1. **Kick WDI.**
-2. **Ngõ ra an toàn:**
-   1. OE = 1, để 74HC573 đưa ngõ ra về hi-Z; R110/R113 kéo base của transistor xuống nên relay nhả;
-   2. D1/D2 = 0;
-   3. xung LE;
-   4. OE = 0.
+2. **Ngõ ra: Restart Hold hay an toàn** (`board_latch_init`, việc đầu tiên của `boot_early`, trước `MX_GPIO_Init`; LE và OE không do CubeMX cấu hình). Người dùng, 2026-10-17: **Restart Hold** (`keepOutputs`) nghĩa là khi MCU reset mềm thì không tạo xung chốt cho 74HC573, nên relay giữ nguyên trạng thái, không phụ thuộc chế độ DO. Sau mất điện, mọi DO bắt đầu ở tắt.
+   - **Giữ** khi `do_hold_keep()` đúng: RCC_RSR không có POR và không có BOR, và bản ghi `do_hold_t` (một dòng 32 byte của SRAM4 ở `DO_HOLD_ADDR` 0x3800FBE0, có magic và CRC, do app ghi; `dohold.h`) hợp lệ, với `keep` = 1. Khi đó LE = 0 và OE = 0 được đặt mức trước rồi mới chuyển sang output, **không bao giờ lên cao**. Latch giữ nguyên ngõ ra; app đọc mặt nạ từ bản ghi.
+   - **An toàn** trong mọi trường hợp khác:
+     1. OE = 1, để 74HC573 đưa ngõ ra về hi-Z; R110/R113 kéo base của transistor xuống nên relay nhả;
+     2. D1/D2 = 0;
+     3. xung LE;
+     4. OE = 0;
+     5. bản ghi bị xóa, để một bản ghi cũ không bao giờ quay lại.
+   - App ra lại đúng quyết định đó (cùng RSR, trước khi `report_boot` xóa nó; cùng bản ghi).
+   - `iomgr` hủy bản ghi **trước** khi đổi latch và ghi lại **sau** khi đổi; nó cũng ghi bản ghi lúc khởi động và khi mặt nạ "được lệnh" thay đổi (Codex). Reset rơi vào giữa hai bước thì không có bản ghi, nên mọi DO tắt; không bao giờ có một mặt nạ mà latch không giữ.
+   - Khi giữ, ngõ ra tiếp tục từ mặt nạ "được lệnh":
+     - follow: giữ giá trị;
+     - Output hold: về trạng thái nghỉ. Một xung bị reset cắt ngang sẽ kết thúc ở lần chốt đầu tiên;
+     - Timer flip: đảo tiếp từ pha đã lưu.
 
    Ngoài ra LTE_PWR = LTE_RESET = 0 và ETH_RESET giữ ở mức reset.
 
-   **Cửa sổ không được bảo đảm trên board hiện tại:** từ lúc cấp nguồn, hoặc từ lúc MCU reset trong khi latch vẫn được cấp điện, cho tới bước 2.1 (vài ms), ngõ ra của latch có thể ở trạng thái cũ hoặc bất định, vì R103 kéo OE xuống GND.
+   **Giới hạn phần cứng:** trong lúc MCU đang reset (kể cả khi giữ NRST), các chân thả nổi. LE được R108 giữ ở thấp. OE chỉ được giữ ở thấp nếu **R103** được hàn; board bench không hàn R103, nên OE chỉ còn điện tích của C43, và firmware không bảo đảm được mức của nó cho tới khi `board_latch_init` chạy. Khi bật nguồn, từ lúc cấp điện tới bước 2 (vài ms), ngõ ra của latch có thể bất định.
 3. Cấu hình clock và QSPI (§6.2), SPI4.
 4. Lấy mẫu Reload rồi chạy trình tự quyết định ở trên.
 5. Bàn giao cho app theo §6.2.
 
 Logic quyết định và chép viết trong `boot/install.c` bằng C thuần, với giao diện flash trừu tượng `nor_t`, để chạy host test có cắt điện (§12.1). Việc đọc nút, chờ 5 s và vòng dừng nằm trong `boot.c`.
 
-**Đề xuất cho phần cứng (không bắt buộc):** đổi R103 thành kéo lên 3V3, để đóng cửa sổ nêu ở bước 2.
+**Phần cứng:** hàn R103 (1 kΩ xuống GND) để Restart Hold được bảo đảm trong lúc MCU reset. Đề xuất cũ là đổi R103 thành kéo lên; đề xuất đó trái với Restart Hold nên đã bỏ.
 
 ### 11.3 OTA phía ứng dụng
 
@@ -1093,7 +1108,13 @@ Logic quyết định và chép viết trong `boot/install.c` bằng C thuần, 
   - Ngoài phạm vi này, tiến triển của từng task dịch vụ **không** được giám sát (giữ như ESP32).
   - Phải chốt đúng hậu tố của SGM706 trên BOM, vì mỗi hậu tố có ngưỡng reset khác nhau.
 - **HardFault và vi phạm MPU:** handler ghi PC, LR, CFSR, HFSR, MMFAR/BFAR và tên task vào backup SRAM, rồi reset. Lần boot sau, thông tin này được ghi vào log. Đây là phần thay cho phân vùng coredump của bản ESP32.
-- **Reload:** nhấn 3–15 s **trong lúc app chạy** để khôi phục cấu hình gốc, giữ lại log. Nếu nút đã được giữ từ trước khi app chạy (ví dụ vừa khôi phục firmware gốc ở §11.2), app chỉ tính từ lần nhấn sau khi nhả.
+- **Reload trong lúc app chạy** (người dùng, 2026-10-17). Thời gian tính từ lúc nhấn tới lúc thả:
+  - dưới 3 s: không làm gì;
+  - 3 s tới dưới 10 s: **khởi động lại**;
+  - 10–15 s: **khôi phục cấu hình gốc**, giữ lại log;
+  - quá 15 s: không làm gì.
+
+  LED WORK báo vùng thời gian đang ở: nháy nhanh 0,2 s từ 3 s (thả ra là restart), nháy 0,5 s từ 10 s (thả ra là khôi phục gốc), về nhịp thường khi thả. Console cũng in một dòng ở mỗi mốc. Nếu nút đã được giữ từ trước khi app chạy (ví dụ vừa khôi phục firmware gốc ở §11.2), app chỉ tính từ lần nhấn sau khi nhả.
 - **BOR:** đặt option byte BOR level 2.
 
 ### 11.5 Chống clone

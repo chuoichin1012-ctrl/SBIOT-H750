@@ -17,16 +17,21 @@ reload_ev_t reload_step(reload_t *r, bool pressed, uint32_t now_ms)
         if (pressed) {
             r->down = true;
             r->since = now_ms;
-            r->hinted = false;
+            r->hinted = r->hinted_factory = false;
             r->up = 0;
         }
         return RELOAD_NONE;
     }
     if (pressed) {
         r->up = 0;
-        if (!r->hinted && now_ms - r->since >= RELOAD_MIN_MS) {
+        uint32_t held = now_ms - r->since;
+        if (!r->hinted && held >= RELOAD_RESTART_MS) {
             r->hinted = true;
-            return RELOAD_HINT;
+            return RELOAD_HINT_RESTART;
+        }
+        if (!r->hinted_factory && held >= RELOAD_FACTORY_MS) {
+            r->hinted_factory = true;
+            return RELOAD_HINT_FACTORY;
         }
         return RELOAD_NONE;
     }
@@ -36,5 +41,7 @@ reload_ev_t reload_step(reload_t *r, bool pressed, uint32_t now_ms)
         return RELOAD_NONE;
     r->down = false;
     uint32_t held = r->upat - r->since;
-    return held >= RELOAD_MIN_MS && held <= RELOAD_MAX_MS ? RELOAD_FACTORY : RELOAD_NONE;
+    if (held >= RELOAD_FACTORY_MS && held <= RELOAD_MAX_MS)
+        return RELOAD_FACTORY;
+    return held >= RELOAD_RESTART_MS && held < RELOAD_FACTORY_MS ? RELOAD_RESTART : RELOAD_NONE;
 }

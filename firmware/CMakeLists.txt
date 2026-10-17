@@ -91,7 +91,7 @@ set(PROTO ${CMAKE_SOURCE_DIR}/components/proto)
 set(MONO ${CMAKE_SOURCE_DIR}/third_party/monocypher)
 set(OTA_BOOT ${OTA}/sha256.c ${OTA}/ota_image.c ${OTA}/bind.c)
 set(MONO_SRC ${MONO}/monocypher.c ${MONO}/monocypher-ed25519.c)
-set(BOOT_OWN boot/boot.c boot/qspi_flash.c boot/install.c ${BOARD}/board_io.c ${BOARD}/pace.c ${BOARD}/spi_nor.c ${BOARD}/crc32.c ${OTA_BOOT})
+set(BOOT_OWN boot/boot.c boot/qspi_flash.c boot/install.c ${BOARD}/board_io.c ${BOARD}/pace.c ${BOARD}/spi_nor.c ${BOARD}/crc32.c ${BOARD}/dohold.c ${OTA_BOOT})
 add_executable(boot ${BOOT_CUBE} ${CUBE}/boot/startup_stm32h750xx.s ${BOOT_HAL} ${BOOT_OWN} ${MONO_SRC})
 image_includes(boot ${CUBE}/boot)
 target_include_directories(boot PRIVATE boot ${OTA}/include ${MONO} ${CMAKE_BINARY_DIR}/gen)
@@ -115,7 +115,7 @@ set(APP_RTOS
   ${RTOS}/portable/GCC/ARM_CM4F/port.c ${RTOS}/portable/MemMang/heap_5.c)
 set(APP_OWN
   app/startup_app.c app/mpu_app.c app/app_main.c app/hal_tick.c app/image_header.c app/bench_ota.c app/bench_serial.c app/flash_spi4.c app/heap_newlib.c ${BOARD}/heap_wrap.c
-  ${BOARD}/board_io.c ${BOARD}/pace.c ${BOARD}/hb.c ${BOARD}/now_us.c ${BOARD}/tick64.c ${BOARD}/wdog.c ${BOARD}/blog.c ${BOARD}/crc32.c
+  ${BOARD}/board_io.c ${BOARD}/pace.c ${BOARD}/hb.c ${BOARD}/now_us.c ${BOARD}/tick64.c ${BOARD}/wdog.c ${BOARD}/blog.c ${BOARD}/crc32.c ${BOARD}/dohold.c
   ${BOARD}/syscalls.c ${BOARD}/spi_nor.c ${OTA}/sha256.c ${OTA}/ota_image.c ${OTA}/ota_app.c ${OTA}/bind.c
   app/store_port.c ${STORE}/store.c ${STORE}/fal_nor.c ${CMAKE_SOURCE_DIR}/components/syslog/syslog.c ${CFGM}/cfgmodel.c ${PROTO}/ipacl.c ${PROTO}/jsonscan.c
   ${BOARD}/board_rng.c ${BOARD}/rng_core.c ${NET}/ip101.c ${NET}/netcfg.c ${NET}/eth_drv.c ${NET}/netmgr.c ${NET}/lte.c ${NET}/lte_uart.c ${NET}/lte_power.c ${NET}/inet.c ${PROTO}/cmux.c ${PROTO}/at_parse.c app/fdset_check.c

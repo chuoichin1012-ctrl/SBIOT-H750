@@ -9,6 +9,7 @@
 #include "bind.h"
 #include "bind_key.h"
 #include "board.h"
+#include "dohold.h"
 #include "pace.h"
 #include "flashmap.h"
 #include "gpio.h"
@@ -111,7 +112,14 @@ static void __attribute__((noreturn)) jump(uint32_t msp, uint32_t pc)
 
 void boot_early(void)
 {
-    MX_GPIO_Init();  // boot.ioc levels: latch OE high (hi-Z), D1/D2/LE low, modem keys low, PHY in reset
+    // Restart Hold (dohold.h): first of all, before anything drives GPIOD. RCC_RSR is the app's to clear.
+    uint32_t rsr = RCC->RSR;
+    do_hold_t *rec = (do_hold_t *)DO_HOLD_ADDR;
+    bool hold = do_hold_keep(rsr & RCC_RSR_PORRSTF, rsr & RCC_RSR_BORRSTF, rec);
+    board_latch_init(hold);
+    if (!hold)
+        do_hold_invalidate(rec);  // a power-on, or no hold: a stale record never comes back (Codex)
+    MX_GPIO_Init();  // boot.ioc levels: D1/D2 low, modem keys low, PHY in reset (LE/OE: board_latch_init)
     board_kick();
 }
 
@@ -164,7 +172,6 @@ static void __attribute__((noreturn)) start_app(void)
 void boot_main(void)
 {
     board_kick();
-    board_latch_zero();
     DBGMCU->APB4FZ1 |= DBGMCU_APB4FZ1_DBG_IWDG1;  // a core halted by the debugger does not trip IWDG1
     log_line("\r\nSBIOT-H750 boot " BOOT_VERSION " rsr=%08lx sysclk=%lu\r\n", (unsigned long)RCC->RSR,
              (unsigned long)HAL_RCC_GetSysClockFreq());

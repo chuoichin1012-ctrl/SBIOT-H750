@@ -206,6 +206,16 @@ def main():
           and not any(a < ni[0] + ni[1] and ni[0] < a + sz for a, sz in bs.values()),
           'app: .noinit NOLOAD, 32-aligned, in SRAM4 outside the ADC buffer, in no zero table, outside the bootloader (%s)'
           % ('0x%08x +%d' % ni if ni else 'missing'))
+    # Restart Hold (dohold.h): the record at the address the bootloader reads, NOLOAD, clear of the rest.
+    hdr_h = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'components', 'board', 'include', 'dohold.h')
+    want = int(re.search(r'#define DO_HOLD_ADDR (0x[0-9A-Fa-f]+)u', open(hdr_h).read()).group(1), 16)
+    dh = sec.get('.dohold')
+    dh_hdr = [l for l in run('arm-none-eabi-readelf', '-SW', app).splitlines() if ' .dohold ' in l]
+    others = [(n, a, sz) for n, (a, sz) in sec.items() if n != '.dohold' and sz and a < want + 32 and want < a + sz]
+    check(dh is not None and dh[0] == want and 0 < dh[1] <= 32 and dh_hdr and 'NOBITS' in dh_hdr[0] and not others
+          and not any(a < want + 32 and want < a + sz for a, sz in bs.values()),
+          'app: .dohold NOLOAD at 0x%08x (DO_HOLD_ADDR), 32 bytes, overlapping nothing, outside the bootloader (%s)'
+          % (want, '0x%08x +%d' % dh if dh else 'missing'))
     image_end = sym.get('__image_end__', 0)
     check(QSPI_SLOT[0] < image_end <= QSPI_SLOT[1], 'app: image ends at 0x%08x, inside the slot' % image_end)
 

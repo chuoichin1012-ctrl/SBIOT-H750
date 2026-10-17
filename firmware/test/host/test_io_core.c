@@ -133,23 +133,31 @@ static void test_do(void)
     io_core_do_set(&c, 0, false, 20500);
     io_core_tick(&c, 30000);
     CHECK(!io_core_do_get(&c, 0) && !c.pulsing[0], "commanding the rest state ends the pulse");
-    // Mode 2 (timer flip): toggles every 1 s while commanded on.
-    io_core_do_set(&c, 1, true, 0);
-    CHECK(io_core_do_get(&c, 1) && io_core_commanded(&c) == 0x2, "blink: on; commanded on");
-    io_core_tick(&c, 999);
-    CHECK(io_core_do_get(&c, 1), "on until 1 s");
-    io_core_tick(&c, 1000);
-    CHECK(!io_core_do_get(&c, 1) && io_core_commanded(&c) == 0x2, "off at 1 s, still commanded on");
-    io_core_tick(&c, 2000);
-    CHECK(io_core_do_get(&c, 1), "on at 2 s");
-    io_core_tick(&c, 9500);  // a stalled task: no burst of toggles, the period goes on from now
-    io_core_tick(&c, 9600);
+    // Mode 2 (timer flip, the user 2026-10-17): flips by itself from the start, every 1 s; a command sets the
+    // output now and the flipping goes on from it. Started by io_core_restore, which init always calls at boot.
+    io_core_init(&c, &cfg, 0x3);
+    io_core_restore(&c, 0, 5000);  // boot at 5 s of uptime (Codex: a nonzero start)
+    CHECK(!io_core_do_get(&c, 1) && io_core_commanded(&c) == 0, "flip: off at the start, nothing commanded");
+    io_core_tick(&c, 5999);
+    CHECK(!io_core_do_get(&c, 1), "off until one period after the start");
+    io_core_tick(&c, 6000);
+    CHECK(io_core_do_get(&c, 1) && io_core_commanded(&c) == 0x2, "on at 1 s: by itself; commanded is the phase (Codex)");
+    io_core_tick(&c, 7000);
+    CHECK(!io_core_do_get(&c, 1) && io_core_commanded(&c) == 0, "off at 2 s");
+    io_core_tick(&c, 14500);  // a stalled task: no burst of toggles, the period goes on from now
+    io_core_tick(&c, 14600);
     bool after_stall = io_core_do_get(&c, 1);
-    io_core_tick(&c, 10500);
+    io_core_tick(&c, 15500);
     CHECK(io_core_do_get(&c, 1) != after_stall, "after a stall, the next toggle is one period later");
-    io_core_do_set(&c, 1, false, 11000);
-    io_core_tick(&c, 20000);
-    CHECK(!io_core_do_get(&c, 1) && io_core_commanded(&c) == 0, "off stops the blink and stays off");
+    io_core_do_set(&c, 1, true, 20200);
+    CHECK(io_core_do_get(&c, 1), "a command on: on now");
+    io_core_tick(&c, 21199);
+    CHECK(io_core_do_get(&c, 1), "for one period from the command");
+    io_core_tick(&c, 21200);
+    CHECK(!io_core_do_get(&c, 1), "then the flipping goes on");
+    io_core_do_set(&c, 1, false, 21500);
+    io_core_tick(&c, 22500);
+    CHECK(io_core_do_get(&c, 1), "a command off does not stop it: on one period later");
     // Mode 0 follows.
     cfg = cfg_of(BASE);
     io_core_init(&c, &cfg, 0x3);
@@ -158,41 +166,26 @@ static void test_do(void)
     CHECK(io_core_outputs(&c) == 0x2 && io_core_commanded(&c) == 0x2, "mode 0: follows");
 }
 
-// ---- keepOutputs ----------------------------------------------------------------------------------
+// ---- Restart Hold ---------------------------------------------------------------------------------
 
-static void test_persist(void)
+// At boot io_core_restore takes what a held latch commanded (the hold record), or 0: follow takes the value, a
+// pulse its rest (so a pulse cut by the reset ends), a flip its phase and flips on from it.
+static void test_restore(void)
 {
     io_cfg_t cfg = cfg_of("{\"keepOutputs\":1,\"do0Mode\":0,\"do1Mode\":2,\"do1FlipDelay\":1}");
     io_core_t c;
-    uint8_t m;
     io_core_init(&c, &cfg, 0x3);
-    io_core_restore(&c, 0x2, true, 0);
-    CHECK(io_core_outputs(&c) == 0x2 && c.blink[1], "restore: DO2 in blink mode resumes blinking");
-    CHECK(!io_core_persist_take(&c, &m), "nothing to save right after the restore");
-    io_core_do_set(&c, 0, true, 10);
-    io_core_do_set(&c, 0, false, 20);
-    CHECK(!io_core_persist_take(&c, &m), "on then off before a save: back to the saved mask, no save");
-    io_core_do_set(&c, 0, true, 30);
-    CHECK(io_core_persist_take(&c, &m) && m == 0x3, "a change: save 0x3");
-    io_core_do_set(&c, 0, false, 40);  // during the save
-    io_core_persist_done(&c, 0x3, true);
-    CHECK(io_core_persist_take(&c, &m) && m == 0x2, "a change during a save leads to a second save of the latest (0x2)");
-    io_core_persist_done(&c, 0x2, false);
-    CHECK(io_core_persist_take(&c, &m) && m == 0x2, "a failed save is tried again");
-    io_core_persist_done(&c, 0x2, true);
-    CHECK(!io_core_persist_take(&c, &m), "saved");
-    io_core_tick(&c, 5000);  // blinking never needs a save
-    CHECK(!io_core_persist_take(&c, &m), "a blink step needs no save");
-    // No record in the flash yet: the first take saves.
+    io_core_restore(&c, 0x3, 700);
+    CHECK(io_core_outputs(&c) == 0x3 && io_core_commanded(&c) == 0x3, "follow on, flip in its on phase");
+    io_core_tick(&c, 1700);
+    CHECK(io_core_outputs(&c) == 0x1, "the flip goes on from the held phase, one period later");
+    cfg = cfg_of("{\"keepOutputs\":1,\"do0Mode\":1,\"do0FlipDelay\":2}");
     io_core_init(&c, &cfg, 0x3);
-    io_core_restore(&c, 0, false, 0);
-    CHECK(io_core_persist_take(&c, &m) && m == 0, "no saved mask yet: save the current one");
-    // keepOutputs 0: never saves.
-    cfg = cfg_of(BASE);
-    cfg.keep = false;
+    io_core_restore(&c, 0x1, 0);
+    CHECK(io_core_do_get(&c, 0) && !c.pulsing[0] && io_core_commanded(&c) == 0x1, "a pulse output: its rest state, no pulse");
     io_core_init(&c, &cfg, 0x3);
-    io_core_do_set(&c, 0, true, 0);
-    CHECK(!io_core_persist_take(&c, &m), "keepOutputs 0: no save");
+    io_core_restore(&c, 0, 0);
+    CHECK(io_core_outputs(&c) == 0, "no hold: everything off");
 }
 
 // ---- timers ---------------------------------------------------------------------------------------
@@ -277,7 +270,7 @@ int main(void)
     test_index();
     test_di();
     test_do();
-    test_persist();
+    test_restore();
     test_timers();
     test_timers_device_clock();
     printf("test_io_core: %s\n", failures ? "FAILED" : "ok");

@@ -68,8 +68,8 @@ out_pin('PC10', 'WDI_LED', 'GPIO_PIN_RESET')
 out_pin('PE11', 'LED_NET', 'GPIO_PIN_RESET')
 out_pin('PD10', 'DO1_D', 'GPIO_PIN_RESET')
 out_pin('PD11', 'DO2_D', 'GPIO_PIN_RESET')
-out_pin('PD14', 'LATCH_LE', 'GPIO_PIN_RESET')
-out_pin('PD15', 'LATCH_OE', 'GPIO_PIN_SET')
+# PD14 (LATCH_LE) and PD15 (LATCH_OE) are not CubeMX's: board_latch_init sets them up by hand, so that a soft
+# reset with Restart Hold never drives OE high (the user, 2026-10-17; dohold.h).
 out_pin('PA6', 'LTE_PWR', 'GPIO_PIN_RESET')    # PWRKEY through Q1 (the user, Plan 10: PA6, not PA5)
 out_pin('PA5', 'LTE_RESET', 'GPIO_PIN_RESET')  # RESET_N through Q2 (PA5, not PA4)
 out_pin('PD13', 'ETH_RESET', 'GPIO_PIN_RESET')

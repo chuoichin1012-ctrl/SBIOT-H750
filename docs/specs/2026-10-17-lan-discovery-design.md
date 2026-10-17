@@ -185,7 +185,7 @@ Mỗi gateway chờ ngẫu nhiên 0–200 ms, rồi trả lời:
 - **Host `test_store`:**
   - `store_patch` giữ các member khác, kể cả key lạ;
   - lỗi parse thì không ghi gì;
-  - khóa: khóa giả của host ghi lại thứ tự lock, đọc, ghi, unlock. Test kiểm rằng `store_patch` đọc và ghi trong **một** lần giữ khóa, không unlock ở giữa. Đây là điều kiện để một lần lưu từ task Web phải chờ. Test chỉ chạy một luồng, nên không cần thread.
+  - khóa: khóa giả của host ghi lại thứ tự lock, đọc, ghi, unlock. Test kiểm rằng `store_patch` đọc và ghi trong **một** lần giữ khóa: khóa lồng nhau thì được, nhưng độ sâu khóa không về 0 giữa lúc đọc và lúc ghi. Đây là điều kiện để một lần lưu từ task Web phải chờ. Test chỉ chạy một luồng, nên không cần thread.
 - **C#:** chuỗi ký và HMAC khớp vector; parse `found` và `ack`; từ chối `ack` có `hmac` sai; kiểm cấu hình mạng phía tool; ghép câu trả lời theo `id`.
 - **Web UI:** `npm run test:unit` có quy tắc chặn cổng 48600.
 - **Bench `disc_check.py`, trên board:**

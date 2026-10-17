@@ -6,7 +6,7 @@
 Needs the board running this build's app (installed over UART7: board.upload). Cases:
 1. the boot counter goes up with every boot, and a saved config is there after a reset;
 2. 1000 saves in a row (about 300 KB, so the cfg database collects garbage): none fails, and while
-   they run the CPU still idles, the watchdog task keeps its 200 ms, no DMA transfer fails;
+   they run the CPU still idles, the watchdog task keeps its 50 ms (Plan 11a), no DMA transfer fails;
 3. resets at random moments of that stress: every boot mounts, the store stays writable, and the
    config read back is one that was saved;
 4. a warning reaches the persistent log and is still there after a reset.
@@ -97,22 +97,27 @@ def main():
 
     # 5. SPI4 init forced to fail in the app (r0 at spi_nor_init's return): the store does not
     # mount, so FlashDB never touches the flash; the next boot finds everything as it was.
-    elf = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../build/h750/app.elf')
-    before = find(status(), r'store boot (\d+)')
-    host0 = find(board.listen(2, sends=[(0.3, 'S')]), r'"hostname":"([^"]*)"')
-    fn = board.symbol(elf, 'spi_nor_init') & ~1
-    lines = board.listen(8, during=lambda: board.openocd(
-        'reset halt; bp 0x%08x 2 hw; resume; wait_halt 5000; rbp 0x%08x; '
-        'set ret [expr {[lindex [reg lr] 2] & ~1}]; bp $ret 2 hw; resume; wait_halt 3000; '
-        'rbp $ret; reg r0 0xfffffffe; resume' % (fn, fn)))
-    check(find(lines, r'app: spi4 id \w+ FAILED') is not None and find(lines, r'app: store FAILED') is not None,
-          'spi4 init forced to fail: the store does not mount')
-    lines = board.listen(6, sends=[(3.5, 'S')], during=board.hard_reset)
-    after = find(lines, r'store boot (\d+)')
-    host1 = find(lines, r'"hostname":"([^"]*)"')
-    check(before and after and int(after.group(1)) == int(before.group(1)) + 1 and host0 and host1 and host0.group(1) == host1.group(1),
-          'the next boot finds the store as it was (boot %s -> %s, no write in between)' % (before.group(1) if before else '-',
-                                                                                           after.group(1) if after else '-'))
+    # Skipped while the SIM is locked (Plan 11b, Codex): without the store the app runs the defaults, network
+    # priority 1, and the LTE task attaches. SBIOT_STORE_CASE5=1 runs it.
+    if os.environ.get('SBIOT_STORE_CASE5') == '1':
+        elf = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../build/h750/app.elf')
+        before = find(status(), r'store boot (\d+)')
+        host0 = find(board.listen(2, sends=[(0.3, 'S')]), r'"hostname":"([^"]*)"')
+        fn = board.symbol(elf, 'spi_nor_init') & ~1
+        lines = board.listen(8, during=lambda: board.openocd(
+            'reset halt; bp 0x%08x 2 hw; resume; wait_halt 5000; rbp 0x%08x; '
+            'set ret [expr {[lindex [reg lr] 2] & ~1}]; bp $ret 2 hw; resume; wait_halt 3000; '
+            'rbp $ret; reg r0 0xfffffffe; resume' % (fn, fn)))
+        check(find(lines, r'app: spi4 id \w+ FAILED') is not None and find(lines, r'app: store FAILED') is not None,
+              'spi4 init forced to fail: the store does not mount')
+        lines = board.listen(6, sends=[(3.5, 'S')], during=board.hard_reset)
+        after = find(lines, r'store boot (\d+)')
+        host1 = find(lines, r'"hostname":"([^"]*)"')
+        check(before and after and int(after.group(1)) == int(before.group(1)) + 1 and host0 and host1 and host0.group(1) == host1.group(1),
+              'the next boot finds the store as it was (boot %s -> %s, no write in between)' % (before.group(1) if before else '-',
+                                                                                               after.group(1) if after else '-'))
+    else:
+        print('skip  spi4 init forced to fail (the defaults would wake LTE; SBIOT_STORE_CASE5=1 runs it)')
 
     # 4. The persistent log
     board.listen(2, sends=[(0.3, 'W')])

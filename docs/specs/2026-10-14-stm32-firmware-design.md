@@ -301,7 +301,7 @@ Ngoài bảng trên còn có:
   - Ring RX của USART1/2 là 2 KB, đủ cho khoảng 90 ms ở 230400 baud. Ring của UART3 là 4 KB, đủ cho khoảng 350 ms ở 115200 baud.
   - Tràn ring được đếm thành `overrun`.
   - **Tiêu chí trên bench:** 0 lần overrun trên UART1 (230400 baud, liên tục) và UART3 (PPP tải liên tục), trong lúc LAN bị bơm broadcast 90 Mbit/s.
-- **ETH không làm đói các task thấp hơn.** Mỗi lần thức dậy, `eth_rx` xử lý tối đa 8 frame. Nếu vẫn còn descriptor chờ, nó `vTaskDelay(1)`. Đây là block thật, nên các task thấp hơn được chạy, kể cả khi LAN bị flood. Bench kiểm: Web UI vẫn trả lời và `wdiMaxGapMs` < 400 ms khi LAN bị flood.
+- **ETH không làm đói các task thấp hơn.** Mỗi lần thức dậy, `eth_rx` xử lý tối đa 8 frame. Nếu vẫn còn descriptor chờ, nó `vTaskDelay(1)`. Đây là block thật, nên các task thấp hơn được chạy, kể cả khi LAN bị flood. Bench kiểm: Web UI vẫn trả lời, `iwdgMaxGapMs` < 400 ms và `wdiMaxGapMs` < 600 ms khi LAN bị flood (Plan 11a: WDI đảo theo nhịp LED, 500 ms).
 - Request từ mạng tới được bus trước lần poll Edge kế tiếp, vì `bridge` (8) cao hơn `edge_bus` (5).
 - IO và linkage (6) chạy trên tầng polling (5).
 
@@ -1222,7 +1222,7 @@ Bản ghi phiên bản 1 (`SBBD`, 84 byte, không có MAC và SN): bootloader **
   - multicast;
   - `wdiMaxGapMs` trong lúc OTA, lúc FlashDB dọn rác và lúc format lần đầu;
   - **OTA bị cắt điện ngẫu nhiên 20 lần.** Đây là smoke test; phần fault injection có chủ đích nằm ở host test của bootloader.
-  - **Flood LAN:** bơm broadcast 90 Mbit/s trong lúc UART1 chạy liên tục ở 230400 baud và PPP đang tải. Điều kiện đạt: `overrun` = 0 trên UART1 và UART3, Web UI vẫn trả lời, `wdiMaxGapMs` < 400 ms (§6.1).
+  - **Flood LAN:** bơm broadcast 90 Mbit/s trong lúc UART1 chạy liên tục ở 230400 baud và PPP đang tải. Điều kiện đạt: `overrun` = 0 trên UART1 và UART3, Web UI vẫn trả lời, `iwdgMaxGapMs` < 400 ms và `wdiMaxGapMs` < 600 ms (§6.1, §11.4).
   - **ADC:** mọi tiêu chí trong bảng nghiệm thu ở §6.6, kiểm bằng nguồn dòng chuẩn và bộ bơm nhiễu 50/60 Hz.
   - **MQTT QoS:** ngắt kết nối ở từng pha QoS 1/2, với 3.1 và 3.1.1, `cleanSession` 0 và 1 (§8).
 

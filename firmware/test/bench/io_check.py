@@ -216,18 +216,18 @@ def case_dido():
     check(setup_io(**{'do%dMode' % pulse_do: 0, 'do%dMode' % flip_do: 2, 'do%dFlipDelay' % flip_do: 1}),
           'set up DO%d flip 1 s' % (flip_do + 1))
 
-    def flip():
-        time.sleep(1)
-        set_do(flip_do, True)
-        time.sleep(6)
-        set_do(flip_do, False)
-    tr = trace(flip, 9)
+    # Timer flip flips by itself from start-up (PR #29); a command sets the output and the flipping goes on.
+    tr = trace(lambda: time.sleep(5), 6)
     bit = 1 << flip_do
     edges = [t for (t, m), (_, p) in zip(tr[1:], tr) if (m ^ p) & bit] if len(tr) > 1 else []
-    gaps = [b - a for a, b in zip(edges, edges[1:])][:-1]  # the last edge is the command off
-    stays = wait_di(flip_di, False, 1.5) and not wait_di(flip_di, True, 1.5)
-    check(len(gaps) >= 4 and all(990 <= g <= 1015 for g in gaps) and stays,
-          'mode 2: DO%d toggles every %s ms (1000), and DI%d stays off after an off' % (flip_do + 1, gaps, flip_di + 1))
+    gaps = [b - a for a, b in zip(edges, edges[1:])]
+    check(len(gaps) >= 3 and all(990 <= g <= 1015 for g in gaps),
+          'mode 2: DO%d flips by itself every %s ms (1000), no command' % (flip_do + 1, gaps))
+    set_do(flip_do, False)
+    t0 = time.time()
+    on_again = wait_di(flip_di, True, 2.0)
+    check(on_again and 0.7 <= time.time() - t0 <= 1.6,
+          'a command off sets it off now and the flipping goes on (DI%d on again %.2f s later)' % (flip_di + 1, time.time() - t0))
     d, i = pulse_do, pulse_di
     check(setup_io(do0Mode=0, do1Mode=0, keepOutputs=1), 'set up keepOutputs 1')
     set_do(d, True)

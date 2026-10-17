@@ -24,6 +24,13 @@ int serial_start(int port, const cJSON *pcfg, const cJSON *sys);
 typedef void (*serial_rx_fn)(int port, const uint8_t *data, size_t len, void *ctx);
 int serial_subscribe(int port, serial_rx_fn fn, void *ctx);
 
+/** Every frame of the port, both ways (the WebSocket console's monitor, the user 2026-10-17): each frame sent, from
+ * its writer's task with the bus held, just before it goes (bridge, MQTT, Edge, IO, the console), then an empty
+ * one (NULL, 0) if it did not go out; and each frame received, from serial_rx[n] (also those a transaction takes).
+ * fn must not block. One monitor per port; 0, or -1. */
+typedef void (*serial_mon_fn)(int port, bool tx, const uint8_t *data, size_t len, void *ctx);
+int serial_monitor(int port, serial_mon_fn fn, void *ctx);
+
 /**
  * Sends bytes: waits for a transaction in flight and, with 485 collision avoidance, an idle bus (bounded:
  * the idle time plus `timeout_ms`, then nothing is sent). 0, SERIAL_BUSY when the bus mutex was not

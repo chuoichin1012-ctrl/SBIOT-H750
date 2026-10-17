@@ -2,9 +2,12 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import * as api from '../lib/api';
 import { useDevice, wsIsLog } from '../lib/device';
 import { isHex } from '../lib/validate';
+import { appendLines, lineKind, type Lines } from '../lib/console';
 import { Button, Led, Notice, PageHeader, Panel, type LedState } from '../components/ui';
 
-const MAX_LOG = 64 * 1024;
+const MAX_LINES = 2000;
+const EMPTY: Lines = { lines: [], partial: '' };
+const KIND_CLASS = { tx: 'text-brand', rx: 'text-led-ok', text: 'text-ink' } as const;
 
 const toHex = (buf: ArrayBuffer) =>
   Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
@@ -16,10 +19,10 @@ export function WebsocketPage(_: { path?: string }) {
 
   const sock = useRef<api.ConsoleSocket | null>(null);
   const [state, setState] = useState<[LedState, string]>(['off', 'Not connected']);
-  const [rx, setRx] = useState('');
+  const [rx, setRx] = useState<Lines>(EMPTY);
   const [tx, setTx] = useState('');
   const [txError, setTxError] = useState<string | null>(null);
-  const out = useRef<HTMLTextAreaElement>(null);
+  const out = useRef<HTMLDivElement>(null);
 
   const connect = async () => {
     sock.current?.close();
@@ -28,7 +31,7 @@ export function WebsocketPage(_: { path?: string }) {
     s.onopen = () => setState(['ok', `Connected to ws://${location.hostname}:${d.wsPort}`]);
     s.onerror = () => setState(['err', 'Connection failed. Check the Websocket port in Settings.']);
     s.onclose = () => setState((p) => (p[0] === 'err' ? p : ['off', 'Disconnected']));
-    s.onmessage = (data) => setRx((prev) => (prev + (typeof data === 'string' ? data : `${toHex(data)}\n`)).slice(-MAX_LOG));
+    s.onmessage = (data) => setRx((prev) => appendLines(prev, typeof data === 'string' ? data : `${toHex(data)}\n`, MAX_LINES));
     sock.current = s;
   };
 
@@ -75,9 +78,19 @@ export function WebsocketPage(_: { path?: string }) {
           {log && (
             <Notice tone="warn">Text you send here runs as a command on the gateway.</Notice>
           )}
-          <Panel title="Received" aside={<Button size="sm" onClick={() => setRx('')}>Clear</Button>}>
-            <textarea ref={out} readOnly aria-label="Received data" value={rx}
-              class="my-2 h-80 w-full resize-y rounded-control border border-line bg-tint p-3 font-mono text-[13px] text-ink" />
+          <Panel title={log ? 'Received' : `Traffic on UART${d.wsDirection}`} aside={<Button size="sm" onClick={() => setRx(EMPTY)}>Clear</Button>}>
+            {!log && (
+              <p class="mt-2 text-[13px] text-muted">
+                Every frame on the port: <span class={KIND_CLASS.tx}>TX</span> sent to the device (by any service or from here),{' '}
+                <span class={KIND_CLASS.rx}>RX</span> received from it.
+              </p>
+            )}
+            <div ref={out} role="log" aria-label="Received data"
+              class="my-2 h-80 resize-y overflow-auto whitespace-pre-wrap break-all rounded-control border border-line bg-tint p-3 font-mono text-[13px]">
+              {[...rx.lines, ...(rx.partial ? [rx.partial] : [])].map((l, i) => (
+                <div key={i} class={KIND_CLASS[lineKind(l)]}>{l}</div>
+              ))}
+            </div>
           </Panel>
           <Panel title="Send">
             <textarea aria-label="Data to send" maxLength={4000} value={tx} onInput={(e) => setTx(e.currentTarget.value)}

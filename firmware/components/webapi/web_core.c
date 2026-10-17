@@ -209,3 +209,45 @@ bool web_send_poll(web_send_t *t, size_t queued, bool wrote, uint64_t now_ms)
     }
     return now_ms - t->since >= WEB_STALL_MS;
 }
+
+size_t web_mon_line(char *out, size_t cap, bool tx, const uint8_t *data, size_t len)
+{
+    static const char HEX[] = "0123456789ABCDEF";
+    if (cap < 5)
+        return cap ? (out[0] = '\0', 0) : 0;
+    if (tx && !len && cap >= sizeof "TX not sent\n") {  // the record after a frame that did not go out
+        memcpy(out, "TX not sent\n", sizeof "TX not sent\n");
+        return sizeof "TX not sent\n" - 1;
+    }
+    memcpy(out, tx ? "TX" : "RX", 2);
+    size_t n = 2;
+    for (size_t i = 0; i < len && n + 3 + 2 <= cap; i++) {  // " XX", then room for "\n" and the NUL
+        out[n++] = ' ';
+        out[n++] = HEX[data[i] >> 4];
+        out[n++] = HEX[data[i] & 15];
+    }
+    out[n++] = '\n';
+    out[n] = '\0';
+    return n;
+}
+
+void web_mon_each(const uint8_t *data, size_t len, size_t max, void (*fn)(const uint8_t *d, size_t n, void *ctx), void *ctx)
+{
+    size_t off = 0;
+    do {
+        size_t n = len - off < max ? len - off : max;
+        fn(data ? data + off : NULL, n, ctx);
+        off += n;
+    } while (off < len);
+}
+
+bool web_mon_wait(size_t queued, size_t high, uint64_t *full_since, uint64_t now_ms)
+{
+    if (queued < high) {
+        *full_since = 0;
+        return false;
+    }
+    if (!*full_since)
+        *full_since = now_ms;
+    return now_ms - *full_since < WEB_MON_STUCK_MS;
+}

@@ -112,7 +112,8 @@ def ws_send_bin(s, data):
 
 
 def ws_recv_bin(s, seconds):
-    """Payloads of the binary frames received within `seconds`."""
+    """The frames the port received within `seconds`: the console's "RX <hex>" lines (since the user's monitor,
+    2026-10-17, every frame of the port is a text line, "TX ..." or "RX ..."; binary frames are still read)."""
     s.settimeout(0.2)
     buf, out, end = b'', [], time.time() + seconds
     while time.time() < end:
@@ -133,6 +134,8 @@ def ws_recv_bin(s, seconds):
                 break
             if op == 2:
                 out.append(buf[off:off + n])
+            elif op == 1 and buf[off:off + 3] == b'RX ':
+                out.append(bytes.fromhex(buf[off + 3:off + n].decode().strip()))
             buf = buf[off + n:]
     return out
 

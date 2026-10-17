@@ -3,6 +3,7 @@
 // the store's (FlashDB is only called with it held).
 #include <fal.h>
 #include "fal_nor.h"
+#include "store_port.h"
 
 #define FDB_REGION 0x100000u
 
@@ -53,11 +54,13 @@ static int dev_erase(long off, size_t size)
 {
     if (!s_nor || s_read_failed || off < 0 || off % NOR_SECTOR || (uint32_t)off + size > FDB_REGION)
         return -1;
-    for (size_t done = 0; done < size; done += NOR_SECTOR)
+    for (size_t done = 0; done < size; done += NOR_SECTOR) {
         if (s_nor->erase_sector(s_nor, (uint32_t)off + (uint32_t)done)) {
             s_read_failed = true;
             return -1;
         }
+        store_port_progress();
+    }
     return (int)size;
 }
 

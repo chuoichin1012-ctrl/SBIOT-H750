@@ -8,6 +8,7 @@
 #include "blog.h"
 #include "now_us.h"
 #include "sysmgr.h"
+#include "wdog.h"
 
 static StaticSemaphore_t s_mem;
 static SemaphoreHandle_t s_lock;
@@ -36,3 +37,5 @@ void store_port_log(const char *fmt, ...)
 }
 
 void store_port_restart(void) { sysmgr_restart_later(1500); }
+
+void store_port_progress(void) { wdog_hb_beat_self(); }  // nothing for a task that is not supervised

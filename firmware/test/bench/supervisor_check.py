@@ -51,7 +51,7 @@ def log_text():
 def case_hang():
     up0 = status()['system']['uptime']
     t0 = time.time()
-    board.listen(2, sends=[(0.5, 'I')])
+    board.listen(2, sends=[(0.5, 'I'), (0.8, 'HANG\r')])
     # the web stops for 40 s: no answer; the board restarts about 31-33 s after the 'I'
     back = False
     while time.time() - t0 < 120:

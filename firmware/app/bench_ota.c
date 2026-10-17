@@ -80,7 +80,7 @@ void bench_ota_upload(bool reset)
     wdog_set_busy(true);  // LED WORK blinks fast while the image comes (Plan 11a task 0)
     for (uint32_t got = 0; got < total;) {
         uint32_t n = total - got < BLOCK ? total - got : BLOCK;
-        if (!rx(buf, n, 5000)) {
+        if (!rx(buf, n, 30000)) {  // 30 s: a FlashDB write (the first log line after a boot) may hold SPI4 for seconds
             blog("ota: timeout at %lu\r\n", (unsigned long)got);
             ota_stage_release(&st);
             wdog_set_busy(false);

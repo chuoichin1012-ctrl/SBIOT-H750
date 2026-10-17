@@ -389,10 +389,17 @@ static void init_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(3000));
             blog("app: phy up %d\r\n", eth_drv_phy_power(false));
             break;
-        case 'I':  // bench: the web task stops for 40 s; the supervisor restarts the board (Plan 11a task 0b)
+        case 'I': {  // bench: "I" then "HANG": the web task stops for 40 s; the supervisor restarts the board (Plan 11a)
+            char l[8];
+            read_line(l, sizeof l);  // a confirmation, so a stray byte (a broken upload) never hangs it
+            if (strcmp(l, "HANG") != 0) {
+                blog("app: I needs HANG\r\n");
+                break;
+            }
             blog("app: web stops for 40 s\r\n");
             web_bench_hang(40000);
             break;
+        }
         case 'd':  // bench: toggle disregarding POWERED DOWN (Plan 10b)
             blog("app: POWERED DOWN %s\r\n", lte_bench_nopd() ? "disregarded" : "taken");
             break;

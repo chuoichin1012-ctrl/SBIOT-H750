@@ -167,7 +167,7 @@ def main():
     check(report().get('qspi', '').startswith('v0.4.2 '), 'and v0.4.2 runs')
 
     # 6a. An upload cut off after two blocks: nothing installed
-    lines = board.upload(image(build, '0.4.3'), 14, send=8192)
+    lines = board.upload(image(build, '0.4.3'), 40, send=8192)  # the app waits 30 s for a block (Plan 11a)
     check('ota: timeout at 8192' in texts(lines), 'upload cut off after 8 KB: the app times out')
     lines = board.listen(4, during=board.hard_reset)
     check('boot: install' in texts(lines), 'the boot after installs nothing')

@@ -23,9 +23,8 @@ import board  # noqa: E402
 import serial_check as sc  # noqa: E402  (console, frames, counters)
 import web_check as w  # noqa: E402
 
-GW = '192.168.0.7'
-WIN = '192.168.0.10'  # the Windows host on the board's LAN
-WIN_PY = '/mnt/c/Python311/python.exe'
+import bench_env  # noqa: E402  (Plan 11b: the bench's addresses)
+GW, WIN, WIN_PY = bench_env.GW, bench_env.WIN, bench_env.WIN_PY  # bench_env.set_board updates GW after a move
 failures = []
 
 

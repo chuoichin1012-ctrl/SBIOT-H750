@@ -3,7 +3,7 @@
 
     python3 stm32/firmware/test/bench/io_check.py [adcbase|dido|reload|adcpoint MA|adccal|adc ...]
 
-Needs the board running this build's app, its LAN at 192.168.0.7 (factory login), UART7 on the bench
+Needs the board running this build's app, its LAN at bench_env.GW (factory login), UART7 on the bench
 console. Cases:
 - adcbase: the ADC3 registers (BOOST 01, OVSR 15, OVSS 4, 64.5 cycles), 10 interrupts a second (no
   interrupt per sample), and an injected fault (bench J): nothing published during the recovery, and a

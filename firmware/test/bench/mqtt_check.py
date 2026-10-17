@@ -71,7 +71,7 @@ class Broker:
 
 
 def main_broker():
-    """Plain (anonymous), password (gw / s3cret) and TLS (the bench's server certificate for 192.168.0.10)."""
+    """Plain (anonymous), password (gw / s3cret) and TLS (the bench's server certificate for WIN)."""
     os.makedirs(RUN, exist_ok=True)
     pw = os.path.join(RUN, 'pw')
     subprocess.run(['mosquitto_passwd', '-b', '-c', pw, 'gw', 's3cret'], check=True, capture_output=True)
@@ -515,7 +515,7 @@ def case_tls(brk):
     s, i = tc.upload('mqtt', 'ca', tc.pem('ca.pem'))
     check(s == 200 and i.get('restartNeeded') is True, 'the mqtt CA upload says a restart is needed')
     check(configure(mqtt_cfg(**tls), pubs=[topic('gw/up')]), 'restart with the CA')
-    check(wait_state('CONNECTED', 20), 'TLS with the CA (name: host 192.168.0.10): CONNECTED (%s)' % state())
+    check(wait_state('CONNECTED', 20), 'TLS with the CA (name: host %s): CONNECTED (%s)' % (WIN, state()))
     sub = Sub('gw/up')
     from_device(b'over-tls')
     check(sub.wait(b'over-tls'), 'TLS: a publish arrives')

@@ -744,7 +744,13 @@ def case_bigreport():
     over = dict(before, template=json.dumps({'a%03d' % i: 't' for i in range(120)}))
     s, _, body = w.req('POST', '/api/config/edgeReport', body=json.dumps(over).encode())
     _, after = w.get_json('/api/config/edgeReport')
-    check(s == 400 and b'too many values' in body and after == before, 'a template needing over 26 KB is refused, the stored one kept (%d)' % s)
+    # Plan 09b: the store keeps what it is sent (the UI refuses it, rules.ts); at start-up edge_rt turns reports off.
+    w.restart()
+    time.sleep(3)
+    off = re.search(r'the report template needs more than \d+ bytes: reports are off', log_text())
+    check(s == 200 and after['template'] == over['template'] and off,
+          'a template needing over 26 KB: stored as sent (%d), at start-up reports are off' % s)
+    w.req('POST', '/api/config/edgeReport', body=json.dumps(before).encode())
 
 
 def case_mqtt():

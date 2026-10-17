@@ -225,7 +225,7 @@ def case_dido():
           'mode 2: DO%d flips by itself every %s ms (1000), no command' % (flip_do + 1, gaps))
     set_do(flip_do, False)
     t0 = time.time()
-    on_again = wait_di(flip_di, True, 2.0)
+    on_again = wait_di(flip_di, False, 0.5) and wait_di(flip_di, True, 2.0)  # DI1 lags DO1 by the relay and debounce
     check(on_again and 0.7 <= time.time() - t0 <= 1.6,
           'a command off sets it off now and the flipping goes on (DI%d on again %.2f s later)' % (flip_di + 1, time.time() - t0))
     d, i = pulse_do, pulse_di

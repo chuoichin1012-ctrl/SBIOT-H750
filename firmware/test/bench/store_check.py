@@ -125,10 +125,15 @@ def main():
 
     # 4. The persistent log
     board.listen(2, sends=[(0.3, 'W')])
-    lines = board.listen(7, sends=[(4.0, 'l')], during=board.hard_reset)
+    lines = board.listen(7, during=board.hard_reset)
     boot = find(lines, r'store mounted in \d+ ms, boot (\d+)')
     prev = int(boot.group(1)) - 1 if boot else -1
-    check(find(lines, r'log boot %d \+\d+ ms: W \(\d+\) bench: a warning to keep' % prev) is not None,
+    # Read over the web (Plan 11b): the console's 'l' walks the whole log from its oldest line at 115200 baud, and a
+    # long-used board's log takes longer than any listen window to reach the newest.
+    import web_check as w
+    w.wait_up(30)
+    _, _, log = w.req('GET', '/api/log')
+    check(re.search(r'\[boot %d \+[0-9:]+\] W \(\d+\) bench: a warning to keep' % prev, log.decode('utf-8', 'replace')) is not None,
           'a warning of the boot before is in the persistent log')
 
     print('bench: %s' % ('ok' if not failures else 'FAILED (%d)' % len(failures)))

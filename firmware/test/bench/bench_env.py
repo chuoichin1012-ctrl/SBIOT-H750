@@ -55,8 +55,12 @@ def find_board(win, sn):
     return pick(out.splitlines(), req_id, sn)  # the whole reply: eth.ip, boot, …
 
 
-def resolve_gw():
-    gw = os.environ.get('SBIOT_GW') or (find_board(WIN, SN) or {}).get('eth', {}).get('ip')
+def resolve_gw(tries=10):
+    gw = os.environ.get('SBIOT_GW')
+    for _ in range(0 if gw else tries):  # the board may be restarting (the suite before reset it): about 30 s
+        gw = (find_board(WIN, SN) or {}).get('eth', {}).get('ip')
+        if gw:
+            break
     if not gw:
         raise RuntimeError('the board %s did not answer a search from %s: set SBIOT_GW, or check the LAN' % (SN, WIN))
     return gw

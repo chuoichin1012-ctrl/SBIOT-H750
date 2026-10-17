@@ -11,6 +11,10 @@
 
 /** A slot for `name` (copied), its first beat now; -1 when all HB_MAX are taken (never silent: the caller logs). */
 int hb_add(const char *name, uint32_t timeout_ms, uint32_t now_ms);
+/** hb_add with an owner (the task's handle): code working for its caller finds the caller's slot with hb_find. */
+int hb_add_owned(const char *name, uint32_t timeout_ms, uint32_t now_ms, const void *owner);
+/** The slot of `owner`, -1 when it has none (NULL never matches). */
+int hb_find(const void *owner);
 /** The task is alive (any id from hb_add; -1 does nothing). */
 void hb_beat(int id, uint32_t now_ms);
 /** The first slot whose last beat is `timeout_ms` or more old, else -1 (wrap-safe). */

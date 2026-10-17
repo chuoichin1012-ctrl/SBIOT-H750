@@ -22,6 +22,9 @@ uint32_t wdog_wdi_max_gap_us(void);
 // kicking, so IWDG1 restarts the board. -1 when the table is full (counted in wdog_hb_missing, logged).
 int wdog_hb_add(const char *name, uint32_t timeout_ms);
 void wdog_hb_beat(int id);
+// Beats the calling task's slot (none: nothing): for code that works on behalf of its caller, an Edge write or a
+// report waiting for its bridge (Codex code review r1). Never while waiting for a lock.
+void wdog_hb_beat_self(void);
 uint32_t wdog_hb_missing(void);
 // At the boot after a supervisor restart: the slot's name and how late it was, once (the record is cleared).
 bool wdog_reason_take(char name[16], uint32_t *late_s);

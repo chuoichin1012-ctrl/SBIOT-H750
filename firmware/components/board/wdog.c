@@ -31,7 +31,7 @@ static void reason_flush(void)
 int wdog_hb_add(const char *name, uint32_t timeout_ms)
 {
     taskENTER_CRITICAL();
-    int id = hb_add(name, timeout_ms, now_ms());
+    int id = hb_add_owned(name, timeout_ms, now_ms(), xTaskGetCurrentTaskHandle());
     taskEXIT_CRITICAL();
     if (id < 0) {
         s_hb_missing++;
@@ -41,6 +41,8 @@ int wdog_hb_add(const char *name, uint32_t timeout_ms)
 }
 
 void wdog_hb_beat(int id) { hb_beat(id, now_ms()); }
+
+void wdog_hb_beat_self(void) { hb_beat(hb_find(xTaskGetCurrentTaskHandle()), now_ms()); }
 
 uint32_t wdog_hb_missing(void) { return s_hb_missing; }
 

@@ -4,6 +4,7 @@
 #include "crc32.h"
 
 typedef struct {
+    const void *owner;
     char name[HB_NAME_MAX];
     uint32_t timeout_ms;
     uint32_t last_ms;  // atomic
@@ -16,11 +17,14 @@ static int s_n;  // atomic: the slots below it are complete
 
 static int count(void) { return __atomic_load_n(&s_n, __ATOMIC_ACQUIRE); }
 
-int hb_add(const char *name, uint32_t timeout_ms, uint32_t now_ms)
+int hb_add(const char *name, uint32_t timeout_ms, uint32_t now_ms) { return hb_add_owned(name, timeout_ms, now_ms, 0); }
+
+int hb_add_owned(const char *name, uint32_t timeout_ms, uint32_t now_ms, const void *owner)
 {
     int i = count();
     if (i >= HB_MAX)
         return -1;
+    s_hb[i].owner = owner;
     strncpy(s_hb[i].name, name ? name : "?", HB_NAME_MAX - 1);
     s_hb[i].name[HB_NAME_MAX - 1] = '\0';
     s_hb[i].timeout_ms = timeout_ms;
@@ -45,6 +49,15 @@ int hb_expired(uint32_t now_ms)
     int n = count();
     for (int i = 0; i < n; i++)
         if (hb_late_ms(i, now_ms) >= s_hb[i].timeout_ms)
+            return i;
+    return -1;
+}
+
+int hb_find(const void *owner)
+{
+    int n = count();
+    for (int i = 0; owner && i < n; i++)
+        if (s_hb[i].owner == owner)
             return i;
     return -1;
 }

@@ -113,6 +113,12 @@ static void test_hb(void)
     int br = hb_add(built, 60000, t0);
     memset(built, 'Z', sizeof built - 1);
     CHECK(br >= 0 && !strcmp(hb_name(br), "bridge1"), "a name is copied (%s)", hb_name(br));
+    // Codex code review r1: a function working for its caller beats the caller's slot, found by its owner.
+    static int owner_a, owner_b;
+    int oa = hb_add_owned("mqtt_io", 120000, t0, &owner_a);
+    CHECK(oa >= 0 && hb_find(&owner_a) == oa && hb_find(&owner_b) == -1 && hb_find(NULL) == -1, "slots found by their owner");
+    hb_beat(hb_find(&owner_a), t0 + 119000);
+    CHECK(hb_late_ms(oa, t0 + 120000) == 1000, "the owner's slot beat");
     // The reason kept across the reset in .noinit: decoded only with its magic and CRC.
     hb_reason_t r;
     hb_reason_set(&r, "mqtt_io", 125);
@@ -132,7 +138,7 @@ static void test_hb(void)
     CHECK(!hb_restart_was_ours(false, false, false, false), "a software reset (our own restart): not ours");
     hb_reason_clear(&r);
     CHECK(!hb_reason_get(&r, name, &late), "cleared");
-    int n = 3, last = 0;
+    int n = 4, last = 0;
     while ((last = hb_add("x", 1000, t0)) >= 0) n++;
     CHECK(n == HB_MAX && hb_add("y", 1000, t0) == -1, "HB_MAX slots, then -1 (%d)", n);
 }

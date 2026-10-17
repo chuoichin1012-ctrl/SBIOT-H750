@@ -455,6 +455,7 @@ static void poll_device(edge_dev_t *d, bool all)
 /** Writes a value to the device behind a point (raw: no inverse formula); a read-back follows. */
 static bool write_point(edge_pt_t *p, double v)
 {
+    wdog_hb_beat_self();  // one write done per point: a long multi-point write is work for its caller (Codex r1)
     edge_dev_t *d = p->dev;
     if (d->source == EDGE_SRC_IO)
         return p->io_kind == EDGE_IO_DO && iomgr_do_set(p->io_index, v != 0) == 0;

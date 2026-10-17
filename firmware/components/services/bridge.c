@@ -920,8 +920,10 @@ static void bridge_task(void *arg)
         http_client(b);
         break;
     }
-    for (;;)
-        vTaskDelay(portMAX_DELAY);  // a mode that could not start (state ERROR)
+    for (;;) {  // a mode that could not start (state ERROR): idle, not hung (Codex code review r1)
+        wdog_hb_beat(b->hb);
+        vTaskDelay(pdMS_TO_TICKS(10000));
+    }
 }
 
 int bridge_start(int port, const cJSON *pcfg, const cJSON *sys)
@@ -983,6 +985,7 @@ bool bridge_send(int port, const uint8_t *data, size_t len)
     if (!free_slot)
         return false;
     for (;;) {
+        wdog_hb_beat_self();  // the caller (edge_rpt) waits for a bridge that is supervised itself (Codex r1)
         if (xSemaphoreTake(b->rpt_done, pdMS_TO_TICKS(REPORT_WAIT_MS)) == pdTRUE)
             return b->rpt_ok;
         taskENTER_CRITICAL();

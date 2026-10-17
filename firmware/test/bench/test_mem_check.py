@@ -32,5 +32,21 @@ class Handshakes(unittest.TestCase):
         self.assertTrue(m.overlapping(iv, (1, 2, 3)))
 
 
+class Criteria(unittest.TestCase):
+    ST = {'system': {'heapMin': 200000, 'heapLargest': 150000},
+          'mem': {'stackMin': {'task': 'IDLE', 'words': 293}, 'pools': [{'name': 'tcp_pcb', 'used': 1, 'size': 8}]}}
+
+    def test_a_good_read_passes(self):
+        self.assertEqual(m.criteria(self.ST, 'B'), [])
+
+    def test_a_failed_read_cannot_pass(self):  # Codex r2: a 500 under memory pressure is not a pass
+        self.assertTrue(m.criteria(None, 'B'))
+
+    def test_missing_fields_cannot_pass(self):
+        for st in ({'system': self.ST['system']}, {'mem': self.ST['mem']},
+                   {'system': self.ST['system'], 'mem': {'stackMin': self.ST['mem']['stackMin']}}):
+            self.assertTrue(m.criteria(st, 'B'), st)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -222,15 +222,19 @@ def main():
 # ---- scenarios A and B of spec §12.3, with their pass criteria (Plan 11b task 4) -------------------------------
 
 def criteria(st, label, need_largest=12 * 1024):
-    """The §12.3 criteria on one /api/status read; a list of what failed."""
-    sy, mem = st['system'], st['mem']
+    """The §12.3 criteria on one /api/status read; a list of what failed. A failed read or a missing field is a
+    failure, never a pass (Codex r2)."""
+    sy, mem = (st or {}).get('system'), (st or {}).get('mem')
+    if not isinstance(sy, dict) or not isinstance(mem, dict) or not isinstance(mem.get('stackMin'), dict) \
+            or not isinstance(mem.get('pools'), list) or 'heapMin' not in sy or 'heapLargest' not in sy:
+        return ['%s: no usable /api/status read' % label]
     out = []
     sm = mem['stackMin']
     if sm['words'] * 4 < 1024:
         out.append('%s: stack %s has %d bytes free (< 1 KB)' % (label, sm['task'], sm['words'] * 4))
-    if sy.get('heapMin', 0) < 16 * 1024:
-        out.append('%s: heap minimum free %s (< 16 KB)' % (label, sy.get('heapMin')))
-    if sy.get('heapLargest', 0) < need_largest:
+    if sy['heapMin'] < 16 * 1024:
+        out.append('%s: heap minimum free %s (< 16 KB)' % (label, sy['heapMin']))
+    if sy['heapLargest'] < need_largest:
         out.append('%s: largest free block %s (< %d)' % (label, sy.get('heapLargest'), need_largest))
     full = [x['name'] for x in mem['pools'] if x['used'] >= x['size'] and x['name'] not in bench_env.DROPPING_POOLS]
     if full:
@@ -406,7 +410,7 @@ def case_b():
         check(gc, 'FlashDB erased during the window (GC): erases %s -> %s' % (e0, e1))
         check(reading, 'the slow reader was still reading the UI bundle when the window ended (%s B read, %s)'
               % (got[-1] if got else 0, [e for e in slow_ev if e.get('ev') in ('asset', 'done', 'error')]))
-        bad = [b for st in mins if st for b in criteria(st, 'B')]
+        bad = [b for st in mins for b in criteria(st, 'B')]
         check(not bad, 'scenario B criteria: %s' % ('; '.join(bad[:3]) or 'stacks, heap, largest block, pools ok (%s)' % heap()))
         # The overlap lasts a few seconds and GC is found by the console's erase count, read every 50 saves: GC is
         # shown in the same window as the overlap, never at the same instant (Codex r1). So B is reported partial.

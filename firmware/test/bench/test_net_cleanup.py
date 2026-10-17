@@ -35,6 +35,10 @@ def test_restored_when_the_board_is_lost():
     nc.w = types.SimpleNamespace(get_json=get_json, req=req)
     nc.board = types.SimpleNamespace(listen=listen, hard_reset=lambda: None)
     nc.ping = lambda *a, **k: 0
+
+    def no_flood(*a, **k):  # a host test never sends LAN traffic (Codex r2)
+        raise OSError('no flood in a host test')
+    nc.subprocess = types.SimpleNamespace(Popen=no_flood, PIPE=-1)
     nc.follow = lambda: None  # the search never finds it at the bench's address
     nc.failures.clear()
     try:

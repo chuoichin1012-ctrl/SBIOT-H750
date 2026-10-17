@@ -3,6 +3,7 @@ import * as api from '../../lib/api';
 import { useDevice } from '../../lib/device';
 import { session } from '../../lib/auth';
 import { allNodeNames, anyOnChange } from '../../lib/edge';
+import { modelErrors } from '../../lib/edgeModel';
 import { useAsync } from '../../lib/hooks';
 import { edgeBodyError } from '../../lib/rules';
 import { useSaver } from '../../lib/save';
@@ -25,6 +26,9 @@ export function EdgePage(props: { path?: string; tab?: string }) {
   const dev = useDevice();
   const tab = (TABS as readonly string[]).includes(props.tab ?? '') ? props.tab! : 'acquisition';
   const src = useAsync(api.getEdge);
+  // The built-in IO device answers on the IO page's address: the model is checked against it.
+  const ioCfg = useAsync(() => api.getValues('io'));
+  const ioAddr = ioCfg.data ? Number(ioCfg.data.modbusAddress) || 100 : null;
   const [cfg, setCfg] = useState<api.EdgeConfig | null>(null);
   const [dirty, setDirty] = useState(false);
   const [step, setStep] = useState('');
@@ -66,6 +70,11 @@ export function EdgePage(props: { path?: string; tab?: string }) {
   const rErrors = cfg.enabled ? formErrors(rDefs, cfg.report) : {};
   const rBad = Object.keys(rErrors).length > 0;
   const sizeBad = edgeBodyError(cfg.slaves) !== null;  // shown on the Data acquisition tab
+  // Every device and point against the rest, before each save: an edit may break another device (a new address
+  // taking a mapped slave ID), and the gateway loads only what these checks accept.
+  const problems = cfg.enabled && ioAddr !== null ? modelErrors(dev, cfg.slaves, ioAddr) : [];
+  const mBad = problems.length > 0;
+  const ioWait = cfg.enabled && ioAddr === null;
 
   return (
     <>
@@ -84,11 +93,11 @@ export function EdgePage(props: { path?: string; tab?: string }) {
       ) : (
         <>
           <Tabs base="/edge" active={tab} tabs={[
-            ['acquisition', `Data acquisition${sizeBad ? ' (check)' : ''}`],
+            ['acquisition', `Data acquisition${sizeBad || mBad ? ' (check)' : ''}`],
             ['report', `Query & report${rBad ? ' (check)' : ''}`],
             ['linkage', 'Linkage'],
           ]} />
-          {tab === 'acquisition' && <Acquisition cfg={cfg} onChange={change} />}
+          {tab === 'acquisition' && <Acquisition cfg={cfg} ioAddr={ioAddr ?? 100} problems={problems} onChange={change} />}
           {tab === 'report' && (
             <Panel>
               <Fields defs={rDefs} values={cfg.report} errors={rErrors}
@@ -101,10 +110,13 @@ export function EdgePage(props: { path?: string; tab?: string }) {
 
       <SaveBar
         busy={save.busy}
-        disabled={rBad || sizeBad || !dirty}
+        disabled={rBad || sizeBad || mBad || ioWait || !dirty}
         label="Save edge settings"
         busyLabel={`Saving ${step}…`}
-        note={sizeBad ? 'The data acquisition model is too large for the gateway.' : rBad ? 'Query & report has fields that need attention.' : dirty ? 'Unsaved changes. They are kept while you visit other pages, until you save or discard.' : undefined}
+        note={sizeBad ? 'The data acquisition model is too large for the gateway.'
+          : mBad ? `Data acquisition: ${problems[0]}${problems.length > 1 ? ` (and ${problems.length - 1} more)` : ''}`
+          : ioWait ? (ioCfg.error ? 'The IO settings could not be read, so the devices cannot be checked. Reload the page.' : 'Checking the devices…')
+          : rBad ? 'Query & report has fields that need attention.' : dirty ? 'Unsaved changes. They are kept while you visit other pages, until you save or discard.' : undefined}
         onSave={() => save.run(async () => {
           await api.saveEdge(cfg, setStep);
           draft = null;

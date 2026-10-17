@@ -24,10 +24,15 @@ int serial_start(int port, const cJSON *pcfg, const cJSON *sys);
 typedef void (*serial_rx_fn)(int port, const uint8_t *data, size_t len, void *ctx);
 int serial_subscribe(int port, serial_rx_fn fn, void *ctx);
 
-/** Sends bytes: waits for a transaction in flight and, with 485 collision avoidance, an idle bus. 0 or -1. */
+/**
+ * Sends bytes: waits for a transaction in flight and, with 485 collision avoidance, an idle bus (bounded:
+ * the idle time plus `timeout_ms`, then nothing is sent). 0, SERIAL_BUSY when the bus mutex was not
+ * obtained within `timeout_ms`, or -1 when the bytes did not go out.
+ */
 int serial_write(int port, const uint8_t *data, size_t len, uint32_t timeout_ms);
 
 #define SERIAL_DROPPED (-2)  // serial_transact: an answer came, but broke t1.5 (Modbus §2.5.1.1)
+#define SERIAL_BUSY (-3)     // serial_write: the bus stayed taken (a transaction, or a lock that is stuck)
 /**
  * Exclusive request and answer: sends `req`, then collects one RTU frame. `unit` (0-255, or -1): the
  * first byte the answer must start with; a frame from another slave goes to the subscribers. The

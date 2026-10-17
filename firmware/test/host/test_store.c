@@ -88,6 +88,8 @@ static void *trace_malloc(size_t n)
 int64_t store_port_wall_ms(void) { return s_wall; }
 static int s_restarts;
 void store_port_restart(void) { s_restarts++; }
+static long s_progress;  // sectors reported erased (the caller's heartbeat on the board)
+void store_port_progress(void) { s_progress++; }
 uint32_t store_port_uptime_ms(void) { return s_uptime; }
 void store_port_log(const char *fmt, ...)
 {
@@ -670,8 +672,11 @@ static void test_certs_and_factory_reset(void)
     CHECK(store_edge_save(model, strlen(model), err, sizeof err) == STORE_OK, "edge saved: %s", err);
     free(model);
     store_log_append("a line to keep", 14);
+    long erases = s_erases, progress = s_progress;
     CHECK(store_factory_reset() == STORE_OK, "factory reset");
     BALANCED("factory reset");
+    CHECK(s_erases > erases && s_progress - progress == s_erases - erases,
+          "every sector the reset erases reports progress (%ld of %ld)", s_progress - progress, s_erases - erases);
     char *want = default_text("system");
     got = store_get_json("system");
     CHECK(got && !strcmp(got, want), "configs back to defaults");

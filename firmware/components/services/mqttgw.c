@@ -311,11 +311,28 @@ static void io_reply(const uint8_t *data, size_t len)
             enqueue(s_pub[i].topic, strlen(s_pub[i].topic), data, len, s_pub[i].qos, s_pub[i].retain);
 }
 
+static int s_hb_mqtt = -1, s_hb_io = -1;  // the supervisor's slots (Plan 11a task 0b)
+
+/**
+ * One forward is done: `mqtt_io` beats, as several subscriptions and both ports may each take one message
+ * (at 600 baud, 4 KB takes 67 s, so eight forwards are past the 400 s timeout). A write that never got the
+ * bus does not beat: a stuck lock must still reset the board (spec §11.4). One forward is at most about
+ * 177 s: 2 s for the bus, the 485 idle wait (2.5 s + 2 s), and uart_drv_write's 2 s + 2 x 4256 chars at
+ * 20 ms (600 baud, 12-bit chars).
+ */
+static void forwarded(int r)
+{
+    if (r != SERIAL_BUSY)
+        wdog_hb_beat(s_hb_io);
+}
+
 static void downlink(const char *topic, size_t tlen, const uint8_t *data, size_t len)
 {
     for (int i = 0; i < s_nlisten; i++)  // Edge's request topic
-        if (mqtt_topic_match(s_listen[i].topic, topic, tlen))
+        if (mqtt_topic_match(s_listen[i].topic, topic, tlen)) {
             s_listen[i].fn(data, len);
+            wdog_hb_beat(s_hb_io);  // the handler beats itself while it waits (wdog_hb_beat_self)
+        }
     for (int i = 0; i < s_nsub; i++) {
         const topic_t *t = &s_sub[i];
         if (!mqtt_topic_match(t->topic, topic, tlen))
@@ -339,16 +356,14 @@ static void downlink(const char *topic, size_t tlen, const uint8_t *data, size_t
                 memcpy(b, topic, tlen);
                 memcpy(b + tlen, t->delim, dl);
                 memcpy(b + tlen + dl, data, len);
-                serial_write(port, b, n, 2000);
+                forwarded(serial_write(port, b, n, 2000));
                 free(b);
             } else {
-                serial_write(port, data, len, 2000);
+                forwarded(serial_write(port, data, len, 2000));
             }
         }
     }
 }
-
-static int s_hb_mqtt = -1, s_hb_io = -1;  // the supervisor's slots (Plan 11a task 0b)
 
 static void io_task(void *arg)
 {

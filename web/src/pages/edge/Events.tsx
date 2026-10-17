@@ -11,8 +11,7 @@ import { Button, ItemList, Notice, Panel } from '../../components/ui';
 import { EditDialog } from './EditDialog';
 
 const ACTIONS: Options = [[0, 'No action'], [1, 'Open (NO)'], [2, 'Close (NC)'], [3, 'Toggle']];
-const choose = (list: string[]): Options => [['', 'Choose…'], ...list.map((x) => [x, x] as const)];
-const picked = (v: unknown) => (v ? null : 'Choose one.');
+const choices = (list: string[]): Options => list.map((x) => [x, x] as const);
 
 /** Accepts integers and decimals; thresholds are not whole numbers only. */
 const decimal = (min: number, max: number) => (v: unknown) => {
@@ -22,16 +21,16 @@ const decimal = (min: number, max: number) => (v: unknown) => {
 
 function linkageDefs(e: LinkageEvent, names: string[], taken: string[], outputs: string[]): FieldDef[] {
   return [
-    { id: 'name', label: 'Event name', kind: 'text', maxLength: 16, check: (v) => nameError(String(v), taken) },
+    { id: 'name', label: 'Event name', kind: 'text', maxLength: 16, required: true, check: (v) => nameError(String(v), taken) },
     { id: 'enable', label: 'Active', kind: 'check', help: 'Run this event' },
-    { id: 'point', label: 'Watch point', kind: 'select', options: choose(names), check: picked },
+    { id: 'point', label: 'Watch point', kind: 'select', options: choices(names), placeholder: 'Choose…', required: true },
     { id: 'cond', label: 'Trigger when', kind: 'select', options: LINKAGE_CONDITIONS },
     { id: 'lower', label: 'Lower threshold', kind: 'text', required: true, show: () => usesLower(e.cond), check: decimal(-1e9, 1e9), help: 'AI points are in µA, 0–20000' },
     {
       id: 'upper', label: 'Upper threshold', kind: 'text', required: true, show: () => usesUpper(e.cond), check: (v) =>
         decimal(-1e9, 1e9)(v) ?? (usesLower(e.cond) && Number(v) < Number(e.lower) ? 'Must be at least the lower threshold.' : null),
     },
-    { id: 'output', label: 'Output', kind: 'select', options: choose(outputs), check: picked },
+    { id: 'output', label: 'Output', kind: 'select', options: choices(outputs), placeholder: 'Choose…', required: true },
     { id: 'action', label: 'Output action', kind: 'select', options: ACTIONS, show: () => !isFollow(e.cond) },
     { id: 'cycle', label: 'Check every', kind: 'number', min: 0, max: 10000, unit: 'ms' },
     { id: 'minInterval', label: 'Minimum gap between triggers', kind: 'number', min: 500, max: 10000, unit: 'ms' },

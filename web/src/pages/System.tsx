@@ -20,7 +20,7 @@ function defs(d: DeviceInfo) {
     { id: 'hostname', label: 'Host name', kind: 'text', maxLength: 16, required: true },
     { id: 'bufferOffline', label: 'Buffer serial data while offline', kind: 'select', options: ON_OFF },
     { id: 'idleRestart', label: 'Restart when idle', kind: 'number', min: 60, max: 65535, zeroOk: true, unit: 's', help: 'Restart if no data flows for this long; 0 = never' },
-    { id: 'rs485CollisionAvoid', label: 'RS-485 collision avoidance', kind: 'select', options: ON_OFF, help: 'Hold outgoing data until the bus is idle' },
+    { id: 'rs485CollisionAvoid', label: 'RS-485 collision avoidance', kind: 'select', options: ON_OFF, help: 'Hold outgoing data until the bus is idle. Data is dropped if the bus stays busy for 1–2 s more than the idle time.' },
     { id: 'rs485IdleTime', label: 'Bus idle time', kind: 'number', min: 0, max: 2500, unit: 'ms', show: (v) => Number(v.rs485CollisionAvoid) === 1 },
   ];
   const access: FieldDef[] = [

@@ -203,13 +203,10 @@ function Functions() {
   // The new Modbus address against the saved Edge model (review 3 P2-1): it must not take a slave ID a device is
   // mapped to, or a write meant for that device would switch a local DO. Unknown model: Save waits.
   const edge = useAsync(api.getEdge);
-  const saved = useAsync(() => api.getValues('io'));
 
   if (!f.ready) return <Pending error={f.error} retry={f.reload} />;
-  const checked = !!edge.data && !!saved.data;
-  const clash = checked && edge.data!.enabled
-    ? ioAddressClash(d, edge.data!.slaves, Number(f.values.modbusAddress), Number(saved.data!.modbusAddress) || 100)
-    : null;
+  const checked = !!edge.data;
+  const clash = checked && edge.data!.enabled ? ioAddressClash(d, edge.data!.slaves, Number(f.values.modbusAddress)) : null;
   const errors = clash ? { ...f.errors, modbusAddress: clash } : f.errors;
   const p = { values: f.values, errors, onChange: f.set };
 
@@ -233,7 +230,7 @@ function Functions() {
       <SaveBar
         busy={save.busy}
         invalid={!f.valid || !!clash || !checked}
-        note={edge.error || saved.error ? 'The Edge model could not be read to check the Modbus address: reload the page.' : undefined}
+        note={edge.error ? 'The Edge model could not be read to check the Modbus address: reload the page.' : undefined}
         onSave={() => save.run(() => api.saveValues('io', f.values), { restart: true, after: f.reload })}
       />
     </>

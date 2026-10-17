@@ -216,14 +216,15 @@ export function linkageDefs(e: LinkageEvent, names: string[], taken: string[], o
   return [
     { id: 'name', label: 'Event name', kind: 'text', maxLength: 16, required: true, check: (v) => nameError(String(v), taken) },
     { id: 'enable', label: 'Active', kind: 'check', help: 'Run this event' },
-    { id: 'point', label: 'Watch point', kind: 'select', options: choices(names), placeholder: 'Choose…', required: true },
+    // An inactive event needs no point or output (Codex): turning it off is how an event broken by an import is kept.
+    { id: 'point', label: 'Watch point', kind: 'select', options: choices(names), placeholder: 'Choose…', required: !!e.enable },
     { id: 'cond', label: 'Trigger when', kind: 'select', options: LINKAGE_CONDITIONS },
     { id: 'lower', label: 'Lower threshold', kind: 'text', required: true, show: () => usesLower(e.cond), check: decimal(-1e9, 1e9), help: 'AI points are in µA, 0–20000' },
     {
       id: 'upper', label: 'Upper threshold', kind: 'text', required: true, show: () => usesUpper(e.cond), check: (v) =>
         decimal(-1e9, 1e9)(v) ?? (usesLower(e.cond) && Number(v) < Number(e.lower) ? 'Must be at least the lower threshold.' : null),
     },
-    { id: 'output', label: 'Output', kind: 'select', options: choices(outputs), placeholder: 'Choose…', required: true },
+    { id: 'output', label: 'Output', kind: 'select', options: choices(outputs), placeholder: 'Choose…', required: !!e.enable },
     { id: 'action', label: 'Output action', kind: 'select', options: ACTIONS, show: () => !isFollow(e.cond) },
     { id: 'cycle', label: 'Check every', kind: 'number', min: 0, max: 10000, unit: 'ms' },
     { id: 'minInterval', label: 'Minimum gap between triggers', kind: 'number', min: 500, max: 10000, unit: 'ms' },
@@ -246,11 +247,10 @@ export function linkageErrors(dev: DeviceInfo, slaves: EdgeSlave[], linkage: Lin
   return out;
 }
 
-/** The IO page's new Modbus address against the saved Edge model (review 3 P2-1): what it would newly break,
- *  e.g. a slave ID a device is mapped to (the router picks the first match, so a write would reach the IO). */
-export function ioAddressClash(dev: DeviceInfo, slaves: EdgeSlave[], addr: number, current: number): string | null {
-  if (addr === current) return null;
-  const before = new Set(modelErrors(dev, slaves, current));
-  const added = modelErrors(dev, slaves, addr).filter((e) => !before.has(e));
-  return added.length ? `Slave ID ${addr} clashes with the Edge model: ${added[0]}` : null;
+/** The IO page's Modbus address against the saved Edge model (review 3 P2-1): a slave ID another device is
+ *  answered on or mapped to (the router picks the first match, so a write would reach the IO). No baseline to go
+ *  stale (Codex): a clash at the address chosen is refused whenever it is chosen. */
+export function ioAddressClash(dev: DeviceInfo, slaves: EdgeSlave[], addr: number): string | null {
+  const clash = modelErrors(dev, slaves, addr).find((e) => e.includes(`Slave ID ${addr} `));
+  return clash ? `Slave ID ${addr} clashes with the Edge model: ${clash}` : null;
 }

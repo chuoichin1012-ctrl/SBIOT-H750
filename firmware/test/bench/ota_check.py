@@ -28,6 +28,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import bench_env  # noqa: E402
 import board  # noqa: E402
 
 FW = os.path.normpath(os.path.join(HERE, '../..'))
@@ -159,8 +160,11 @@ def main():
     # than the 3.7 s install, so every reset cuts one.
     img = image(build, '0.4.2', 300 * 1024)
     console_ready()
+    g0 = bench_env.gates('ota uart7 before')  # the gates around a transfer over UART7 (Plan 11b, spec §12.2)
     lines = board.upload(img, upload_s(img), reset=False)
     check('ota: done 0' in texts(lines), 'upload v0.4.2 (300 KB), not booted: ota: done 0')
+    ok_g, _, why_g = bench_env.qualify('ota uart7', g0)
+    check(ok_g, 'gates after an OTA transfer over UART7: %s' % why_g)
     random.seed(4)
 
     def resets():

@@ -27,7 +27,7 @@ const brokerDefs: FieldDef[] = [
   { id: 'username', label: 'User name', kind: 'text', maxLength: 128, show: when((v) => !!v.auth) },
   { id: 'password', label: 'Password', kind: 'password', maxLength: 200, show: when((v) => !!v.auth) },
   { id: 'will', label: 'Last will', kind: 'check', help: 'Broker publishes this message if the gateway drops off', show: on },
-  { id: 'willTopic', label: 'Will topic', kind: 'text', maxLength: 128, show: when((v) => !!v.will), check: (t) => topicError(String(t), false) },
+  { id: 'willTopic', label: 'Will topic', kind: 'text', maxLength: 128, required: true, show: when((v) => !!v.will), check: (t) => topicError(String(t), false) },
   { id: 'willMessage', label: 'Will message', kind: 'text', maxLength: 128, show: when((v) => !!v.will) },
   { id: 'willQos', label: 'Will QoS', kind: 'select', options: QOS, show: when((v) => !!v.will) },
   { id: 'willRetain', label: 'Will retained', kind: 'check', help: 'Retain the will message', show: when((v) => !!v.will) },
@@ -102,7 +102,7 @@ function customDefs(portmax: number): FieldDef[] {
   return [
     { id: 'customMode', label: 'Custom mode', kind: 'select', options: EN_DIS, show: on },
     {
-      id: 'customModePorts', label: 'Read from', kind: 'flags', show: (v) => on(v) && Number(v.customMode) === 1,
+      id: 'customModePorts', label: 'Read from', kind: 'flags', required: true, show: (v) => on(v) && Number(v.customMode) === 1,
       options: range(portmax).map((n) => [n - 1, `UART${n}`] as const),
       check: (m) => (Number(m) ? null : 'Choose at least one port.'),
     },

@@ -32,7 +32,7 @@ function slaveDefs(dev: DeviceInfo, s: EdgeSlave, others: EdgeSlave[], ioAddr: n
   const p = () => polled(s);
   return [
     {
-      id: 'name', label: 'Device name', kind: 'text', maxLength: 16,
+      id: 'name', label: 'Device name', kind: 'text', maxLength: 16, required: true,
       disabled: () => fixedName(s.source) !== null,
       help: fixedName(s.source) ? 'Fixed for this kind of device' : undefined,
       check: (v) => isReserved(String(v)) ? 'This name is reserved for the built-in IO and virtual devices.'
@@ -113,7 +113,7 @@ function nodeDefs(dev: DeviceInfo, s: EdgeSlave, n: EdgeNode, otherNames: string
     .map((x) => [x, x] as const);
   return [
     {
-      id: 'name', label: 'Point name', kind: 'text', maxLength: 16, show: () => !io,
+      id: 'name', label: 'Point name', kind: 'text', maxLength: 16, required: true, show: () => !io,
       check: (v) => nameError(String(v), otherNames), help: 'Used in report templates, formulas and events',
     },
     { id: 'fc', label: 'Function code', kind: 'select', options: FUNCTION_CODES, show: () => modbus },
@@ -122,15 +122,15 @@ function nodeDefs(dev: DeviceInfo, s: EdgeSlave, n: EdgeNode, otherNames: string
       help: `Zero-based. ${modbusAddress(fc, Number(n.reg) || 0)} in conventional notation${virt ? ' (FC04)' : ''}`,
       check: (v) => (Number(v) + (fc <= 2 ? 1 : regsOf(n.dtype)) > 65536 ? 'This data type runs past register 65535.' : null),
     },
-    { id: 'di', label: 'Data identifier', kind: 'text', show: () => dlt, check: (v) => /^[0-9A-Fa-f]{8}$/.test(String(v)) ? null : 'Enter 8 hex digits, e.g. 02010100.' },
+    { id: 'di', label: 'Data identifier', kind: 'text', required: true, show: () => dlt, check: (v) => /^[0-9A-Fa-f]{8}$/.test(String(v)) ? null : 'Enter 8 hex digits, e.g. 02010100.' },
     {
-      id: 'ioPoint', label: 'IO channel', kind: 'select', options: [['', 'Choose…'], ...points], show: () => io,
+      id: 'ioPoint', label: 'IO channel', kind: 'select', options: points, placeholder: 'Choose…', required: true, show: () => io,
       help: (() => {
         const r = ioRegister(n.ioPoint);
         const where = r ? `At ${modbusAddress(r.fc, r.reg)}, ${DATA_TYPES.find(([t]) => t === r.dtype)?.[1]}. ` : '';
         return `${where}The point takes the channel's name, for report templates, formulas and events`;
       })(),
-      check: (v) => (!v ? 'Choose a channel.' : otherNames.includes(String(v)) ? `Another point is already named ${v}.` : null),
+      check: (v) => (otherNames.includes(String(v)) ? `Another point is already named ${v}.` : null),
     },
     {
       id: 'dtype', label: 'Data type', kind: 'select', show: () => !io,
@@ -139,7 +139,7 @@ function nodeDefs(dev: DeviceInfo, s: EdgeSlave, n: EdgeNode, otherNames: string
     },
     { id: 'timeout', label: 'Response timeout', kind: 'number', min: 10, max: 65535, unit: 'ms', show: () => polled(s) },
     {
-      id: 'formula', label: s.source === 'virtual' ? 'Formula' : 'Scaling formula', kind: 'text', maxLength: 64,
+      id: 'formula', label: s.source === 'virtual' ? 'Formula' : 'Scaling formula', kind: 'text', maxLength: 64, required: s.source === 'virtual',
       show: () => !io, help: s.source === 'virtual' ? 'e.g. =%s*2+%s,node0101,node0102' : 'Optional, e.g. =%s*0.1',
       check: (v) => formulaError(String(v), otherNames, s.source === 'virtual'),
     },

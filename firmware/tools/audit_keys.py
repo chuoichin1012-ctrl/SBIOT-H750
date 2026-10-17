@@ -2,9 +2,9 @@
 """Lists config keys the firmware stores but never reads.
 
 A key in the cfgmodel schema that no runtime module reads is a setting the
-web UI offers but the device ignores. Run from the repository root:
+web UI offers but the device ignores. Run from any directory, e.g.:
 
-    python3 stm32/firmware/tools/audit_keys.py
+    python3 firmware/tools/audit_keys.py
 
 Keys listed in UNSUPPORTED (with the reason, mirrored in ARCHITECTURE.md)
 are accepted and shown as such. Exits 1 while any other key is unread (Plan 11a task 5, the gate of
@@ -13,8 +13,9 @@ roadmap row 11; ported from the ESP32 tree's firmware/tools/audit_keys.py).
 import glob
 import re
 import sys
+from pathlib import Path
 
-ROOT = "stm32/firmware"
+ROOT = str(Path(__file__).resolve().parent.parent)  # the firmware tree, wherever it is checked out
 CFG = ROOT + "/components/cfgmodel/cfgmodel.c"
 TIMER_KEYS = ("Enabled", "Time", "Action", "Output", "OutputAction")
 

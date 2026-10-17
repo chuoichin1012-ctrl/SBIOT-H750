@@ -19,6 +19,7 @@ Run these from this directory:
 ```sh
 make -C firmware/test/host              # host unit tests (ASan/UBSan)
 python3 firmware/tools/check_schema.py  # web UI field ids against the firmware schema
+python3 firmware/tools/audit_keys.py    # config keys the firmware stores but never reads (exits 1 if any)
 npm --prefix web ci                     # once
 npm --prefix web run build              # type-check and build the UI
 npm --prefix web run test:e2e           # UI regression tests (headless Chromium; set CHROME_PATH if needed)

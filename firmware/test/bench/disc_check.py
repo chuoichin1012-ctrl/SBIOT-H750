@@ -11,6 +11,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import board  # noqa: E402
 import bridge_check as bc  # noqa: E402  (peer, wait_peer, WIN)
 import web_check as w  # noqa: E402
 
@@ -89,11 +90,11 @@ def case_noaddr():
         print('bench: the board is not found to begin with')
         return 1
     mac, boot = me[0]['mac'], me[0]['boot']
-    st, _, _ = w.req('POST', '/api/config/network', body=json.dumps(dict(home, ipMode=0, dnsMode=0)).encode())
-    check(st == 200, 'saved: DHCP (no server on this link)')
-    a = command('restart', mac)
-    check(a is not None and a.get('ok') is True, 'restart: ack ok')
-    try:
+    try:  # from the DHCP save on (Codex): any failure still ends in the console's restore below
+        st, _, _ = w.req('POST', '/api/config/network', body=json.dumps(dict(home, ipMode=0, dnsMode=0)).encode())
+        check(st == 200, 'saved: DHCP (no server on this link)')
+        a = command('restart', mac)
+        check(a is not None and a.get('ok') is True, 'restart: ack ok')
         f = back(mac, boot, limit=90)
         check(f is not None and f['eth']['ip'] == '0.0.0.0', 'found with no address (eth %s)' % (f['eth'] if f else '-'))
         boot = f['boot'] if f else boot

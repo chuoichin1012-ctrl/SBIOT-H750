@@ -56,9 +56,21 @@ void bench_ota_report(void)
     report_slot("factory", SPI_FACTORY);
 }
 
+/** n bytes (n <= BLOCK) within ms. HAL_UART_Receive polls; in 20 ms turns with a 1 ms yield between them when the
+ * line is quiet, a long wait no longer starves the tasks below init (the supervisor found io silent for 10 s while
+ * a cut-off upload waited, Plan 11a). UART7's 16-byte FIFO holds what comes during the yield. */
 static bool rx(uint8_t *p, uint32_t n, uint32_t ms)
 {
-    return HAL_UART_Receive(&huart7, p, (uint16_t)n, ms) == HAL_OK;  // n <= BLOCK
+    uint32_t t0 = HAL_GetTick(), got = 0;
+    while (got < n) {
+        if (HAL_UART_Receive(&huart7, p + got, (uint16_t)(n - got), 20) == HAL_OK)
+            return true;
+        got = n - huart7.RxXferCount;  // what this turn took before it timed out
+        if (HAL_GetTick() - t0 >= ms)
+            return false;
+        vTaskDelay(1);
+    }
+    return true;
 }
 
 void bench_ota_upload(bool reset)

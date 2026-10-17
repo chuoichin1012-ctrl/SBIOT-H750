@@ -28,6 +28,9 @@ void sysmgr_format_wall(int64_t utc_ms, char out[20]);
 int sysmgr_set_local(const char *text);
 /** lwIP's SNTP (SNTP_SET_SYSTEM_TIME_US), in the lwIP core. */
 void sysmgr_sntp_set(uint32_t sec, uint32_t us);
+/** The default route moved to a link, its DNS set (netmgr, in the lwIP core): with NTP on, SNTP starts at the first
+ *  one, so its first request goes with the network up (the user, 2026-10-17). Started once, never restarted. */
+void sysmgr_ntp_kick(void);
 /** Resets the MCU after delay_ms (the answer to the request gets out first). */
 void sysmgr_restart_later(uint32_t delay_ms);
 /** The one restart: true for the first caller, who resets the board itself; every later restart is a no-op. */

@@ -408,10 +408,12 @@ static void test_device_clock(void)
     const char *text = NULL;
     char buf[20];
     int64_t ms = clock_device_ms(0, 0, tz);
-    CHECK(edge_sys_value(EDGE_SYS_TIME, ms, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_TEXT && !strcmp(text, "2019-12-31 17:00:00"),
-          "sys_time at power-on, UTC+7, no real time: 2019-12-31 17:00:00 (UTC), the display's 2020-01-01 00:00:00");
-    CHECK(edge_sys_value(EDGE_SYS_UNIX_TIME, ms, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_NUMBER && num == (double)(ms / 1000),
-          "sys_unix_time: its seconds");
+    // sys_time and sys_unix_time in the gateway's time zone (the user, 2026-10-17), as the display shows it
+    CHECK(edge_sys_value(EDGE_SYS_TIME, ms, tz, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_TEXT && !strcmp(text, "2020-01-01 00:00:00"),
+          "sys_time at power-on, UTC+7, no real time: the display's 2020-01-01 00:00:00 (%s)", text);
+    CHECK(edge_sys_value(EDGE_SYS_UNIX_TIME, ms, tz, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_NUMBER &&
+              num == (double)(ms / 1000 + tz * 3600),
+          "sys_unix_time: its seconds, local");
 }
 
 static void test_sys(void)
@@ -423,16 +425,23 @@ static void test_sys(void)
               edge_sys_field("t") == -1,
           "field names");
     int64_t ms = at("2026-10-16 10:00:05", 0) * 1000 + 250;
-    CHECK(edge_sys_value(EDGE_SYS_UNIX_TIME, ms, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_NUMBER && num == (double)(ms / 1000),
-          "sys_unix_time: a number of seconds");
-    CHECK(edge_sys_value(EDGE_SYS_TIME, ms, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_TEXT && !strcmp(text, "2026-10-16 10:00:05"),
-          "sys_time: UTC text");
-    CHECK(edge_sys_value(EDGE_SYS_UNIX_TIME, 0, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_NO_VALUE &&
-              edge_sys_value(EDGE_SYS_TIME, 0, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_NO_VALUE,
+    CHECK(edge_sys_value(EDGE_SYS_UNIX_TIME, ms, 0, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_NUMBER && num == (double)(ms / 1000),
+          "sys_unix_time at UTC+0: a number of seconds");
+    CHECK(edge_sys_value(EDGE_SYS_TIME, ms, 0, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_TEXT && !strcmp(text, "2026-10-16 10:00:05"),
+          "sys_time at UTC+0");
+    CHECK(edge_sys_value(EDGE_SYS_TIME, ms, 7, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_TEXT && !strcmp(text, "2026-10-16 17:00:05"),
+          "sys_time at UTC+7: local text (%s)", text);
+    CHECK(edge_sys_value(EDGE_SYS_UNIX_TIME, ms, 7, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_NUMBER &&
+              num == (double)(ms / 1000 + 7 * 3600),
+          "sys_unix_time at UTC+7: shifted by the zone");
+    CHECK(edge_sys_value(EDGE_SYS_TIME, ms, -5, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_TEXT && !strcmp(text, "2026-10-16 05:00:05"),
+          "sys_time at UTC-5 (%s)", text);
+    CHECK(edge_sys_value(EDGE_SYS_UNIX_TIME, 0, 7, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_NO_VALUE &&
+              edge_sys_value(EDGE_SYS_TIME, 0, 7, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_NO_VALUE,
           "no clock: no value for either");
-    CHECK(edge_sys_value(EDGE_SYS_MAC, 0, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_TEXT && !strcmp(text, "MAC") &&
-              edge_sys_value(EDGE_SYS_SN, 0, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_TEXT &&
-              edge_sys_value(EDGE_SYS_VER, 0, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_TEXT && !strcmp(text, "1.0"),
+    CHECK(edge_sys_value(EDGE_SYS_MAC, 0, 7, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_TEXT && !strcmp(text, "MAC") &&
+              edge_sys_value(EDGE_SYS_SN, 0, 7, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_TEXT &&
+              edge_sys_value(EDGE_SYS_VER, 0, 7, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_TEXT && !strcmp(text, "1.0"),
           "sys_sn, sys_mac, sys_ver: text, clock or not");
 }
 

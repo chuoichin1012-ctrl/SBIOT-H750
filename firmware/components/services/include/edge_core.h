@@ -126,10 +126,11 @@ bool edge_schedule_due(int64_t utc_s, int tz_hours, int schedule, int hour, int 
 enum { EDGE_SYS_SN, EDGE_SYS_MAC, EDGE_SYS_VER, EDGE_SYS_TIME, EDGE_SYS_UNIX_TIME, EDGE_SYS_FIELDS };
 /** "sys_sn" … "sys_unix_time" ("sys_net_time" is sys_time); -1 otherwise. */
 int edge_sys_field(const char *name);
-/** A system field's value: sys_time is UTC text (into buf), sys_unix_time a number of seconds; both give
- * EDGE_NO_VALUE while the clock is unset (utc_ms 0). */
-edge_kind_t edge_sys_value(int field, int64_t utc_ms, const char *sn, const char *mac, const char *ver, double *num,
-                           const char **text, char buf[20]);
+/** A system field's value, in the gateway's time zone `tz_hours` (the user, 2026-10-17): sys_time is local text
+ * (into buf), sys_unix_time the Unix seconds shifted by the zone; both give EDGE_NO_VALUE while the clock is unset
+ * (utc_ms 0). */
+edge_kind_t edge_sys_value(int field, int64_t utc_ms, int tz_hours, const char *sn, const char *mac, const char *ver,
+                           double *num, const char **text, char buf[20]);
 
 // ---- The report template (spec §9.4) ---------------------------------------------------------------------
 

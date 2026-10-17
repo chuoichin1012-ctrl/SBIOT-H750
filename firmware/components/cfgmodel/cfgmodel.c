@@ -123,8 +123,10 @@ static const field_t linkage_fields[] = {
 
 // ---- Defaults (factory settings) --------------------------------------------------
 
+// A static address and Ethernet only (priority 0): a new board, or a factory reset, never attaches LTE on its own
+// (the user, 2026-10-17).
 static const char DEF_NETWORK[] =
-    "{\"priority\":1,\"ipMode\":1,\"ip\":\"192.168.0.7\",\"netmask\":\"255.255.255.0\",\"gateway\":\"192.168.0.1\","
+    "{\"priority\":0,\"ipMode\":1,\"ip\":\"192.168.0.7\",\"netmask\":\"255.255.255.0\",\"gateway\":\"192.168.0.1\","
     "\"dnsMode\":1,\"dns1\":\"8.8.8.8\",\"dns2\":\"1.1.1.1\",\"apn\":\"internet\",\"apnUser\":\"user\","
     "\"apnPassword\":\"password\",\"apnAuth\":0,\"cellDnsMode\":0,\"cellDns1\":\"8.8.8.8\",\"cellDns2\":\"1.1.1.1\"}";
 

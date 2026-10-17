@@ -1,6 +1,6 @@
 """Plan 12 bench: FinderTool's protocol against the board (spec 2026-10-17-lan-discovery-design.md §4).
-Windows sends the broadcasts (WSL is behind NAT): win_peer.py disc. Never sends `factory` (the SIM is locked:
-a factory reset sets priority 1 and LTE would attach). Leaves the board's network as it found it (Plan 11b: on
+Windows sends the broadcasts (WSL is behind NAT): win_peer.py disc. Never sends `factory` (it would erase the
+board's settings; the defaults are static 192.168.0.7, priority 0). Leaves the board's network as it found it (Plan 11b: on
 the bench's routed LAN, DHCP or static; bench_env follows the address).
 
     python3 disc_check.py

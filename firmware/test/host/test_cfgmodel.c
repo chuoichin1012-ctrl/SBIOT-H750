@@ -56,6 +56,12 @@ static void test_defaults_validate(void)
         cJSON_Delete(v);
         cJSON_Delete(d);
     }
+    // A new board, and a factory reset (the user, 2026-10-17): a static address and Ethernet only (priority 0).
+    cJSON *net = cfg_default(&ENV, "network");
+    CHECK(net && cJSON_GetObjectItem(net, "priority")->valueint == 0 && cJSON_GetObjectItem(net, "ipMode")->valueint == 1 &&
+              !strcmp(cJSON_GetObjectItem(net, "ip")->valuestring, "192.168.0.7") && cJSON_GetObjectItem(net, "dnsMode")->valueint == 1,
+          "network defaults: static 192.168.0.7, static DNS, priority 0");
+    cJSON_Delete(net);
     CHECK(cfg_known(&ENV, "port2"), "port2 must exist with two UARTs");
     cfg_env_t one = ENV;
     one.uart_count = 1;

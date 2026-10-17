@@ -259,7 +259,8 @@ def case_reload():
     print('reload: watch the prompts; press and release the Reload button as asked')
     _, sysc = w.get_json('/api/config/system')
     # The user, 2026-10-17: released at 3 s up to 10 s restarts (settings kept), at 10-15 s restores the factory
-    # settings; shorter or longer: nothing. The factory case sets network.priority 1: LTE attaches (mind the SIM).
+    # settings; shorter or longer: nothing. The factory case restores the network defaults (static 192.168.0.7,
+    # priority 0 since 2026-10-17: LTE stays off), so the bench reaches the board there afterwards.
     for hold, want in ((1, 'nothing'), (20, 'nothing'), (5, 'restart'), (12, 'factory settings')):
         sysc['hostname'] = 'reload-mark'
         w.req('POST', '/api/config/system', body=json.dumps(sysc).encode())

@@ -47,7 +47,7 @@ export function reportDefs(dev: DeviceInfo, nodeNames: string[], anyOnChange: bo
     { id: 'quoteValues', label: 'Quote values', kind: 'check', help: 'Send values as JSON strings ("12.5")', show: report },
     {
       id: 'template', label: 'JSON template', kind: 'textarea', maxLength: 2048, required: true, show: report,
-      help: 'Keys are your field names. A value naming a point, or sys_sn, sys_mac, sys_ver, sys_time (GMT), sys_unix_time, is replaced; any other text is sent as written.',
+      help: 'Keys are your field names. A value naming a point, or sys_sn, sys_mac, sys_ver, sys_time, sys_unix_time (both in the gateway's time zone), is replaced; any other text is sent as written.',
       check: (t) => templateError(String(t), nodeNames) ?? templateError26k(String(t), nodeNames),
     },
   ];

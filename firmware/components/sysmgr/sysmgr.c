@@ -20,6 +20,7 @@
 static int64_t s_offset_us;  // UTC in us minus now_us(); 0: not set. In a critical section (64 bits).
 static int s_tz;             // hours, from system.timezone at boot
 static char s_ntp_server[129];  // lwIP keeps the pointer: lives for the whole run
+static bool s_ntp_on, s_ntp_started;  // both in the lwIP core: NTP configured; SNTP started (once, never restarted)
 static char s_serial[13];  // SB + 10 digits, from the binding record (Plan 11a)
 
 static int64_t offset(void)
@@ -96,14 +97,28 @@ void sysmgr_start(const cJSON *system)
     if (cJSON_IsNumber(ntp) && ntp->valueint == 1 && cJSON_IsString(srv) && srv->valuestring[0]) {
         snprintf(s_ntp_server, sizeof s_ntp_server, "%s", srv->valuestring);
         LOCK_TCPIP_CORE();  // the SNTP app is part of the lwIP core
-        sntp_setoperatingmode(SNTP_OPMODE_POLL);
-        sntp_setservername(0, s_ntp_server);
-        sntp_init();
+        s_ntp_on = true;
+        if (strcmp(netmgr_route_name(), "NONE") != 0)
+            sysmgr_ntp_kick();  // a route came up already: start now
         UNLOCK_TCPIP_CORE();
         blog("sys: NTP from %s, UTC%+d\r\n", s_ntp_server, s_tz);
     } else {
         blog("sys: no NTP, UTC%+d; the device clock runs from 2020-01-01 00:00 until POST /api/time\r\n", s_tz);
     }
+}
+
+// SNTP starts once, when the first route is up (its DNS set): started at boot it asked before the network and its
+// retries made the first clock take a minute or more (the user, 2026-10-17). Never restarted: a restart would leave a
+// pending DNS lookup's callback alive beside the new one, and two requests would go at once (Codex review). Later
+// route changes are left to its retries (at most 60 s apart) and its hourly update.
+void sysmgr_ntp_kick(void)
+{
+    if (!s_ntp_on || s_ntp_started)
+        return;
+    s_ntp_started = true;
+    sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    sntp_setservername(0, s_ntp_server);
+    sntp_init();  // SNTP_STARTUP_DELAY 0: the request leaves now
 }
 
 static void restart_task(void *arg)

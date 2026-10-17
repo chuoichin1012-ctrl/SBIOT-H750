@@ -4,6 +4,7 @@ namespace Sbiot.Finder;
 static class Brand
 {
     public static readonly Color Blue = Color.FromArgb(0x1f, 0x35, 0xac);    // --color-brand
+    public static readonly Color BlueBusy = Color.FromArgb(0x5d, 0x6c, 0xc4);  // the blue lightened: a button at work
     public static readonly Color Orange = Color.FromArgb(0xeb, 0x60, 0x01);  // --color-brand-mark
     public static readonly Color Ink = Color.FromArgb(0x1a, 0x22, 0x33);     // --color-ink
 

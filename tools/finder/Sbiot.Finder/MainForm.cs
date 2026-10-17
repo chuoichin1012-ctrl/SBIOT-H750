@@ -27,6 +27,7 @@ sealed class MainForm : Form
         search.ForeColor = Color.White;
         search.FlatStyle = FlatStyle.Flat;
         search.FlatAppearance.BorderColor = Brand.Blue;
+        search.MinimumSize = new Size(110, 0);  // "Searching…" does not move the buttons beside it
         Width = 900;
         Height = 480;
         foreach (var (h, w) in new[] { ("MAC", 130), ("SN", 110), ("IP", 110), ("Hostname", 130), ("Model", 100), ("Firmware", 80) })
@@ -41,7 +42,7 @@ sealed class MainForm : Form
         foreach (var (name, addr) in adapters) adapter.Items.Add($"{name} — {addr}");
         if (adapter.Items.Count > 0) adapter.SelectedIndex = 0;
         search.Click += async (_, _) => await Search();
-        list.SelectedIndexChanged += (_, _) => network.Enabled = restart.Enabled = factory.Enabled = Selected is not null;
+        list.SelectedIndexChanged += (_, _) => network.Enabled = restart.Enabled = factory.Enabled = !busy && Selected is not null;
         list.DoubleClick += (_, _) => OpenWeb();
         network.Click += async (_, _) => await SetNetwork();
         restart.Click += async (_, _) => await Act("restart", null, "Restart");
@@ -51,6 +52,20 @@ sealed class MainForm : Form
                     "Factory reset", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
                 await Act("factory", null, "Factory reset");
         };
+    }
+
+    bool busy;
+
+    /// <summary>A search or a command at work: the other controls are locked. Search itself is never disabled: WinForms
+    /// draws a disabled flat button with our blue dark (the user); it shows the work in a lighter blue instead.</summary>
+    void Busy(bool on, string label)
+    {
+        busy = on;
+        search.Text = on ? label : "Search";
+        search.BackColor = search.FlatAppearance.BorderColor = on ? Brand.BlueBusy : Brand.Blue;
+        adapter.Enabled = !on;
+        network.Enabled = restart.Enabled = factory.Enabled = !on && Selected is not null;
+        UseWaitCursor = on;
     }
 
     Found? Selected => list.SelectedItems.Count == 1 ? (Found)list.SelectedItems[0].Tag! : null;
@@ -74,7 +89,8 @@ sealed class MainForm : Form
     // Every handler catches the network errors itself (an async void handler must not throw, Codex plan r1).
     async Task Search()
     {
-        search.Enabled = false;
+        if (busy) return;
+        Busy(true, "Searching…");
         try
         {
             using var c = Client();
@@ -90,7 +106,7 @@ sealed class MainForm : Form
         {
             status.Text = $"Search failed on this adapter: {e.Message}. Choose another adapter or try again.";
         }
-        finally { search.Enabled = true; }
+        finally { Busy(false, ""); }
     }
 
     void OpenWeb()
@@ -110,8 +126,8 @@ sealed class MainForm : Form
 
     async Task Act(string op, NetSettings? net, string what)
     {
-        if (Selected is not { } f) return;
-        Enabled = false;
+        if (busy || Selected is not { } f) return;
+        Busy(true, "Working…");
         bool sent = false;
         try
         {
@@ -137,6 +153,6 @@ sealed class MainForm : Form
             status.Text = sent ? $"{what}: outcome unknown ({e.Message}). Press Search to check the gateway; nothing was sent again."
                                : $"{what}: the adapter failed ({e.Message}). Nothing was sent.";
         }
-        finally { Enabled = true; }
+        finally { Busy(false, ""); }
     }
 }

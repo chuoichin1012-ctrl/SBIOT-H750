@@ -1,7 +1,8 @@
 """The bench's addresses (Plan 11b): the board and the Windows host on the board's LAN, in one place.
 
     SBIOT_GW   the board (default: found by a FinderTool search from SBIOT_WIN, by its SN)
-    SBIOT_WIN  Windows on the board's LAN (default 192.168.1.3, the Wi-Fi of the bench PC since 2026-10-17)
+    SBIOT_WIN  Windows on the board's LAN (default 192.168.0.10: the bench PC's Ethernet, cabled to the board;
+               the routed LAN of 2026-10-17 was the PC's Wi-Fi, 192.168.1.3)
     SBIOT_SN   the bench board's SN (default SB2610000001)
 
 WSL is behind NAT: the board reaches Windows only, so the peers it dials run there (win_peer.py)."""
@@ -12,7 +13,7 @@ import random
 import subprocess
 import sys
 
-WIN = os.environ.get('SBIOT_WIN', '192.168.1.3')
+WIN = os.environ.get('SBIOT_WIN', '192.168.0.10')
 SN = os.environ.get('SBIOT_SN', 'SB2610000001')
 WIN_PY = '/mnt/c/Python311/python.exe'
 

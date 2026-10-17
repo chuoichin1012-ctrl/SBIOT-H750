@@ -9,7 +9,7 @@ WSL2 runs in NAT mode, so the pings go through Windows (ping.exe) and the flood 
 partial document would take the default 1 and wake the LTE modem; Codex), saved over the web. Cases:
 1. the saved settings (HOME): the link at 100 Mbit full duplex, pings, a 3000-byte ping (fragmented,
    reassembled by lwIP), the PHY found;
-2. a static address (SBIOT_STATIC, default 192.168.1.77, checked free first) after a restart: it answers, the
+2. a static address (SBIOT_STATIC, default .77 in the board's /24, checked free first) after a restart: it answers, the
    home address does not, the status shows the running values; then HOME again (found again by the search);
 3. the link dropped five times (the PHY powered down from the console): it comes back each time,
    pings answer, and the RX buffers in use return to the baseline;
@@ -30,7 +30,8 @@ import board  # noqa: E402
 import web_check as w  # noqa: E402
 
 WIN_PY = bench_env.WIN_PY
-STATIC = os.environ.get('SBIOT_STATIC', '192.168.1.77')
+# A static address to try: SBIOT_STATIC, else .77 in the board's /24 (checked free before use).
+STATIC = os.environ.get('SBIOT_STATIC') or '.'.join(bench_env.GW.split('.')[:3] + ['77'])
 failures = []
 
 

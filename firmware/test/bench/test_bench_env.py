@@ -23,7 +23,7 @@ def test_env_wins():
 
 def test_defaults():
     be = load({'SBIOT_GW': '192.168.1.9'})
-    assert be.WIN == '192.168.1.3' and be.SN == 'SB2610000001'
+    assert be.WIN == '192.168.0.10' and be.SN == 'SB2610000001'
 
 
 def test_reply_checked():

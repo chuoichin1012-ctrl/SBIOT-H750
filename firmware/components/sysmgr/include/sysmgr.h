@@ -12,7 +12,7 @@ void sysmgr_set_zone(const cJSON *system);
 /** Reads ntp and ntpServer from `system` once (spec §9.1), starts SNTP when ntp is 1. */
 void sysmgr_start(const cJSON *system);
 bool sysmgr_clock_set(void);
-/** system.timezone in whole hours (-12..12), as read by sysmgr_start. */
+/** system.timezone in whole hours (-12..12), as read by sysmgr_set_zone. */
 int sysmgr_timezone(void);
 /** THE device clock, in Unix ms (clock_device_ms): the real time once set, else 2020-01-01 00:00:00 local plus
  *  the uptime. Edge (sys_time, scheduled reports) and the IO timers read it (the user, 2026-10-17: one source). */

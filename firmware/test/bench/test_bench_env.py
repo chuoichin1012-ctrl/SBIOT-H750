@@ -73,7 +73,38 @@ def test_judge():
     assert any('tcp_pcb' in p for p in be.judge(ok, dict(ok, poolsFull=['console_log', 'tcp_pcb'])))
 
 
+def gates_with(be, boots, status):
+    """gates() with the search answering `boots` in turn and /api/status answering `status`."""
+    seq = iter(boots)
+    be.find_board = lambda win, sn: {'boot': next(seq)}
+    w = types.ModuleType('web_check')
+    w.get_json = lambda path: (200, status)
+    sys.modules['web_check'] = w
+    return be.gates('t', path=os.devnull)
+
+
+STATUS = {'system': {'uptime': 9, 'iwdgMaxGapMs': 50, 'wdiMaxGapMs': 500, 'hbMissing': 0, 'heapLargest': 1},
+          'mem': {'heap': {}, 'stackMin': {'task': 'IDLE', 'words': 293}, 'uart': [{}, {}], 'pools': []}}
+
+
+def raises(fn):
+    try:
+        fn()
+    except RuntimeError:
+        return True
+    return False
+
+
+def test_gates_one_boot():
+    be = load({'SBIOT_GW': '192.168.1.9'})
+    assert gates_with(be, [7, 7], STATUS)['boot'] == 7
+    assert raises(lambda: gates_with(be, [7, 8], STATUS)), 'a restart between the search and the status (Codex r1)'
+    no_pools = {'system': STATUS['system'], 'mem': {k: v for k, v in STATUS['mem'].items() if k != 'pools'}}
+    assert raises(lambda: gates_with(be, [7, 7], no_pools)), 'no pools is not "no pool full" (Codex r1)'
+
+
 if __name__ == '__main__':
-    for t in (test_env_wins, test_defaults, test_reply_checked, test_search_failure_is_an_error, test_changed_lease, test_judge):
+    for t in (test_env_wins, test_defaults, test_reply_checked, test_search_failure_is_an_error, test_changed_lease, test_judge,
+              test_gates_one_boot):
         t()
     print('test_bench_env: ok')

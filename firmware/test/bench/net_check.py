@@ -80,6 +80,14 @@ def follow():
     return None
 
 
+def saved_network():
+    """The saved `network` document, or None when the board cannot be reached."""
+    try:
+        return w.get_json('/api/config/network')[1]
+    except OSError:
+        return None
+
+
 def main():
     _, home = w.get_json('/api/config/network')
     if not home or home.get('priority') != 0:
@@ -167,11 +175,13 @@ def main():
         check(rx is not None and int(rx.group(1)) == base, 'RX buffers back to %d after the flood (%s)' % (base, rx.group(1) if rx else '-'))
         print('     rx_starved %s, tx_busy_drops %s' % (stl.group(1) if stl else '-', stl.group(2) if stl else '-'))
     finally:
-        _, now = w.get_json('/api/config/network')
-        if now != home:
-            restart_with(home)
+        follow()  # wherever a failed step left the board (Codex r1: a stale address must not stop the restore)
+        now = saved_network()
+        if now != home:  # the console puts the whole document back, as disc_check does
+            board.listen(4, sends=[(0.3, 'N'), (0.5, json.dumps(home, separators=(',', ':')) + '\r')])
+            board.listen(16, during=board.hard_reset)
             follow()
-            _, now = w.get_json('/api/config/network')
+            now = saved_network()
         check(now == home, 'network is exactly as before the bench')
 
     print('bench: %s' % ('ok' if not failures else 'FAILED (%d)' % len(failures)))

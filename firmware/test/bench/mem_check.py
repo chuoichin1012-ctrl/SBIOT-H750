@@ -243,41 +243,84 @@ def status():
     return st
 
 
+CONFIGS = ('mqtt', 'mqttPublish', 'mqttSubscribe', 'port1', 'port2', 'system', 'edge', 'edgeDevices', 'edgeReport',
+           'edgeLinkage')  # what the scenarios change; never network (Codex r1)
+
+
+def snapshot():
+    snap = {}
+    for name in CONFIGS:
+        s, body = w.get_json('/api/config/' + name)
+        if s != 200:
+            raise RuntimeError('snapshot: %s %d' % (name, s))
+        snap[name] = body
+    return snap
+
+
+def restore(snap):
+    """Every config a scenario changed, as it was, then a restart (configs apply at boot)."""
+    ok = all([mc.post(name, snap[name]) for name in CONFIGS])
+    ok = w.restart() and ok
+    time.sleep(3)
+    check(ok, 'configs restored as before the scenario')
+
+
+def stop_all(peers, socks=(), subs=()):
+    for p in peers:
+        try:
+            kill_events(p)
+        except Exception as e:  # cleanup goes on
+            print('     a peer did not stop: %s' % e)
+    for x in list(socks) + list(subs):
+        try:
+            (x.stop if hasattr(x, 'stop') else x.close)()
+        except Exception:
+            pass
+
+
 def case_a():
     """Scenario A, many connections: UART1 and UART2 TCP servers with 16 clients each, MQTT over TLS, 4 WebSocket
     clients, Edge with 200 points (5 Modbus TCP devices) and a 100-slot report template."""
     tc.make_pki()
     devs, report = largest_model()
+    keys = set(json.loads(report['template']))
+    snap = snapshot()
     tc.upload('mqtt', 'ca', tc.pem('ca.pem'))
     brk = mc.main_broker().start()
-    relay = mc.relay(400, to=mc.TLSP, port=mc.TLS_RELAY, raw='1')
+    peers, wss, subs = [mc.relay(400, to=mc.TLSP, port=mc.TLS_RELAY, raw='1'),
+                        bc.peer('tcpserver', port=ec.MBTCP, modbus=1, secs=400)], [], []  # the 5 TCP devices' slave
     srv = dict(workMode=3, maxClients=16, clientLimitAction=0, allowedClients='0.0.0.0/0')
     try:
         mc.post('mqtt', mc.mqtt_cfg(port=mc.TLS_RELAY, tls=2, tlsVerify=1))
         check(ec.setup(devs, report=report, port1=bc.base(listenPort=23, **srv), port2=bc.base(listenPort=24, **srv),
                        sys_extra={'websocketTarget': 1}),
               'set up A: two TCP servers of 16, MQTT TLS, the console on, the largest Edge model')
+        sub = mc.Sub('edge/report')
+        subs.append(sub)
         time.sleep(10)
         boot = status()
         largest_boot = boot['system'].get('heapLargest', 0)
         check(largest_boot >= 96001, 'at boot the largest free block holds a 96 001-byte buffer (%s)' % largest_boot)
         g0 = bench_env.gates('mem A before')
-        peers = [bc.peer('manyclients', host=bench_env.GW, port=p, n=16, secs=120) for p in (23, 24)]
-        wss = []
+        peers += [bc.peer('manyclients', host=bench_env.GW, port=p, n=16, secs=120) for p in (23, 24)]
         for _ in range(4):
             try:
                 ws, code = w.ws_open(6432, base64.b64encode(b'admin:admin').decode())
-                if code == 101:
-                    wss.append(ws)
-                else:
-                    ws.close()
+                (wss.append if code == 101 else lambda x: x.close())(ws)
             except OSError as e:
                 print('     a WebSocket failed: %s' % e)
         time.sleep(20)
         st = status()
         ports = [x['state'] for x in st['ports']]
-        load = ports == ['CONNECTED(16)', 'CONNECTED(16)'] and len(wss) == 4 and st['mqtt']['state'] == 'CONNECTED'
-        check(load, 'the load exists: ports %s, %d WebSockets, MQTT %s, Edge %s' % (ports, len(wss), st['mqtt']['state'], st['edge'].get('state')))
+        edge = str(st['edge'].get('state', ''))
+        m = re.match(r'RUNNING (\d+)/200$', edge)
+        rep = report_keys(sub)
+        # Edge: running with all 200 points loaded; the 5 TCP devices (40 points) and the IO points read; a report
+        # with the template's 100 values reached the broker (Codex r1).
+        load = (ports == ['CONNECTED(16)', 'CONNECTED(16)'] and len(wss) == 4 and st['mqtt']['state'] == 'CONNECTED'
+                and m is not None and int(m.group(1)) >= 42 and rep == keys)
+        check(load, 'the load exists: ports %s, %d WebSockets, MQTT %s, Edge %s, a report of %d/%d values'
+              % (ports, len(wss), st['mqtt']['state'], edge, len(rep & keys), len(keys)))
         bad = criteria(st, 'A')
         # A certificate upload under the load: its buffer comes from the heap (the 12 KB largest-block criterion).
         s_up, _ = tc.upload('mqtt', 'ca', tc.pem('ca.pem'))
@@ -287,17 +330,20 @@ def case_a():
         check(not bad, 'scenario A criteria: %s' % ('; '.join(bad) or 'stacks, heap, largest block, pools ok (%s)' % heap()))
         ok_g, _, why_g = bench_env.qualify('mem A', g0)
         check(ok_g, 'gates after scenario A: %s' % why_g)
-        for ws in wss:
-            ws.close()
-        for p in peers:
-            kill_events(p)
     finally:
-        kill_events(relay)
+        stop_all(peers, wss, subs)
         brk.stop()
-        mc.post('mqtt', mc.mqtt_cfg(enabled=0, host=''))
-        mc.post('edge', {'enabled': False})
-        w.restart()
-        time.sleep(3)
+        restore(snap)
+
+
+def report_keys(sub):
+    """The keys of the newest Edge report on the broker, or an empty set."""
+    for p in reversed(sub.payloads('edge/report')):
+        try:
+            return set(json.loads(p))
+        except ValueError:
+            continue
+    return set()
 
 
 def case_b():
@@ -305,6 +351,7 @@ def case_b():
     outbox filled offline; then the MQTT TLS handshake that never gets a CONNACK, UART1's TLS client and UART2's
     HTTPS client dialling one tlsset process at once; a slow UI reader; saves until FlashDB erases (GC)."""
     tc.make_pki()
+    snap = snapshot()
     for scope in ('mqtt', 'port1', 'port2'):
         tc.upload(scope, 'ca', tc.pem('ca.pem'))
     PM, P1, P2 = 9450, 9451, 9452
@@ -312,14 +359,14 @@ def case_b():
     p1 = bc.base(workMode=1, remoteHost=WIN, remotePort=P1, tls=2, tlsVerify=1, reconnectInterval=2, listenPort=23)
     p2 = bc.base(workMode=4, httpHost=WIN, httpPort=P2, httpMethod=0, httpPath='/q?v=', httpHeaders='', httpStripHeaders=True,
                  httpTimeout=10, tls=2, tlsVerify=1, listenPort=24)
+    peers = []
     try:
         ok = mc.post('mqtt', mq) and mc.post('mqttPublish', [mc.topic('mem/b')]) and mc.post('edge', {'enabled': False})
         for name, extra in (('port1', p1), ('port2', p2)):
-            _, cur = w.get_json('/api/config/' + name)
+            cur = dict(snap[name])
             cur.update(extra)
             ok = mc.post(name, cur) and ok
-        _, sysc = w.get_json('/api/config/system')
-        sysc.update({'ntp': 0, 'bufferOffline': 1, 'idleRestart': 0})
+        sysc = dict(snap['system'], ntp=0, bufferOffline=1, idleRestart=0)
         ok = mc.post('system', sysc) and ok
         check(ok and w.restart(), 'set up B: MQTT TLS (UART1 published, bufferOffline), UART1 TLS, UART2 HTTPS; nobody listens yet')
         time.sleep(5)
@@ -333,13 +380,12 @@ def case_b():
                 break
         check(full, 'the outbox is full (its "outbox full" log line)')
         e0 = find_erases()
-        t = bc.peer('tlsset', pm=PM, p1=P1, p2=P2, secs=400, cert=tc.WPKI + 'server.pem', key=tc.WPKI + 'server.key')
-        slow = bc.peer('slowget', host=bench_env.GW, port=80, secs=400)
+        peers.append(bc.peer('tlsset', pm=PM, p1=P1, p2=P2, secs=600, cert=tc.WPKI + 'server.pem', key=tc.WPKI + 'server.key'))
+        peers.append(bc.peer('slowget', host=bench_env.GW, port=80, secs=600))
         time.sleep(1)
         bc.send_serial(b'1', port=1)  # UART1's side of the loop: UART2's HTTPS client dials on a frame (Codex r4)
         mins, e1 = [status()], e0
         for i in range(800):  # saves through the window until FlashDB erases a sector (GC), the memory read as it goes
-            _, sysc = w.get_json('/api/config/system')
             sysc['hostname'] = 'memb-%d' % i
             w.req('POST', '/api/config/system', body=json.dumps(sysc).encode())
             if i % 25 == 24:
@@ -348,27 +394,30 @@ def case_b():
                 e1 = find_erases()
                 if e0 is not None and e1 is not None and e1 > e0:
                     break
-        ev = kill_events(t)
-        kill_events(slow)
+        mins.append(status())
+        ev = kill_events(peers.pop(0))
+        slow_ev = kill_events(peers.pop(0))
         iv = handshakes(ev)
         overlap = overlapping(iv, (PM, P1, P2))
         gc = e0 is not None and e1 is not None and e1 > e0
+        got = [e['got'] for e in slow_ev if e.get('ev') == 'slow']
+        reading = len(got) >= 2 and got[0] > 0 and got[-1] > got[0] and not any(e.get('ev') in ('done', 'error') for e in slow_ev)
         check(overlap, 'the three handshakes overlap ([accept, end] ms by port: %s)' % iv)
         check(gc, 'FlashDB erased during the window (GC): erases %s -> %s' % (e0, e1))
+        check(reading, 'the slow reader was still reading the UI bundle when the window ended (%s B read, %s)'
+              % (got[-1] if got else 0, [e for e in slow_ev if e.get('ev') in ('asset', 'done', 'error')]))
         bad = [b for st in mins if st for b in criteria(st, 'B')]
-        ok = not bad
-        print('     scenario B: %s' % ('passed' if ok and overlap and gc else 'partial' if ok else 'failed'))
-        check(ok, 'scenario B criteria: %s' % ('; '.join(bad[:3]) or 'stacks, heap, largest block, pools ok (%s)' % heap()))
+        check(not bad, 'scenario B criteria: %s' % ('; '.join(bad[:3]) or 'stacks, heap, largest block, pools ok (%s)' % heap()))
+        # The overlap lasts a few seconds and GC is found by the console's erase count, read every 50 saves: GC is
+        # shown in the same window as the overlap, never at the same instant (Codex r1). So B is reported partial.
+        print('     scenario B: %s' % ('partial (overlap, GC, outbox full and the slow reader in one window; GC not shown'
+                                       ' inside the handshake overlap)' if not bad and overlap and gc and full and reading
+                                       else 'failed' if bad else 'partial'))
         ok_g, _, why_g = bench_env.qualify('mem B', g0)
         check(ok_g, 'gates after scenario B: %s' % why_g)
     finally:
-        mc.post('mqtt', mc.mqtt_cfg(enabled=0, host=''))
-        mc.post('mqttPublish', [])
-        _, sysc = w.get_json('/api/config/system')
-        sysc.update({'bufferOffline': 0, 'hostname': 'saved-name'})
-        w.req('POST', '/api/config/system', body=json.dumps(sysc).encode())
-        w.restart()
-        time.sleep(3)
+        stop_all(peers)
+        restore(snap)
 
 
 def handshakes(ev):

@@ -11,7 +11,7 @@ MODE tcpserver  port, secs, delay_ms (listen only after), send_hex + send_ms (to
      http       port, secs, reply (the body)
      mcast      group, port, iface, send_hex, send_ms
      manyclients host, port, n, secs: n TCP connections held (Plan 11b)
-     slowget    host, port, secs: GET / of the UI read at 1 KB/s (Plan 11b)
+     slowget    host, port, secs: the UI's script bundle read at 256 B/s (Plan 11b)
      tlsset     pm, p1, p2, secs, cert, key[, hold]: three TLS listeners in one process, one clock (Plan 11b)
      disc       iface, port (48600), secs, send (the packet, hex): broadcast from iface, one event per reply (Plan 12)
      stuckpair  host, port, secs: two clients of a TCP server, one never reading, one logging what it got
@@ -26,7 +26,9 @@ MODE tcpserver  port, secs, delay_ms (listen only after), send_hex + send_ms (to
                 K bytes of that packet, then nothing more that way), refuse=1 (accept, then close at once), raw=1 (bytes
                 as they come, no parsing: TLS); events pkt (dir, type, len, conn), cut, stall, accept, refused (Plan 09)
 """
+import gzip
 import json
+import re
 import socket
 import ssl
 import struct
@@ -447,23 +449,47 @@ def manyclients(args):
 
 
 def slowget(args):
-    """host, port, secs: GET / of the UI, read 1 KB a second (Plan 11b, scenario B)."""
-    c = socket.create_connection((args['host'], int(args.get('port', 80))), 10)
-    c.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
-    c.sendall(b'GET / HTTP/1.1\r\nHost: gw\r\nAccept-Encoding: gzip\r\n\r\n')
-    c.settimeout(5)
-    got = 0
-    while time.time() - T0 < float(args.get('secs', 60)):
-        try:
-            d = c.recv(1024)
-        except socket.timeout:
-            continue
-        if not d:
-            break
-        got += len(d)
-        time.sleep(1)
-    out(ev='slow', got=got)
-    c.close()
+    """host, port, secs: the UI's script bundle (its name read from GET /), read 256 B a second with a small receive
+    buffer, so the gateway's send stays blocked (Plan 11b, scenario B). Events: asset, slow (every 5 s), done, error."""
+    host, port = args['host'], int(args.get('port', 80))
+    try:
+        c = socket.create_connection((host, port), 10)
+        c.sendall(b'GET / HTTP/1.1\r\nHost: gw\r\nConnection: close\r\n\r\n')
+        page = b''
+        while True:
+            d = c.recv(4096)
+            if not d:
+                break
+            page += d
+        c.close()
+        head, _, body = page.partition(b'\r\n\r\n')
+        if b'content-encoding: gzip' in head.lower():
+            body = gzip.decompress(body)
+        m = re.search(rb'src="\.?(/[^"]+\.js)"', body)
+        if not m:
+            out(ev='error', err='no script in /')
+            return
+        path = m.group(1).decode()
+        c = socket.socket()
+        c.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+        c.settimeout(10)
+        c.connect((host, port))
+        c.sendall(('GET %s HTTP/1.1\r\nHost: gw\r\nAccept-Encoding: gzip\r\n\r\n' % path).encode())
+        out(ev='asset', path=path)
+        got, last = 0, 0
+        while time.time() - T0 < float(args.get('secs', 60)):
+            d = c.recv(256)
+            if not d:
+                out(ev='done', got=got)
+                break
+            got += len(d)
+            if time.time() - last >= 5:
+                out(ev='slow', got=got)
+                last = time.time()
+            time.sleep(1)
+        c.close()
+    except OSError as e:
+        out(ev='error', err=str(e)[:80])
 
 
 def tlsset(args):

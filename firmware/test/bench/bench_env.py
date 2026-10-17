@@ -86,14 +86,18 @@ def gates(label, path=None):
     import web_check as w
     found = find_board(WIN, SN)
     _, st = w.get_json('/api/status')
+    again = find_board(WIN, SN)  # the status belongs to this boot only if the boot did not change around it (Codex r1)
+    if (found or {}).get('boot') != (again or {}).get('boot'):
+        raise RuntimeError('gates %s: the boot changed while reading (%s -> %s)'
+                           % (label, (found or {}).get('boot'), (again or {}).get('boot')))
     sy, mem = (st or {}).get('system', {}), (st or {}).get('mem', {})
     row = {'label': label, 'boot': (found or {}).get('boot'), 'uptime': sy.get('uptime'),
            'iwdgMaxGapMs': sy.get('iwdgMaxGapMs'), 'wdiMaxGapMs': sy.get('wdiMaxGapMs'), 'hbMissing': sy.get('hbMissing'),
            'heapLargest': sy.get('heapLargest'), 'heap': mem.get('heap'), 'stackMin': mem.get('stackMin'),
            'uart': mem.get('uart'),
-           'poolsFull': [p['name'] for p in mem.get('pools', []) if p.get('used') == p.get('size')]}
+           'poolsFull': [p['name'] for p in mem.get('pools') or [] if p.get('used') == p.get('size')]}
     missing = [k for k in ('boot', 'uptime', 'iwdgMaxGapMs', 'wdiMaxGapMs', 'hbMissing', 'heap', 'stackMin', 'uart')
-               if row[k] is None]
+               if row[k] is None] + ([] if isinstance(mem.get('pools'), list) else ['pools'])
     if missing:
         raise RuntimeError('gates %s: no %s' % (label, ', '.join(missing)))
     with open(path or os.environ.get('SBIOT_GATES', '/tmp/sbiot_gates.jsonl'), 'a') as f:

@@ -41,6 +41,10 @@ char *rwprot_handle(const char *req, size_t len, rwprot_read_fn rd, rwprot_write
     const cJSON *ver = cJSON_GetObjectItemCaseSensitive(p, "Ver");
     if (!ver) ver = cJSON_GetObjectItemCaseSensitive(p, "ver");
     const cJSON *dir = cJSON_GetObjectItemCaseSensitive(p, "dir");
+    if (cJSON_IsString(dir) && strcmp(dir->valuestring, "up") == 0) {
+        cJSON_Delete(in);
+        return NULL;  // a reply, not a request: never answered, so a reply heard back cannot loop (outside review 2)
+    }
     char id[64] = "";
     bool has_id = as_text(cJSON_GetObjectItemCaseSensitive(p, "id"), id, sizeof id);
     const cJSON *r = cJSON_GetObjectItemCaseSensitive(p, "r_data"), *w = cJSON_GetObjectItemCaseSensitive(p, "w_data");

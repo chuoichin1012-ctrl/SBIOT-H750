@@ -1,6 +1,6 @@
 import { range } from '../../lib/device';
 import { reportModeError, templateError } from '../../lib/edge';
-import { templateError26k } from '../../lib/rules';
+import { replyLoopError, templateError26k } from '../../lib/rules';
 import type { DeviceInfo, Values } from '../../lib/types';
 import { EN_DIS, QOS, topicError, type FieldDef } from '../../lib/validate';
 
@@ -22,7 +22,7 @@ export function reportDefs(dev: DeviceInfo, nodeNames: string[], anyOnChange: bo
     { id: 'remoteFormat', label: 'Request format', kind: 'select', options: [[0, 'Modbus RTU'], [1, 'Modbus TCP'], [2, 'JSON (rw_prot)']], show: query },
     { id: 'requestTopic', label: 'Request topic', kind: 'text', maxLength: 72, required: true, show: (v) => query(v) && mqtt(v), check: (t) => topicError(String(t), true) },
     { id: 'requestQos', label: 'Request QoS', kind: 'select', options: QOS, show: (v) => query(v) && mqtt(v) },
-    { id: 'replyTopic', label: 'Reply topic', kind: 'text', maxLength: 72, required: true, show: (v) => query(v) && mqtt(v), check: (t) => topicError(String(t), false) },
+    { id: 'replyTopic', label: 'Reply topic', kind: 'text', maxLength: 72, required: true, show: (v) => query(v) && mqtt(v), check: (t, v) => topicError(String(t), false) ?? replyLoopError(v) },
     { id: 'replyQos', label: 'Reply QoS', kind: 'select', options: QOS, show: (v) => query(v) && mqtt(v) },
     { id: 'replyRetain', label: 'Reply retained', kind: 'check', help: 'Retain reply messages', show: (v) => query(v) && mqtt(v) },
 

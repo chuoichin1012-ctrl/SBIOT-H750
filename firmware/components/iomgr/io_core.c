@@ -131,8 +131,8 @@ int io_core_do_set(io_core_t *c, int i, bool on, uint32_t now_ms)
         c->deadline[i] = now_ms + period;
         put(c, i, on);
         break;
-    case IO_DO_BLINK:
-        c->blink[i] = on;
+    case IO_DO_BLINK:  // the output now; the flipping goes on from it (the user, 2026-10-17)
+        c->blink[i] = true;
         c->deadline[i] = now_ms + period;
         put(c, i, on);
         break;
@@ -166,24 +166,20 @@ uint8_t io_core_commanded(const io_core_t *c)
 {
     uint8_t m = 0;
     for (int i = 0; i < IO_DO; i++) {
-        bool on = c->pulsing[i] ? c->rest[i] : c->cfg.do_mode[i] == IO_DO_BLINK ? c->blink[i] : io_core_do_get(c, i);
+        bool on = c->pulsing[i] ? c->rest[i] : io_core_do_get(c, i);  // a flip: its phase now
         m |= (uint8_t)(on << i);
     }
     return m;
 }
 
-void io_core_restore(io_core_t *c, uint8_t mask, bool found, uint32_t now_ms)
+void io_core_restore(io_core_t *c, uint8_t mask, uint32_t now_ms)
 {
-    c->saved = mask;
-    c->saved_known = found;
-    if (!found)
-        return;
     for (int i = 0; i < IO_DO; i++) {
         bool on = (mask >> i) & 1;
         if (c->cfg.do_mode[i] == IO_DO_BLINK)
-            io_core_do_set(c, i, on, now_ms);  // blinking resumes
+            io_core_do_set(c, i, on, now_ms);  // flips from the start, or on from a held phase
         else
-            put(c, i, on);
+            put(c, i, on);  // a follow's value, a pulse's rest: a pulse cut by the reset ends
     }
 }
 
@@ -229,18 +225,3 @@ bool io_core_timers(io_core_t *c, int64_t utc_s, int tz_hours, bool clock_set, u
 
 // ---- keepOutputs ----------------------------------------------------------------------------------
 
-bool io_core_persist_take(const io_core_t *c, uint8_t *mask)
-{
-    if (!c->cfg.keep)
-        return false;
-    *mask = io_core_commanded(c);
-    return !c->saved_known || *mask != c->saved;
-}
-
-void io_core_persist_done(io_core_t *c, uint8_t mask, bool ok)
-{
-    if (ok) {
-        c->saved = mask;
-        c->saved_known = true;
-    }
-}

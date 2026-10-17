@@ -14,6 +14,7 @@
 #include "lte_uart.h"
 #include "netmgr.h"
 #include "disc.h"
+#include "dohold.h"
 #include "serial.h"
 #include "uart_drv.h"
 #include "sysmgr.h"
@@ -52,6 +53,7 @@ static StackType_t s_wdog_stack[WDOG_STACK_WORDS], s_init_stack[INIT_STACK_WORDS
 
 extern const uint8_t __image_start__[], __image_end__[];  // app.ld: the whole QSPI image
 
+static bool s_do_held;      // Restart Hold: this boot kept the latch (dohold.h)
 static uint32_t s_boot_rsr;  // this boot's reset flags, kept for the supervisor's reason (Plan 11a task 0b)
 
 static void report_boot(void)
@@ -234,7 +236,7 @@ static void init_task(void *arg)
     cJSON *ioc = store_get("io");
     if (!ioc)
         ioc = cfg_default(&env, "io");
-    iomgr_start(ioc, sys, flash_spi4());
+    iomgr_start(ioc, sys, flash_spi4(), s_do_held);
     cJSON_Delete(ioc);
     // The serial ports (spec §6.3 step 5): before anything that subscribes to them.
     for (int port = 1; port <= SERIAL_PORTS; port++) {
@@ -532,7 +534,11 @@ static void init_task(void *arg)
 void app_main(void)
 {
     heap_init();  // before any allocation (spec §5.5)
-    board_latch_zero();  // MX_GPIO_Init (app.ioc) left the latch outputs disabled
+    // Restart Hold (dohold.h): the bootloader's choice again, from the same reset flags (report_boot clears them
+    // later, in init) and the same record: on a hold the latch is left as it is.
+    uint32_t rsr = RCC->RSR;
+    s_do_held = do_hold_keep(rsr & RCC_RSR_PORRSTF, rsr & RCC_RSR_BORRSTF, (const do_hold_t *)DO_HOLD_ADDR);
+    board_latch_init(s_do_held);
     board_kick();
     blog_init();
     syslog_init();  // before the first line worth keeping

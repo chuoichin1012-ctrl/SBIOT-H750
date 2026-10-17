@@ -71,10 +71,6 @@ void Error_Handler(void);
 #define DO2_D_GPIO_Port GPIOD
 #define ETH_RESET_Pin GPIO_PIN_13
 #define ETH_RESET_GPIO_Port GPIOD
-#define LATCH_LE_Pin GPIO_PIN_14
-#define LATCH_LE_GPIO_Port GPIOD
-#define LATCH_OE_Pin GPIO_PIN_15
-#define LATCH_OE_GPIO_Port GPIOD
 #define RELOAD_Pin GPIO_PIN_8
 #define RELOAD_GPIO_Port GPIOA
 #define WDI_LED_Pin GPIO_PIN_10

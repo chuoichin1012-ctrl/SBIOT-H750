@@ -5,6 +5,7 @@
 #include "tick64.h"
 #include "pace.h"
 #include "hb.h"
+#include "dohold.h"
 
 static int failures;
 #define CHECK(cond, ...)                                \
@@ -143,9 +144,42 @@ static void test_hb(void)
     CHECK(n == HB_MAX && hb_add("y", 1000, t0) == -1, "HB_MAX slots, then -1 (%d)", n);
 }
 
+// Restart Hold (the user, 2026-10-17): the latch is not re-latched on a soft reset; this record tells the next
+// boot what the latch holds. Power-on or brown-out, a bad record, or keepOutputs off: everything off.
+static void test_dohold(void)
+{
+    do_hold_t r;
+    memset(&r, 0xA5, sizeof r);  // RAM after a power-on: random
+    uint8_t latched = 9, commanded = 9;
+    CHECK(!do_hold_get(&r, &latched, &commanded), "random RAM is no record");
+    do_hold_set(&r, true, 0x01, 0x03);
+    CHECK(do_hold_get(&r, &latched, &commanded) && latched == 0x01 && commanded == 0x03, "set, then get");
+    CHECK(sizeof r <= 32, "one cache line (%u)", (unsigned)sizeof r);
+    // The truth table of the decision: only a soft reset with a valid record and keep on holds.
+    CHECK(do_hold_keep(false, false, &r), "soft reset, record, keep: hold");
+    CHECK(!do_hold_keep(true, false, &r), "power-on: off");
+    CHECK(!do_hold_keep(false, true, &r), "brown-out: off");
+    CHECK(!do_hold_keep(true, true, &r), "both: off");
+    do_hold_set(&r, false, 0x01, 0x01);
+    CHECK(!do_hold_keep(false, false, &r), "keepOutputs off: off");
+    do_hold_set(&r, true, 0x02, 0x02);
+    r.latched ^= 1;  // a bit flipped: the CRC fails
+    CHECK(!do_hold_get(&r, &latched, &commanded) && !do_hold_keep(false, false, &r), "a damaged record: off");
+    // The update protocol (Codex): invalidate before the latch changes, publish after. A reset in between finds
+    // no record and takes the documented off path, never a stale mask.
+    do_hold_set(&r, true, 0x01, 0x01);
+    do_hold_invalidate(&r);
+    CHECK(!do_hold_get(&r, &latched, &commanded) && !do_hold_keep(false, false, &r), "invalidated: off");
+    do_hold_set(&r, true, 0x02, 0x02);
+    CHECK(do_hold_get(&r, &latched, &commanded) && latched == 0x02, "published again");
+    CHECK(DO_HOLD_ADDR % 32 == 0 && DO_HOLD_ADDR >= 0x38000000u && DO_HOLD_ADDR + 32 <= 0x3800FC00u,
+          "a fixed 32-byte line in SRAM4, below the ADC buffer");
+}
+
 int main(void)
 {
     test_hb();
+    test_dohold();
     test_pace();
     test_tick64();
     test_crc32();

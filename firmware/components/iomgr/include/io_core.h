@@ -47,8 +47,6 @@ typedef struct {
     bool pulsing[IO_DO], rest[IO_DO], blink[IO_DO];
     uint32_t deadline[IO_DO];
     int64_t last_s;  // timers: the last second checked, 0 = none
-    uint8_t saved;   // keepOutputs: the mask in the flash
-    bool saved_known;
 } io_core_t;
 
 /** All outputs off; the DI start as `pins` reads them (bit i = DI i+1's pin level), with no debounce. */
@@ -64,11 +62,13 @@ bool io_core_do_get(const io_core_t *c, int i);
 /** Ends pulses and steps blinks whose time has come. */
 void io_core_tick(io_core_t *c, uint32_t now_ms);
 uint8_t io_core_outputs(const io_core_t *c);
-/** What keepOutputs saves: a pulse as its rest state, a blinking output as on. */
+/** What the outputs are commanded to: a pulse as its rest state, a flip as its phase now (Codex). What the
+ *  Restart Hold record keeps. */
 uint8_t io_core_commanded(const io_core_t *c);
 
-/** At boot with keepOutputs: `mask` from the flash, `found` false when there was none. */
-void io_core_restore(io_core_t *c, uint8_t mask, bool found, uint32_t now_ms);
+/** At boot, always, after init: `mask` what a held latch commanded (Restart Hold, dohold.h), 0 otherwise. Starts
+ *  the timer flips (the user, 2026-10-17: they flip by themselves), each one period after now_ms. */
+void io_core_restore(io_core_t *c, uint8_t mask, uint32_t now_ms);
 
 /**
  * The timers, for every second in (last check, utc_s] (local time = UTC + tz_hours). Output actions
@@ -77,7 +77,3 @@ void io_core_restore(io_core_t *c, uint8_t mask, bool found, uint32_t now_ms);
  */
 bool io_core_timers(io_core_t *c, int64_t utc_s, int tz_hours, bool clock_set, uint32_t now_ms);
 
-/** keepOutputs: true with the latest commanded mask when it differs from the saved one. */
-bool io_core_persist_take(const io_core_t *c, uint8_t *mask);
-/** After the save of `mask`: recorded when ok, else the next take tries again. */
-void io_core_persist_done(io_core_t *c, uint8_t mask, bool ok);

@@ -12,7 +12,8 @@
 #include "nor.h"
 
 /** Restores keepOutputs, reads the factory record from `spi4`, starts the tasks and the ADC. */
-void iomgr_start(const cJSON *io, const cJSON *sys, nor_t *spi4);
+/** held: this boot kept the latch (Restart Hold, dohold.h): the outputs go on from the hold record. */
+void iomgr_start(const cJSON *io, const cJSON *sys, nor_t *spi4, bool held);
 
 /** DO i (0-based) as a command from the web (later MQTT, linkage). 0, or -1 for no such output. */
 int iomgr_do_set(int i, bool on);

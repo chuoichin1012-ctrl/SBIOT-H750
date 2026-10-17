@@ -128,6 +128,8 @@ SECTIONS
   .sram4_bss (NOLOAD)  : { . = ALIGN(32); *(.sram4_bss .sram4_bss.*)   . = ALIGN(32); } >SRAM4
   /* Kept across a reset (Plan 11a task 0b): in no zero table, and the bootloader uses DTCM only. */
   .noinit (NOLOAD)     : { . = ALIGN(32); *(.noinit .noinit.*)         . = ALIGN(32); } >SRAM4
+  /* Restart Hold's record (dohold.h): a fixed line the bootloader reads; DO_HOLD_ADDR, gated by check_elf. */
+  .dohold 0x3800FBE0 (NOLOAD) : { KEEP(*(.dohold)) } >SRAM4
   .adc_buf (NOLOAD)    : { . = ALIGN(32); *(.adc_buf .adc_buf.*)       . = ALIGN(32); } >ADCBUF
   .bkp_noinit (NOLOAD) : { *(.bkp_noinit .bkp_noinit.*) } >BKPSRAM   /* survives resets; never zeroed */
 }

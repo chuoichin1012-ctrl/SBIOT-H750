@@ -350,7 +350,11 @@ def case_basic():
     check(r.get('do1') in (0, 1), 'the IO point DO1 in it (%s)' % r.get('do1'))
     check(r.get('k') == 'const' and r.get('sn') == s['system']['sn'] and r.get('mac') == s['system']['mac'],
           'template constants kept, sys_sn and sys_mac filled')
-    check('ts' in r and r['ts'] is None and r['ut'] is None, 'no clock: sys_time and sys_unix_time are the placeholder')
+    # No real time: the device clock (PR #28, spec §10.4): 2020-01-01 00:00 local at power-on plus the uptime, sys_time
+    # as UTC text, sys_unix_time its seconds (before the real clock, so before 2021).
+    ts, ut = r.get('ts'), r.get('ut')
+    check(isinstance(ts, str) and ts[:4] in ('2019', '2020') and isinstance(ut, (int, float)) and 1577750400 <= ut < 1609459200,
+          'no real time: sys_time and sys_unix_time carry the device clock (%r, %r)' % (ts, ut))
     check(full, 'status: every point read (%s)' % status_now)
     fc3 = [(a, n) for _, u, fc, a, n in slave.log if u == 5 and fc == 3]
     check(fc3 and all(x == (10, 4) for x in fc3), 'batch reads: t, c2, f in one request, FC3 10..13 (%s)' % fc3[:3])
@@ -740,7 +744,13 @@ def case_bigreport():
     over = dict(before, template=json.dumps({'a%03d' % i: 't' for i in range(120)}))
     s, _, body = w.req('POST', '/api/config/edgeReport', body=json.dumps(over).encode())
     _, after = w.get_json('/api/config/edgeReport')
-    check(s == 400 and b'too many values' in body and after == before, 'a template needing over 26 KB is refused, the stored one kept (%d)' % s)
+    # Plan 09b: the store keeps what it is sent (the UI refuses it, rules.ts); at start-up edge_rt turns reports off.
+    w.restart()
+    time.sleep(3)
+    off = re.search(r'the report template needs more than \d+ bytes: reports are off', log_text())
+    check(s == 200 and after['template'] == over['template'] and off,
+          'a template needing over 26 KB: stored as sent (%d), at start-up reports are off' % s)
+    w.req('POST', '/api/config/edgeReport', body=json.dumps(before).encode())
 
 
 def case_mqtt():

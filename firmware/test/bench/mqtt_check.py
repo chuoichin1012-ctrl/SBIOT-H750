@@ -25,6 +25,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bridge_check as bc  # noqa: E402  (peer, wait_peer, send_serial, last_hex, adc_pace, check, crc16)
+import bench_env  # noqa: E402  (Plan 11b: the gates per workload)
 import tls_check as tc  # noqa: E402  (PKI, make_pki, pem, upload, log_text)
 import web_check as w  # noqa: E402
 
@@ -71,7 +72,7 @@ class Broker:
 
 
 def main_broker():
-    """Plain (anonymous), password (gw / s3cret) and TLS (the bench's server certificate for 192.168.0.10)."""
+    """Plain (anonymous), password (gw / s3cret) and TLS (the bench's server certificate for WIN)."""
     os.makedirs(RUN, exist_ok=True)
     pw = os.path.join(RUN, 'pw')
     subprocess.run(['mosquitto_passwd', '-b', '-c', pw, 'gw', 's3cret'], check=True, capture_output=True)
@@ -481,6 +482,7 @@ def case_flood(brk):
     t0 = time.time()
     n, _ = at_device()
     quiet = n / (time.time() - t0)
+    g0 = bench_env.gates('mqtt flood before')
     lines = b''.join(b'%06d\n' % i for i in range(200000))
     flood = subprocess.Popen(['mosquitto_pub', '-p', str(PLAIN), '-t', 'gw/flood', '-q', '0', '-l'], stdin=subprocess.PIPE)
     flood.stdin.write(lines)
@@ -494,6 +496,8 @@ def case_flood(brk):
     ev = bc.wait_peer(r, 1)
     down = sum(1 for e in evs(ev, 'pkt') if e['type'] == 'PUBLISH' and e['dir'] == 'down')
     check(busy >= 0.7, 'under a flood (%d messages relayed): the heartbeat %.2f/s (quiet %.2f/s)' % (down, busy, quiet))
+    ok_g, _, why_g = bench_env.qualify('mqtt flood', g0)
+    check(ok_g, 'gates after the MQTT flood: %s' % why_g)
 
 
 def case_tls(brk):
@@ -515,7 +519,7 @@ def case_tls(brk):
     s, i = tc.upload('mqtt', 'ca', tc.pem('ca.pem'))
     check(s == 200 and i.get('restartNeeded') is True, 'the mqtt CA upload says a restart is needed')
     check(configure(mqtt_cfg(**tls), pubs=[topic('gw/up')]), 'restart with the CA')
-    check(wait_state('CONNECTED', 20), 'TLS with the CA (name: host 192.168.0.10): CONNECTED (%s)' % state())
+    check(wait_state('CONNECTED', 20), 'TLS with the CA (name: host %s): CONNECTED (%s)' % (WIN, state()))
     sub = Sub('gw/up')
     from_device(b'over-tls')
     check(sub.wait(b'over-tls'), 'TLS: a publish arrives')

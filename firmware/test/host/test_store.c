@@ -2020,6 +2020,8 @@ typedef struct {
     char first[64], last[64];
     uint32_t last_boot;
     int64_t last_wall;
+    uint32_t last_seq;
+    bool seq_up;  // every line's sequence number above the one before
     int stop_at;
 } logs_t;
 
@@ -2032,6 +2034,8 @@ static bool collect(const store_log_meta_t *m, const char *line, size_t len, voi
     snprintf(l->last, sizeof l->last, "%.*s", (int)len, line);
     l->last_boot = m->boot;
     l->last_wall = m->wall_ms;
+    l->seq_up = l->n == 0 || m->seq > l->last_seq ? (l->n == 0 || l->seq_up) : false;
+    l->last_seq = m->seq;
     l->n++;
     return l->n != l->stop_at;
 }
@@ -2049,16 +2053,24 @@ static void test_log(void)
     s_wall = 1760000000000;
     store_log_append("with a clock", 12);
     logs_t l = {0};
-    store_log_iter(collect, &l);
+    store_log_iter(0, collect, &l);
     CHECK(l.n == 101 && !strcmp(l.first, "line 0") && !strcmp(l.last, "with a clock") && l.last_wall == 1760000000000,
           "101 lines, oldest first, in batches (%d)", l.n);
+    CHECK(l.seq_up, "sequence numbers grow line by line");
     logs_t s = {.stop_at = 40};
-    store_log_iter(collect, &s);
+    store_log_iter(0, collect, &s);
     CHECK(s.n == 40, "the callback stops the iteration");
+    logs_t t = {0};  // the web log page goes on from the line after the last one it sent, not from the oldest
+    store_log_iter(s.last_seq + 1, collect, &t);
+    CHECK(t.n == 61 && !strcmp(t.first, "line 40") && !strcmp(t.last, "with a clock"),
+          "from a sequence number: that line and the newer ones (%d, %s)", t.n, t.first);
+    logs_t u = {0};
+    store_log_iter(l.last_seq + 1, collect, &u);
+    CHECK(u.n == 0, "from after the newest: nothing");
     reboot();
     store_log_append("after the reboot", 16);
     logs_t r = {0};
-    store_log_iter(collect, &r);
+    store_log_iter(0, collect, &r);
     CHECK(r.n == 102 && !strcmp(r.last, "after the reboot") && r.last_boot == 2, "the sequence continues after a reboot");
     char longl[400];
     memset(longl, 'x', sizeof longl);
@@ -2068,12 +2080,12 @@ static void test_log(void)
         store_log_append(longl, STORE_LOG_LINE_MAX);
     s_quiet = false;
     logs_t f = {0};
-    store_log_iter(collect, &f);
+    store_log_iter(0, collect, &f);
     CHECK(f.n > 1000 && strcmp(f.first, "line 0"), "a full log rolls over (%d lines kept)", f.n);
     BALANCED("log");
     CHECK(store_factory_reset() == STORE_OK, "factory reset");
     logs_t k = {0};
-    store_log_iter(collect, &k);
+    store_log_iter(0, collect, &k);
     CHECK(k.n == f.n, "factory reset keeps the log");
 }
 

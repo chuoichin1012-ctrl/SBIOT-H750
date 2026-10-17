@@ -341,9 +341,9 @@ static void init_task(void *arg)
             store_edge_pin(&p);
             store_edge_unpin(&p);
             char *sys = store_get_json("system");
-            blog("app: store boot %lu edge gen %lu records %lu heap free %lu min %lu dma errors %u\r\n",
+            blog("app: store boot %lu edge gen %lu records %lu heap free %lu min %lu dma errors %u erases %lu\r\n",
                  (unsigned long)store_boot_count(), (unsigned long)p.gen, (unsigned long)p.count, (unsigned long)heap_free_now(),
-                 (unsigned long)heap_free_min(), flash_spi4_dma_errors());
+                 (unsigned long)heap_free_min(), flash_spi4_dma_errors(), (unsigned long)store_progress());  // erases: GC evidence (Plan 11b)
             blog("app: system %.120s\r\n", sys ? sys : "(none)");
             blog("app: log %s, %u appends failed\r\n", store_log_ok() ? "mounted" : "NOT MOUNTED", store_log_failures());
             free(sys);
@@ -372,7 +372,7 @@ static void init_task(void *arg)
             SLOG_W("bench", "a warning to keep, boot %lu", (unsigned long)store_boot_count());
             break;
         case 'l':  // bench: the persistent log, the last lines
-            store_log_iter(print_log_line, NULL);
+            store_log_iter(0, print_log_line, NULL);
             break;
         case 'p': {  // bench: save system.hostname = "bench-<uptime ms>" (applies after a restart)
             char text[64], err[160];

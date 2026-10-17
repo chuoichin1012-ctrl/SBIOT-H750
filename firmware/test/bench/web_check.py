@@ -3,7 +3,7 @@
 
     python3 stm32/firmware/test/bench/web_check.py BUILD_DIR
 
-Runs from WSL, which reaches the board (192.168.0.7, factory login) through Windows' NAT. Needs the
+Runs from WSL, which reaches the board (bench_env.GW, factory login) through Windows' NAT. Needs the
 board running BUILD_DIR's app. Cases:
 1. auth: 401 without WWW-Authenticate, a wrong login, a good one; the UI gzip with ETag and 304;
 2. body limits: 10 241 bytes -> 413; 13 KB with Content-Length -> 413 and chunked -> 411 (above
@@ -31,7 +31,10 @@ import struct
 import sys
 import time
 
-HOST, PORT = '192.168.0.7', 80
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bench_env  # noqa: E402  (Plan 11b: the board's address)
+
+HOST, PORT = bench_env.GW, 80
 AUTH = 'Basic ' + base64.b64encode(b'admin:admin').decode()
 failures = []
 

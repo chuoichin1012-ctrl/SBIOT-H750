@@ -10,6 +10,9 @@ MODE tcpserver  port, secs, delay_ms (listen only after), send_hex + send_ms (to
      udp        port, secs, send_hex + send_ms + to=host:port
      http       port, secs, reply (the body)
      mcast      group, port, iface, send_hex, send_ms
+     manyclients host, port, n, secs: n TCP connections held (Plan 11b)
+     slowget    host, port, secs: the UI's script bundle read at 256 B/s (Plan 11b)
+     tlsset     pm, p1, p2, secs, cert, key[, hold]: three TLS listeners in one process, one clock (Plan 11b)
      disc       iface, port (48600), secs, send (the packet, hex): broadcast from iface, one event per reply (Plan 12)
      stuckpair  host, port, secs: two clients of a TCP server, one never reading, one logging what it got
      tlsserver  port, secs, cert, key (Windows paths), clientca (require a client certificate), send_hex +
@@ -23,7 +26,9 @@ MODE tcpserver  port, secs, delay_ms (listen only after), send_hex + send_ms (to
                 K bytes of that packet, then nothing more that way), refuse=1 (accept, then close at once), raw=1 (bytes
                 as they come, no parsing: TLS); events pkt (dir, type, len, conn), cut, stall, accept, refused (Plan 09)
 """
+import gzip
 import json
+import re
 import socket
 import ssl
 import struct
@@ -427,8 +432,130 @@ def stuckpair(args):
     ok.close()
 
 
+
+def manyclients(args):
+    """host, port, n, secs: n TCP connections to host:port, held (Plan 11b, scenario A of spec §12.3)."""
+    socks = []
+    for i in range(int(args['n'])):
+        try:
+            socks.append(socket.create_connection((args['host'], int(args['port'])), 5))
+        except OSError as e:
+            out(ev='refused', i=i, err=str(e))
+    out(ev='connected', n=len(socks), port=int(args['port']))
+    while time.time() - T0 < float(args.get('secs', 60)):
+        time.sleep(0.5)
+    for c in socks:
+        c.close()
+
+
+def slowget(args):
+    """host, port, secs: the UI's script bundle (its name read from GET /), read 256 B a second with a small receive
+    buffer, so the gateway's send stays blocked (Plan 11b, scenario B). Events: asset, slow (every 5 s), done, error."""
+    host, port = args['host'], int(args.get('port', 80))
+    try:
+        c = socket.create_connection((host, port), 10)
+        c.sendall(b'GET / HTTP/1.1\r\nHost: gw\r\nConnection: close\r\n\r\n')
+        page = b''
+        while True:
+            d = c.recv(4096)
+            if not d:
+                break
+            page += d
+        c.close()
+        head, _, body = page.partition(b'\r\n\r\n')
+        if b'content-encoding: gzip' in head.lower():
+            body = gzip.decompress(body)
+        m = re.search(rb'src="\.?(/[^"]+\.js)"', body)
+        if not m:
+            out(ev='error', err='no script in /')
+            return
+        path = m.group(1).decode()
+        c = socket.socket()
+        c.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+        c.settimeout(10)
+        c.connect((host, port))
+        c.sendall(('GET %s HTTP/1.1\r\nHost: gw\r\nAccept-Encoding: gzip\r\n\r\n' % path).encode())
+        out(ev='asset', path=path)
+        got, last = 0, 0
+        while time.time() - T0 < float(args.get('secs', 60)):
+            d = c.recv(256)
+            if not d:
+                out(ev='done', got=got)
+                break
+            got += len(d)
+            if time.time() - last >= 5:
+                out(ev='slow', got=got)
+                last = time.time()
+            time.sleep(1)
+        c.close()
+    except OSError as e:
+        out(ev='error', err=str(e)[:80])
+
+
+def tlsset(args):
+    """pm, p1, p2, secs, cert, key: three TLS listeners in one process, so their times share one clock (Plan 11b,
+    scenario B; Codex): pm (MQTT) completes the handshake and never answers (no CONNACK), p1 (UART1's TLS client)
+    holds the session, p2 answers HTTPS "OK". Events accept/hs/hsfail with the port and t. The handshakes wait until
+    each port has a connection (at most `hold` s; the gateway's handshake timeout is 10 s), then run at once: so the
+    gateway's three handshakes are in flight together, whatever its retry times."""
+    ctx = tls_ctx(args, [])
+    secs = float(args.get('secs', 60))
+    hold = float(args.get('hold', 6))
+    seen = set()
+    all_in = threading.Event()
+
+    def conn(c, port, kind):
+        try:
+            with LOCK:
+                seen.add(port)
+                if len(seen) == 3:
+                    all_in.set()
+            all_in.wait(hold)
+            t = ctx.wrap_socket(c, server_side=True)
+            out(ev='hs', port=port)
+            t.settimeout(1)
+            while time.time() - T0 < secs:
+                try:
+                    d = t.recv(4096)
+                except socket.timeout:
+                    continue
+                if not d:
+                    break
+                if kind == 'https' and b'\r\n\r\n' in d:
+                    t.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK')
+                    break
+        except (OSError, ssl.SSLError) as e:
+            out(ev='hsfail', port=port, err=str(e)[:80])
+        finally:
+            c.close()
+
+    def serve(port, kind):
+        ls = socket.socket()
+        ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        ls.bind(('0.0.0.0', port))
+        ls.listen(8)
+        ls.settimeout(0.2)
+        while time.time() - T0 < secs:
+            try:
+                c, _ = ls.accept()
+            except socket.timeout:
+                continue
+            out(ev='accept', port=port)
+            threading.Thread(target=conn, args=(c, port, kind), daemon=True).start()
+        ls.close()
+
+    ts = [threading.Thread(target=serve, args=(int(args[k]), kind), daemon=True)
+          for k, kind in (('pm', 'mqtt'), ('p1', 'tls'), ('p2', 'https'))]
+    for t in ts:
+        t.start()
+    out(ev='listen')
+    for t in ts:
+        t.join()
+
+
 if __name__ == '__main__':
     mode = sys.argv[1]
     a = dict(x.split('=', 1) for x in sys.argv[2:])
     {'tcpserver': tcpserver, 'udp': udp, 'http': http, 'mcast': mcast, 'stuckpair': stuckpair, 'tlsserver': tlsserver,
-     'https': https, 'mqttrelay': mqttrelay, 'disc': disc}[mode](a)
+     'https': https, 'mqttrelay': mqttrelay, 'disc': disc,
+     'manyclients': manyclients, 'slowget': slowget, 'tlsset': tlsset}[mode](a)

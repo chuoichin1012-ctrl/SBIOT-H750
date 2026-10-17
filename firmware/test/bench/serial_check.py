@@ -5,7 +5,7 @@ app/bench_serial.c), so the gaps on the wire are the board's own and not Windows
 
     python3 stm32/firmware/test/bench/serial_check.py [console|modbus|parity|collision|xonxoff|continuous ...]
 
-Needs the board running this build's app, its LAN reachable at 192.168.0.7 (factory login), UART7 on
+Needs the board running this build's app, its LAN reachable (bench_env.GW, factory login), UART7 on
 the bench console. Cases:
 1. the WebSocket console in UART1 mode: WebSocket -> UART1 -> UART2 (echo) -> UART1 -> WebSocket, byte
    for byte, at 9600 8N1 (1 and 100 bytes), 230 400 8E1 (1460 bytes) and 600 7O2 (20 bytes);
@@ -39,6 +39,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import board  # noqa: E402
+import bench_env  # noqa: E402  (Plan 11b: the gates per workload)
 import web_check as w  # noqa: E402  (HTTP and WebSocket helpers)
 
 WIN_PY = '/mnt/c/Python311/python.exe'
@@ -247,14 +248,15 @@ def case_tail():
 
 def case_continuous():
     check(setup((230400, 8, 0, 1)), 'set up 230 400 8N1')
+    g0 = bench_env.gates('serial continuous+flood before')
     c1, c2 = counters(1), counters(2)
     flood = subprocess.Popen([WIN_PY, '-c', (
         'import socket,time\n'
         's=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\n'
         'time.sleep(15);t=time.time();n=0\n'
         'while time.time()-t<20:\n'
-        '    s.sendto(b"x"*1000,("192.168.0.7",9));n+=1\n'
-        'print(n)\n')], stdout=subprocess.PIPE, text=True)
+        '    s.sendto(b"x"*1000,("%s",9));n+=1\n'
+        'print(n)\n' % w.HOST)], stdout=subprocess.PIPE, text=True)
     lines = console([(0.3, 'E2 3 60')], 66)
     out, _ = flood.communicate()
     packets = int(out.strip() or 0) if flood.returncode == 0 else 0
@@ -267,6 +269,8 @@ def case_continuous():
           and d1['line'] == c1['line'],
           '60 s at 230 400 with a 20 s LAN flood: %d sent, %d received, overrun +%d, lost +%d' %
           (sent, got, d1.get('overrun', 0) - c1.get('overrun', 0), d1.get('lost', 0) - c1.get('lost', 0)))
+    ok_g, _, why_g = bench_env.qualify('serial continuous+flood', g0)
+    check(ok_g, 'gates after the continuous RX and the flood: %s' % why_g)
 
 
 def case_parity():

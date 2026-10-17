@@ -6,7 +6,7 @@
 Needs the board running this build's app (installed over UART7: board.upload). Cases:
 1. the boot counter goes up with every boot, and a saved config is there after a reset;
 2. 1000 saves in a row (about 300 KB, so the cfg database collects garbage): none fails, and while
-   they run the CPU still idles, the watchdog task keeps its 200 ms, no DMA transfer fails;
+   they run the CPU still idles, the watchdog task keeps its 50 ms (Plan 11a), no DMA transfer fails;
 3. resets at random moments of that stress: every boot mounts, the store stays writable, and the
    config read back is one that was saved;
 4. a warning reaches the persistent log and is still there after a reset.
@@ -21,6 +21,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import board  # noqa: E402
+import bench_env  # noqa: E402  (Plan 11b: the gates per workload)
 
 failures = []
 
@@ -61,6 +62,7 @@ def main():
     print('     store mount at boot: %s ms' % (mount.group(1) if mount else '-'))
 
     # 2. 1000 saves with garbage collection: CPU, watchdog, DMA
+    g0 = bench_env.gates('store 1000 saves before')
     lines = board.listen(60, sends=[(0.3, 'G'), (50.0, 'i'), (50.5, 'S')])
     st = find(lines, r'stress 1000 saves, (\d+) failed, slowest (\d+) us, (\d+) ms, idle (\d+) permille')
     gap = find(lines, r'wdog_max_gap_us=(\d+)')
@@ -73,6 +75,8 @@ def main():
         check(idle > 30, 'the CPU still idles while saving (%.1f %%)' % idle)
     check(gap is not None and int(gap.group(1)) <= 260000, 'watchdog task kept its period (max gap %s us)' % (gap.group(1) if gap else '-'))
     check(dma is not None and dma.group(1) == '0', 'no DMA transfer failed')
+    ok_g, _, why_g = bench_env.qualify('store 1000 saves', g0)
+    check(ok_g, 'gates after the 1000 saves (FlashDB GC): %s' % why_g)
     print('     slowest save %s us, lowest free heap %s bytes' % (st.group(2) if st else '-', heap.group(1) if heap else '-'))
 
     # 3. Resets in the middle of the stress
@@ -97,29 +101,39 @@ def main():
 
     # 5. SPI4 init forced to fail in the app (r0 at spi_nor_init's return): the store does not
     # mount, so FlashDB never touches the flash; the next boot finds everything as it was.
-    elf = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../build/h750/app.elf')
-    before = find(status(), r'store boot (\d+)')
-    host0 = find(board.listen(2, sends=[(0.3, 'S')]), r'"hostname":"([^"]*)"')
-    fn = board.symbol(elf, 'spi_nor_init') & ~1
-    lines = board.listen(8, during=lambda: board.openocd(
-        'reset halt; bp 0x%08x 2 hw; resume; wait_halt 5000; rbp 0x%08x; '
-        'set ret [expr {[lindex [reg lr] 2] & ~1}]; bp $ret 2 hw; resume; wait_halt 3000; '
-        'rbp $ret; reg r0 0xfffffffe; resume' % (fn, fn)))
-    check(find(lines, r'app: spi4 id \w+ FAILED') is not None and find(lines, r'app: store FAILED') is not None,
-          'spi4 init forced to fail: the store does not mount')
-    lines = board.listen(6, sends=[(3.5, 'S')], during=board.hard_reset)
-    after = find(lines, r'store boot (\d+)')
-    host1 = find(lines, r'"hostname":"([^"]*)"')
-    check(before and after and int(after.group(1)) == int(before.group(1)) + 1 and host0 and host1 and host0.group(1) == host1.group(1),
-          'the next boot finds the store as it was (boot %s -> %s, no write in between)' % (before.group(1) if before else '-',
-                                                                                           after.group(1) if after else '-'))
+    # Skipped while the SIM is locked (Plan 11b, Codex): without the store the app runs the defaults, network
+    # priority 1, and the LTE task attaches. SBIOT_STORE_CASE5=1 runs it.
+    if os.environ.get('SBIOT_STORE_CASE5') == '1':
+        elf = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../build/h750/app.elf')
+        before = find(status(), r'store boot (\d+)')
+        host0 = find(board.listen(2, sends=[(0.3, 'S')]), r'"hostname":"([^"]*)"')
+        fn = board.symbol(elf, 'spi_nor_init') & ~1
+        lines = board.listen(8, during=lambda: board.openocd(
+            'reset halt; bp 0x%08x 2 hw; resume; wait_halt 5000; rbp 0x%08x; '
+            'set ret [expr {[lindex [reg lr] 2] & ~1}]; bp $ret 2 hw; resume; wait_halt 3000; '
+            'rbp $ret; reg r0 0xfffffffe; resume' % (fn, fn)))
+        check(find(lines, r'app: spi4 id \w+ FAILED') is not None and find(lines, r'app: store FAILED') is not None,
+              'spi4 init forced to fail: the store does not mount')
+        lines = board.listen(6, sends=[(3.5, 'S')], during=board.hard_reset)
+        after = find(lines, r'store boot (\d+)')
+        host1 = find(lines, r'"hostname":"([^"]*)"')
+        check(before and after and int(after.group(1)) == int(before.group(1)) + 1 and host0 and host1 and host0.group(1) == host1.group(1),
+              'the next boot finds the store as it was (boot %s -> %s, no write in between)' % (before.group(1) if before else '-',
+                                                                                               after.group(1) if after else '-'))
+    else:
+        print('skip  spi4 init forced to fail (the defaults would wake LTE; SBIOT_STORE_CASE5=1 runs it)')
 
     # 4. The persistent log
     board.listen(2, sends=[(0.3, 'W')])
-    lines = board.listen(7, sends=[(4.0, 'l')], during=board.hard_reset)
+    lines = board.listen(7, during=board.hard_reset)
     boot = find(lines, r'store mounted in \d+ ms, boot (\d+)')
     prev = int(boot.group(1)) - 1 if boot else -1
-    check(find(lines, r'log boot %d \+\d+ ms: W \(\d+\) bench: a warning to keep' % prev) is not None,
+    # Read over the web (Plan 11b): the console's 'l' walks the whole log from its oldest line at 115200 baud, and a
+    # long-used board's log takes longer than any listen window to reach the newest.
+    import web_check as w
+    w.wait_up(30)
+    _, _, log = w.req('GET', '/api/log')
+    check(re.search(r'\[boot %d \+[0-9:]+\] W \(\d+\) bench: a warning to keep' % prev, log.decode('utf-8', 'replace')) is not None,
           'a warning of the boot before is in the persistent log')
 
     print('bench: %s' % ('ok' if not failures else 'FAILED (%d)' % len(failures)))

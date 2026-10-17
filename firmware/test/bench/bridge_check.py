@@ -23,9 +23,8 @@ import board  # noqa: E402
 import serial_check as sc  # noqa: E402  (console, frames, counters)
 import web_check as w  # noqa: E402
 
-GW = '192.168.0.7'
-WIN = '192.168.0.10'  # the Windows host on the board's LAN
-WIN_PY = '/mnt/c/Python311/python.exe'
+import bench_env  # noqa: E402  (Plan 11b: the bench's addresses)
+GW, WIN, WIN_PY = bench_env.GW, bench_env.WIN, bench_env.WIN_PY  # bench_env.set_board updates GW after a move
 failures = []
 
 
@@ -465,6 +464,7 @@ def case_load():
     p2['baudRate'] = 230400
     w.req('POST', '/api/config/port2', body=json.dumps(p2).encode())
     check(setup(1, **base(baudRate=230400)), 'set up a TCP server, UART1 and UART2 at 230 400, DO1 pulse 2 s')
+    g0 = bench_env.gates('bridge load+flood before')
     s = socket.create_connection((GW, 23), 5)
     a0 = adc_pace()  # on the board's clock
     import threading
@@ -515,6 +515,8 @@ def case_load():
     check(streamed > 1000000 and got[0] >= 0.95 * streamed and packets > 10000 and 9.5 <= wins <= 10.5 and late == 0 and 1980 <= pulse_ms <= 2020,
           'under load (%d B streamed into the bridge, %d B at the PC, a LAN flood of %d packets): ADC %.2f windows/s, late +%d; '
           'DO pulse %d ms' % (streamed, got[0], packets, wins, late, pulse_ms))
+    ok_g, _, why_g = bench_env.qualify('bridge load+flood', g0)
+    check(ok_g, 'gates after the bridge load and the flood: %s' % why_g)
     io.update({'do0Mode': 0})
     w.req('POST', '/api/config/io', body=json.dumps(io).encode())
     p2['baudRate'] = 115200

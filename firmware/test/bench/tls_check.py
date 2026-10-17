@@ -30,14 +30,18 @@ check = bc.check
 
 
 def make_pki():
-    """The bench's certificates: server for 192.168.0.10 (RSA-2048, valid 2 days from an hour ago), etc.
-    Kept between runs (the board holds the CA) while they have a day left."""
+    """The bench's certificates: server for WIN, the Windows host (RSA-2048, valid 2 days from an hour ago), etc.
+    Kept between runs (the board holds the CA) while they have a day left and were made for this WIN (Plan 11b)."""
     ca = os.path.join(PKI, 'ca.pem')
-    if os.path.exists(ca) and time.time() - os.path.getmtime(ca) < 86400:
+    made_for = os.path.join(PKI, 'ip.txt')
+    same = os.path.exists(made_for) and open(made_for).read().strip() == WIN
+    if os.path.exists(ca) and same and time.time() - os.path.getmtime(ca) < 86400:
         return
     here = os.path.dirname(os.path.abspath(__file__))
     subprocess.run([sys.executable, os.path.join(here, '..', 'host', 'mkpki.py'), PKI, '--now', '--ip', WIN,
                     '--wrong-ip', '192.168.0.99', '--days', '2'], check=True)
+    with open(made_for, 'w') as f:
+        f.write(WIN)
 
 
 def pem(name):

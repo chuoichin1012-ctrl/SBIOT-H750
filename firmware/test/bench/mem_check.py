@@ -12,6 +12,7 @@
     level, the watchdog and the ADC keep their pace.
 Prints one line per check, the measurements, and "bench: ok". Ends with MQTT and Edge off.
 """
+import base64
 import json
 import re
 import os
@@ -20,6 +21,8 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bench_env  # noqa: E402
+import board  # noqa: E402
 import bridge_check as bc  # noqa: E402
 import edge_check as ec  # noqa: E402
 import mqtt_check as mc  # noqa: E402
@@ -216,5 +219,237 @@ def main():
     return 1 if bc.failures else 0
 
 
+# ---- scenarios A and B of spec §12.3, with their pass criteria (Plan 11b task 4) -------------------------------
+
+def criteria(st, label, need_largest=12 * 1024):
+    """The §12.3 criteria on one /api/status read; a list of what failed. A failed read or a missing field is a
+    failure, never a pass (Codex r2)."""
+    sy, mem = (st or {}).get('system'), (st or {}).get('mem')
+    if not isinstance(sy, dict) or not isinstance(mem, dict) or not isinstance(mem.get('stackMin'), dict) \
+            or not isinstance(mem.get('pools'), list) or 'heapMin' not in sy or 'heapLargest' not in sy:
+        return ['%s: no usable /api/status read' % label]
+    out = []
+    sm = mem['stackMin']
+    if sm['words'] * 4 < 1024:
+        out.append('%s: stack %s has %d bytes free (< 1 KB)' % (label, sm['task'], sm['words'] * 4))
+    if sy['heapMin'] < 16 * 1024:
+        out.append('%s: heap minimum free %s (< 16 KB)' % (label, sy['heapMin']))
+    if sy['heapLargest'] < need_largest:
+        out.append('%s: largest free block %s (< %d)' % (label, sy.get('heapLargest'), need_largest))
+    full = [x['name'] for x in mem['pools'] if x['used'] >= x['size'] and x['name'] not in bench_env.DROPPING_POOLS]
+    if full:
+        out.append('%s: pool full: %s' % (label, ', '.join(full)))
+    return out
+
+
+def status():
+    _, st = w.get_json('/api/status')
+    return st
+
+
+CONFIGS = ('mqtt', 'mqttPublish', 'mqttSubscribe', 'port1', 'port2', 'system', 'edge', 'edgeDevices', 'edgeReport',
+           'edgeLinkage')  # what the scenarios change; never network (Codex r1)
+
+
+def snapshot():
+    snap = {}
+    for name in CONFIGS:
+        s, body = w.get_json('/api/config/' + name)
+        if s != 200:
+            raise RuntimeError('snapshot: %s %d' % (name, s))
+        snap[name] = body
+    return snap
+
+
+def restore(snap):
+    """Every config a scenario changed, as it was, then a restart (configs apply at boot)."""
+    ok = all([mc.post(name, snap[name]) for name in CONFIGS])
+    ok = w.restart() and ok
+    time.sleep(3)
+    check(ok, 'configs restored as before the scenario')
+
+
+def stop_all(peers, socks=(), subs=()):
+    for p in peers:
+        try:
+            kill_events(p)
+        except Exception as e:  # cleanup goes on
+            print('     a peer did not stop: %s' % e)
+    for x in list(socks) + list(subs):
+        try:
+            (x.stop if hasattr(x, 'stop') else x.close)()
+        except Exception:
+            pass
+
+
+def case_a():
+    """Scenario A, many connections: UART1 and UART2 TCP servers with 16 clients each, MQTT over TLS, 4 WebSocket
+    clients, Edge with 200 points (5 Modbus TCP devices) and a 100-slot report template."""
+    tc.make_pki()
+    devs, report = largest_model()
+    keys = set(json.loads(report['template']))
+    snap = snapshot()
+    tc.upload('mqtt', 'ca', tc.pem('ca.pem'))
+    brk = mc.main_broker().start()
+    peers, wss, subs = [mc.relay(400, to=mc.TLSP, port=mc.TLS_RELAY, raw='1'),
+                        bc.peer('tcpserver', port=ec.MBTCP, modbus=1, secs=400)], [], []  # the 5 TCP devices' slave
+    srv = dict(workMode=3, maxClients=16, clientLimitAction=0, allowedClients='0.0.0.0/0')
+    try:
+        mc.post('mqtt', mc.mqtt_cfg(port=mc.TLS_RELAY, tls=2, tlsVerify=1))
+        check(ec.setup(devs, report=report, port1=bc.base(listenPort=23, **srv), port2=bc.base(listenPort=24, **srv),
+                       sys_extra={'websocketTarget': 1}),
+              'set up A: two TCP servers of 16, MQTT TLS, the console on, the largest Edge model')
+        sub = mc.Sub('edge/report')
+        subs.append(sub)
+        time.sleep(10)
+        boot = status()
+        largest_boot = boot['system'].get('heapLargest', 0)
+        check(largest_boot >= 96001, 'at boot the largest free block holds a 96 001-byte buffer (%s)' % largest_boot)
+        g0 = bench_env.gates('mem A before')
+        peers += [bc.peer('manyclients', host=bench_env.GW, port=p, n=16, secs=120) for p in (23, 24)]
+        for _ in range(4):
+            try:
+                ws, code = w.ws_open(6432, base64.b64encode(b'admin:admin').decode())
+                (wss.append if code == 101 else lambda x: x.close())(ws)
+            except OSError as e:
+                print('     a WebSocket failed: %s' % e)
+        time.sleep(20)
+        st = status()
+        ports = [x['state'] for x in st['ports']]
+        edge = str(st['edge'].get('state', ''))
+        m = re.match(r'RUNNING (\d+)/200$', edge)
+        rep = report_keys(sub)
+        # Edge: running with all 200 points loaded; the 5 TCP devices (40 points) and the IO points read; a report
+        # with the template's 100 values reached the broker (Codex r1).
+        load = (ports == ['CONNECTED(16)', 'CONNECTED(16)'] and len(wss) == 4 and st['mqtt']['state'] == 'CONNECTED'
+                and m is not None and int(m.group(1)) >= 42 and rep == keys)
+        check(load, 'the load exists: ports %s, %d WebSockets, MQTT %s, Edge %s, a report of %d/%d values'
+              % (ports, len(wss), st['mqtt']['state'], edge, len(rep & keys), len(keys)))
+        bad = criteria(st, 'A')
+        # A certificate upload under the load: its buffer comes from the heap (the 12 KB largest-block criterion).
+        s_up, _ = tc.upload('mqtt', 'ca', tc.pem('ca.pem'))
+        st2 = status()
+        check(s_up == 200, 'a certificate upload under the load: %d' % s_up)
+        bad += criteria(st2, 'A, after an upload')
+        check(not bad, 'scenario A criteria: %s' % ('; '.join(bad) or 'stacks, heap, largest block, pools ok (%s)' % heap()))
+        ok_g, _, why_g = bench_env.qualify('mem A', g0)
+        check(ok_g, 'gates after scenario A: %s' % why_g)
+    finally:
+        stop_all(peers, wss, subs)
+        brk.stop()
+        restore(snap)
+
+
+def report_keys(sub):
+    """The keys of the newest Edge report on the broker, or an empty set."""
+    for p in reversed(sub.payloads('edge/report')):
+        try:
+            return set(json.loads(p))
+        except ValueError:
+            continue
+    return set()
+
+
+def case_b():
+    """Scenario B, many TLS, as a sequence with evidence (Codex): everything configured and one restart; the
+    outbox filled offline; then the MQTT TLS handshake that never gets a CONNACK, UART1's TLS client and UART2's
+    HTTPS client dialling one tlsset process at once; a slow UI reader; saves until FlashDB erases (GC)."""
+    tc.make_pki()
+    snap = snapshot()
+    for scope in ('mqtt', 'port1', 'port2'):
+        tc.upload(scope, 'ca', tc.pem('ca.pem'))
+    PM, P1, P2 = 9450, 9451, 9452
+    mq = mc.mqtt_cfg(host=WIN, port=PM, tls=2, tlsVerify=1, retryInterval=3)
+    p1 = bc.base(workMode=1, remoteHost=WIN, remotePort=P1, tls=2, tlsVerify=1, reconnectInterval=2, listenPort=23)
+    p2 = bc.base(workMode=4, httpHost=WIN, httpPort=P2, httpMethod=0, httpPath='/q?v=', httpHeaders='', httpStripHeaders=True,
+                 httpTimeout=10, tls=2, tlsVerify=1, listenPort=24)
+    peers = []
+    try:
+        ok = mc.post('mqtt', mq) and mc.post('mqttPublish', [mc.topic('mem/b')]) and mc.post('edge', {'enabled': False})
+        for name, extra in (('port1', p1), ('port2', p2)):
+            cur = dict(snap[name])
+            cur.update(extra)
+            ok = mc.post(name, cur) and ok
+        sysc = dict(snap['system'], ntp=0, bufferOffline=1, idleRestart=0)
+        ok = mc.post('system', sysc) and ok
+        check(ok and w.restart(), 'set up B: MQTT TLS (UART1 published, bufferOffline), UART1 TLS, UART2 HTTPS; nobody listens yet')
+        time.sleep(5)
+        g0 = bench_env.gates('mem B before')
+        # The outbox filled offline: UART2 streams into UART1, whose frames MQTT publishes on mem/b.
+        full = False
+        for _ in range(6):
+            board.listen(22, sends=[(0.3, 'E2 3 20')])
+            if 'outbox full' in ec.log_text():
+                full = True
+                break
+        check(full, 'the outbox is full (its "outbox full" log line)')
+        e0 = find_erases()
+        peers.append(bc.peer('tlsset', pm=PM, p1=P1, p2=P2, secs=600, cert=tc.WPKI + 'server.pem', key=tc.WPKI + 'server.key'))
+        peers.append(bc.peer('slowget', host=bench_env.GW, port=80, secs=600))
+        time.sleep(1)
+        bc.send_serial(b'1', port=1)  # UART1's side of the loop: UART2's HTTPS client dials on a frame (Codex r4)
+        mins, e1 = [status()], e0
+        for i in range(800):  # saves through the window until FlashDB erases a sector (GC), the memory read as it goes
+            sysc['hostname'] = 'memb-%d' % i
+            w.req('POST', '/api/config/system', body=json.dumps(sysc).encode())
+            if i % 25 == 24:
+                mins.append(status())
+            if i % 50 == 49:
+                e1 = find_erases()
+                if e0 is not None and e1 is not None and e1 > e0:
+                    break
+        mins.append(status())
+        ev = kill_events(peers.pop(0))
+        slow_ev = kill_events(peers.pop(0))
+        iv = handshakes(ev)
+        overlap = overlapping(iv, (PM, P1, P2))
+        gc = e0 is not None and e1 is not None and e1 > e0
+        got = [e['got'] for e in slow_ev if e.get('ev') == 'slow']
+        reading = len(got) >= 2 and got[0] > 0 and got[-1] > got[0] and not any(e.get('ev') in ('done', 'error') for e in slow_ev)
+        check(overlap, 'the three handshakes overlap ([accept, end] ms by port: %s)' % iv)
+        check(gc, 'FlashDB erased during the window (GC): erases %s -> %s' % (e0, e1))
+        check(reading, 'the slow reader was still reading the UI bundle when the window ended (%s B read, %s)'
+              % (got[-1] if got else 0, [e for e in slow_ev if e.get('ev') in ('asset', 'done', 'error')]))
+        bad = [b for st in mins for b in criteria(st, 'B')]
+        check(not bad, 'scenario B criteria: %s' % ('; '.join(bad[:3]) or 'stacks, heap, largest block, pools ok (%s)' % heap()))
+        # The overlap lasts a few seconds and GC is found by the console's erase count, read every 50 saves: GC is
+        # shown in the same window as the overlap, never at the same instant (Codex r1). So B is reported partial.
+        print('     scenario B: %s' % ('partial (overlap, GC, outbox full and the slow reader in one window; GC not shown'
+                                       ' inside the handshake overlap)' if not bad and overlap and gc and full and reading
+                                       else 'failed' if bad else 'partial'))
+        ok_g, _, why_g = bench_env.qualify('mem B', g0)
+        check(ok_g, 'gates after scenario B: %s' % why_g)
+    finally:
+        stop_all(peers)
+        restore(snap)
+
+
+def handshakes(ev):
+    """{port: [(accept ms, end ms)]} from tlsset's events: the n-th accept on a port ends at its n-th hs or hsfail."""
+    acc, end = {}, {}
+    for e in ev:
+        if e.get('ev') == 'accept':
+            acc.setdefault(e['port'], []).append(e['t'])
+        elif e.get('ev') in ('hs', 'hsfail'):
+            end.setdefault(e['port'], []).append(e['t'])
+    return {p: list(zip(a, sorted(end.get(p, [])))) for p, a in acc.items()}
+
+
+def overlapping(iv, ports):
+    """True when one instant lies inside a handshake of every port: the three were in flight at once."""
+    starts = [a for p in ports for a, _ in iv.get(p, [])]
+    return any(all(any(a <= t <= b for a, b in iv.get(p, [])) for p in ports) for t in starts)
+
+
+def find_erases():
+    m = re.search(r'erases (\d+)', ' '.join(l for _, l in board.listen(2, sends=[(0.3, 'S')])))
+    return int(m.group(1)) if m else None
+
+
 if __name__ == '__main__':
+    arg = sys.argv[1:]
+    if arg in (['a'], ['b']):
+        (case_a if arg == ['a'] else case_b)()
+        print('bench: %s' % ('ok' if not bc.failures else 'FAILED (%d)' % len(bc.failures)))
+        sys.exit(1 if bc.failures else 0)
     sys.exit(main())

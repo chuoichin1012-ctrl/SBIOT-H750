@@ -86,7 +86,7 @@ def main():
         lines = board.listen(4.5, sends=[(3.0, 'i'), (3.5, 'c')])
         i = infos(lines)
         check(len(i) == 1 and abs(i[0][0] - i[0][1]) <= 2, 'now_us (TIM2) agrees with the FreeRTOS tick: %s' % i)
-        check(len(i) == 1 and 199000 <= i[0][2] <= 201000, 'wdog kicks every 200 ms')
+        check(len(i) == 1 and 49000 <= i[0][2] <= 51000, 'wdog loop every 50 ms (Plan 11a; was 200 ms)')
         crc = [l for _, l in lines if l.startswith('app: image crc32=')]
         want = 'app: image crc32=%08x len=%d' % (zlib.crc32(app_bin), len(app_bin))
         check(len(crc) == 1 and crc[0].startswith(want), 'XIP image reads back as app.img (%s)' % (crc[0] if crc else '-'))

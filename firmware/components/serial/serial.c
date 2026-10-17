@@ -243,12 +243,13 @@ static int send_raw(sport_t *p, const uint8_t *data, size_t len, uint32_t timeou
                (unsigned)len);
         return -1;
     }
+    if (p->mon)
+        p->mon(p->n, true, data, len, p->mon_ctx);  // before it goes: the answer can never be shown ahead of it
     int r = uart_drv_write(p->n, data, len, timeout_ms);
-    if (r == 0) {
+    if (r == 0)
         p->tx += (uint32_t)len;
-        if (p->mon)
-            p->mon(p->n, true, data, len, p->mon_ctx);
-    }
+    else if (p->mon)
+        p->mon(p->n, true, NULL, 0, p->mon_ctx);  // an empty TX record: the frame above did not go out
     uint64_t now = now_us();
     ts_set(&p->last_us, now);
     ts_set(&p->last_tx_us, now);

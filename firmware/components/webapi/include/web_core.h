@@ -48,6 +48,9 @@ bool web_send_poll(web_send_t *t, size_t queued, bool wrote, uint64_t now_ms);
  * smaller; the length, without the NUL. */
 #define WEB_MON_LINE_MAX (3 + 3 * 1460 + 1)
 size_t web_mon_line(char *out, size_t cap, bool tx, const uint8_t *data, size_t len);
+/** fn for each piece of at most `max` bytes, in order (a write longer than a frame shown whole, as several lines); an
+ * empty record (len 0: a TX that did not go out) once. */
+void web_mon_each(const uint8_t *data, size_t len, size_t max, void (*fn)(const uint8_t *d, size_t n, void *ctx), void *ctx);
 /**
  * Plan 06b's check of an uploaded PEM, until mbedTLS parses it (Plan 08): one BEGIN/END pair of the
  * kind's label (CERTIFICATE for ca and cert; PRIVATE KEY, RSA PRIVATE KEY or EC PRIVATE KEY for key),

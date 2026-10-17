@@ -145,11 +145,39 @@ static void test_mon_line(void)
     char small[16];
     n = web_mon_line(small, sizeof small, true, req, sizeof req);
     CHECK(n == strlen(small) && n < sizeof small && small[n - 1] == '\n', "a short buffer: cut on a whole byte, still a line (%s)", small);
+    n = web_mon_line(out, sizeof out, true, NULL, 0);
+    CHECK(!strcmp(out, "TX not sent\n") && n == 12, "an empty TX record: the frame above did not go out (%s)", out);
+}
+
+static size_t s_chunks[4], s_nchunks;
+static void chunk(const uint8_t *d, size_t len, void *ctx)
+{
+    (void)d;
+    (void)ctx;
+    if (s_nchunks < 4)
+        s_chunks[s_nchunks] = len;
+    s_nchunks++;
+}
+
+// A write longer than a frame (2000 bytes typed on the page) is shown whole, as several lines (Codex review).
+static void test_mon_each(void)
+{
+    static uint8_t big[2000];
+    s_nchunks = 0;
+    web_mon_each(big, sizeof big, 1460, chunk, NULL);
+    CHECK(s_nchunks == 2 && s_chunks[0] == 1460 && s_chunks[1] == 540, "2000 bytes: 1460 + 540 (%u records)", (unsigned)s_nchunks);
+    s_nchunks = 0;
+    web_mon_each(big, 1460, 1460, chunk, NULL);
+    CHECK(s_nchunks == 1 && s_chunks[0] == 1460, "a frame of exactly 1460: one record");
+    s_nchunks = 0;
+    web_mon_each(NULL, 0, 1460, chunk, NULL);
+    CHECK(s_nchunks == 1 && s_chunks[0] == 0, "an empty record still goes through (TX not sent)");
 }
 
 int main(void)
 {
     test_mon_line();
+    test_mon_each();
     test_send_stall();
     test_token();
     test_decode();

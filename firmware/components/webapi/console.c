@@ -50,23 +50,29 @@ void console_buffer_use(unsigned *used, unsigned *size)
     *used = s_mb ? (unsigned)(LOG_BUF - xMessageBufferSpacesAvailable(s_mb)) : 0;
 }
 
-// The port's monitor: a direction byte and the frame. Never waits long: a frame that does not fit, or that finds the
-// lock taken for 5 ms, is dropped and counted.
-static void uart_frame(int port, bool tx, const uint8_t *data, size_t len, void *ctx)
+// One record, under s_mb_lock: a direction byte and at most SERIAL_FRAME_MAX bytes.
+static void record(const uint8_t *data, size_t len, void *ctx)
 {
     static uint8_t rec[1 + SERIAL_FRAME_MAX] __attribute__((section(".axi_bss")));
+    rec[0] = *(const bool *)ctx;
+    if (len)
+        memcpy(rec + 1, data, len);
+    if (xMessageBufferSend(s_mb, rec, len + 1, 0) != len + 1)
+        s_dropped++;
+}
+
+// The port's monitor: a write longer than a frame (up to 4000 bytes typed on the page) goes as several records, so
+// all of it shows (Codex review). Never waits long: a record that does not fit, or a lock still taken after 5 ms,
+// is dropped and counted.
+static void uart_frame(int port, bool tx, const uint8_t *data, size_t len, void *ctx)
+{
     (void)port;
     (void)ctx;
-    if (len > SERIAL_FRAME_MAX)
-        len = SERIAL_FRAME_MAX;
     if (xSemaphoreTake(s_mb_lock, pdMS_TO_TICKS(5)) != pdTRUE) {
         s_dropped++;
         return;
     }
-    rec[0] = tx;
-    memcpy(rec + 1, data, len);
-    if (xMessageBufferSend(s_mb, rec, len + 1, 0) != len + 1)
-        s_dropped++;
+    web_mon_each(data, len, SERIAL_FRAME_MAX, record, &tx);
     xSemaphoreGive(s_mb_lock);
 }
 

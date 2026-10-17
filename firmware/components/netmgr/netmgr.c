@@ -217,7 +217,7 @@ static void route_check(void)
     }
     dns_apply();  // after every event, the route unchanged included (Codex plan r1, r2)
     if (moved)
-        sysmgr_ntp_kick();  // its DNS is set: a clock not set yet asks NTP now
+        sysmgr_ntp_kick();  // its DNS is set: SNTP starts at the first route
 }
 
 static void eth_changed(struct netif *netif)

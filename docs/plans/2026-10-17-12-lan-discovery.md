@@ -44,7 +44,7 @@
 - [ ] **Step 1: Write the failing test.** In `test_store.c`, count lock releases in the fake port, then add the test and call it from `main` (non-`STORE_CUTS` branch, after `test_with_defaults_oom()`):
 
 ```c
-static int s_releases;  // the lock fell to depth 0 (Plan 12 task 1: one per store_patch)
+static int s_releases;  // the lock fell to depth 0 (Plan 12 task 1)
 
 void store_port_lock(void) { s_depth++; }
 void store_port_unlock(void)
@@ -52,6 +52,34 @@ void store_port_unlock(void)
     if (--s_depth == 0)
         s_releases++;
 }
+
+// Plan 12 task 1, the lock trace (Codex plan r1): inside store_patch, every cJSON allocation (the read is the parse
+// of the cached text) and every flash program (the write) must happen with the lock held, and the lock must not be
+// released between the first of them and the last.
+static bool s_tracing;
+static int s_trace_min = 1 << 30;              // the lowest lock depth seen
+static int s_rel_first = -1, s_rel_last = -1;  // s_releases at the first allocation, at the last program
+
+static void *trace_malloc(size_t n)
+{
+    if (s_tracing) {
+        if (s_depth < s_trace_min)
+            s_trace_min = s_depth;
+        if (s_rel_first < 0)
+            s_rel_first = s_releases;
+    }
+    return malloc(n);
+}
+```
+
+and at the top of the existing `tracing_program` (the flash program hook):
+
+```c
+    if (s_tracing) {
+        if (s_depth < s_trace_min)
+            s_trace_min = s_depth;
+        s_rel_last = s_releases;
+    }
 ```
 
 ```c
@@ -65,9 +93,15 @@ static void test_patch(void)
     const char *mine = "{\"priority\":0,\"ipMode\":0,\"ip\":\"192.168.0.7\",\"apn\":\"m3-world\",\"future\":5}";
     CHECK(store_set_text("network", mine, strlen(mine), err, sizeof err) == STORE_OK, "set network: %s", err);
     cJSON *f = cJSON_Parse("{\"ipMode\":1,\"ip\":\"10.10.0.7\",\"netmask\":\"255.255.255.0\"}");
-    int before = s_releases;
-    CHECK(store_patch("network", f, err, sizeof err) == STORE_OK, "patch: %s", err);
-    CHECK(s_releases - before == 1, "one lock hold from the read to the write (%d)", s_releases - before);
+    cJSON_Hooks th = {trace_malloc, free};
+    cJSON_InitHooks(&th);
+    s_tracing = true;
+    store_err_t pe = store_patch("network", f, err, sizeof err);
+    s_tracing = false;
+    cJSON_InitHooks(NULL);
+    CHECK(pe == STORE_OK, "patch: %s", err);
+    CHECK(s_trace_min >= 1, "the read and the write ran under the lock (lowest depth %d)", s_trace_min);
+    CHECK(s_rel_first >= 0 && s_rel_last == s_rel_first, "no release between the read and the write (%d, %d)", s_rel_first, s_rel_last);
     BALANCED("store_patch");
     for (int pass = 0; pass < 2; pass++) {  // the cache, then the flash after a reboot
         char *t = store_get_json("network");
@@ -99,6 +133,9 @@ static void test_patch(void)
         char *now = store_get_json("network");
         CHECK(e == STORE_OK || (e == STORE_ENOMEM && now && was && !strcmp(now, was)),
               "allocation %d failed: STORE_ENOMEM with nothing written, or saved (%d)", n, e);
+        if (e == STORE_OK)  // a save is the whole document: the field patched, the others kept
+            CHECK(now && strstr(now, "\"ip\":\"10.10.0.9\"") && strstr(now, "\"apn\":\"m3-world\"") &&
+                      strstr(now, "\"priority\":0") && strstr(now, "\"future\":5"), "allocation %d: saved whole (%s)", n, now);
         free(was);
         free(now);
         BALANCED("store_patch out of memory");
@@ -111,7 +148,7 @@ static void test_patch(void)
 }
 ```
 
-- [ ] **Step 2: Run it to see it fail.** Run: `make -C stm32/firmware/test/host build/test_store 2>&1 | tail -5`. Expected: compile error, `implicit declaration of function 'store_patch'`.
+- [ ] **Step 2: Run it to see it fail.** Run: `set -o pipefail; make -C stm32/firmware/test/host build/test_store 2>&1 | tail -5`. Expected: compile error, `implicit declaration of function 'store_patch'`.
 
 - [ ] **Step 3: Implement.** `store.h`, after `store_set_text`:
 
@@ -128,11 +165,12 @@ store_err_t store_patch(const char *name, const cJSON *fields, char *err, size_t
 store_err_t store_patch(const char *name, const cJSON *fields, char *err, size_t errlen)
 {
     err[0] = '\0';
+    LOCK();  // held to the end, from the read to the write: store_set_text below nests (a recursive mutex on the board)
     if (!store_known(name) || !strcmp(name, EDGE) || cfg_is_list(&s_env, name) || !cJSON_IsObject(fields)) {
+        UNLOCK();
         snprintf(err, errlen, "Unknown settings \"%s\".", name ? name : "");
         return STORE_ENOTFOUND;
     }
-    LOCK();  // held to the end: store_set_text below nests (a recursive mutex on the board)
     int i = cache_find(name);
     cJSON *doc = i >= 0 ? cJSON_ParseWithLength(s_pool + s_cache[i].off, s_cache[i].len) : NULL;
     bool ok = doc != NULL;
@@ -256,7 +294,12 @@ cJSON *disc_net_json(const disc_net_t *n);
     {"name": "id in capitals", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"search\",\"id\":\"7F3A91C2\"}"},
     {"name": "no id", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"search\"}"},
     {"name": "a list", "expect": "ignore", "text": "[{\"sbiot\":\"disc\",\"v\":1,\"op\":\"search\",\"id\":\"7f3a91c2\"}]"},
-    {"name": "not JSON", "expect": "ignore", "text": "www.usr.cn"}
+    {"name": "not JSON", "expect": "ignore", "text": "www.usr.cn"},
+    {"name": "garbage after the object", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"factory\",\"id\":\"0a1b2c3d\",\"mac\":\"02:95:b8:e9:a7:9f\"}x"},
+    {"name": "two objects", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"search\",\"id\":\"7f3a91c2\"}{\"sbiot\":\"disc\",\"v\":1,\"op\":\"factory\",\"id\":\"0a1b2c3d\",\"mac\":\"02:95:b8:e9:a7:9f\"}"},
+    {"name": "a number with a leading zero", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":01,\"op\":\"search\",\"id\":\"7f3a91c2\"}"},
+    {"name": "an escaped NUL in mac", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"restart\",\"id\":\"0a1b2c3d\",\"mac\":\"02:95:b8:e9:a7:9f\\u0000x\"}"},
+    {"name": "an escaped NUL in op", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"restart\\u0000x\",\"id\":\"0a1b2c3d\",\"mac\":\"02:95:b8:e9:a7:9f\"}"}
   ],
   "found": {
     "info": {"mac": "02:95:b8:e9:a7:9f", "sn": "SB2610000001", "model": "SBIOT-H750", "fw": "0.7.0", "hostname": "sbiot-gw", "web": 80, "boot": 197,
@@ -441,14 +484,14 @@ int main(int argc, char **argv)
 ```make
 SVC := ../../components/services
 
-$(BUILD)/test_disc_core: test_disc_core.c $(SVC)/disc_core.c $(NET)/netcfg.c $(NET)/inet.c ../../components/ota/sha256.c $(CJSON)/cJSON.c
+$(BUILD)/test_disc_core: test_disc_core.c $(SVC)/disc_core.c ../../components/proto/jsonscan.c $(NET)/netcfg.c $(NET)/inet.c ../../components/ota/sha256.c $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -I$(SVC)/include -I$(NET)/include $^ -lm -o $@
 ```
 
-(`netcfg.c` brings `netcfg_ip4`; it needs `inet.c` and `sha256.c` as `test_netcfg` does. Place the rule after `NET` is defined.)
+(`netcfg.c` brings `netcfg_ip4`; it needs `inet.c` and `sha256.c` as `test_netcfg` does; `jsonscan.c` is the strict check. Place the rule after `NET` is defined. The `\u0000` scan may reject a harmless packet holding an escaped backslash before `u0000`; no packet of this protocol has one.)
 
-- [ ] **Step 3: Run it to see it fail.** Run: `make -C stm32/firmware/test/host build/test_disc_core 2>&1 | tail -3`. Expected: error, `disc_core.h: No such file or directory`.
+- [ ] **Step 3: Run it to see it fail.** Run: `set -o pipefail; make -C stm32/firmware/test/host build/test_disc_core 2>&1 | tail -3`. Expected: error, `disc_core.h: No such file or directory`.
 
 - [ ] **Step 4: Implement.** `disc_core.h` with the block from **Interfaces** (plus `#pragma once`, `<stdbool.h>`, `<stddef.h>`, `<stdint.h>`, `"cJSON.h"`, and a header comment pointing at the spec). `disc_core.c`:
 
@@ -458,7 +501,21 @@ $(BUILD)/test_disc_core: test_disc_core.c $(SVC)/disc_core.c $(NET)/netcfg.c $(N
 #include "disc_core.h"
 #include <stdio.h>
 #include <string.h>
+#include "jsonscan.h"
 #include "netcfg.h"
+
+/** The whole datagram is one strict JSON value (jsonscan: RFC 8259, nothing after it, no `01`), with no NUL in it,
+ *  raw or escaped: cJSON stops a string at a NUL, so "mac":"<this MAC>\u0000x" would read as this MAC (Codex plan r1). */
+static bool strict(const char *buf, size_t len)
+{
+    js_span_t root;
+    if (memchr(buf, '\0', len) || !js_parse_root(buf, len, &root))
+        return false;
+    for (size_t i = 0; i + 6 <= len; i++)
+        if (!memcmp(buf + i, "\\u0000", 6))
+            return false;
+    return true;
+}
 
 static bool hex_lower(const char *s, size_t n)
 {
@@ -521,7 +578,7 @@ static bool net_ok(const cJSON *n, disc_net_t *out)
 disc_kind_t disc_parse(const char *buf, size_t len, const char *my_mac, disc_req_t *out)
 {
     memset(out, 0, sizeof *out);
-    if (len > DISC_MAX)
+    if (len > DISC_MAX || !strict(buf, len))
         return DISC_IGNORE;
     cJSON *p = cJSON_ParseWithLength(buf, len);
     disc_kind_t k = DISC_IGNORE;
@@ -640,7 +697,7 @@ void disc_net_from(const cJSON *network, disc_net_t *out)
 
 Notes for the implementer: cJSON prints `"v":1`, `"web":80` and `"boot":197` as integers (whole doubles print without a fraction); a `uint32_t` boot of 4294967295 prints as `4294967295`. Add `disc_core.c` to the app's sources in `stm32/firmware/CMakeLists.txt` line 125 (`${SVC}/disc_core.c`) in this task, so the firmware build checks it compiles for the target.
 
-- [ ] **Step 5: Run it to see it pass.** Run: `make -C stm32/firmware/test/host build/test_disc_core && (cd stm32/firmware/test/host && build/test_disc_core disc_vectors.json)`. Expected: `test_disc_core: ok`. Then `cd stm32/firmware && cmake --build --preset app 2>&1 | tail -3`. Expected: links with no warnings.
+- [ ] **Step 5: Run it to see it pass.** Run: `make -C stm32/firmware/test/host build/test_disc_core && (cd stm32/firmware/test/host && build/test_disc_core disc_vectors.json)`. Expected: `test_disc_core: ok`. Then `set -o pipefail; cd stm32/firmware && cmake --build --preset app 2>&1 | tail -3`. Expected: exit 0, links with no warnings.
 
 - [ ] **Step 6: Commit.**
 
@@ -693,7 +750,8 @@ bool netmgr_eth_ifname(char out[6])
 // SBIOT Finder's discovery on the gateway (Plan 12; stm32/docs/specs/2026-10-17-lan-discovery-design.md).
 #pragma once
 #include "cJSON.h"
-/** Starts the `disc` task: UDP 48600 on the Ethernet netif. Reads system.hostname and system.webPort once. */
+/** Binds UDP 48600 on the Ethernet netif (now, so before the bridges) and starts the `disc` task. Reads
+ *  system.hostname and system.webPort once. Call before services_start. */
 void disc_start(const cJSON *sys);
 ```
 
@@ -721,6 +779,7 @@ void disc_start(const cJSON *sys);
 
 static StaticTask_t s_tcb;
 static StackType_t s_stack[DISC_STACK_WORDS];
+static int s_fd = -1;  // bound in disc_start, by init, before services_start: 48600 is ours before a bridge binds
 static char s_hostname[17];
 static unsigned s_web;
 static char s_mac[18];
@@ -819,31 +878,38 @@ static void handle(int fd, const char *buf, int n, uint16_t port)
     }
 }
 
+static bool s_told;
+
+static int try_open(void)
+{
+    int fd = open_socket();
+    if (fd == -2 && !s_told) {
+        SLOG_E("disc", "cannot bind UDP port %u on Ethernet: SBIOT Finder will not find this gateway", DISC_PORT);
+        s_told = true;
+    }
+    return fd;
+}
+
 static void disc_task(void *arg)
 {
     (void)arg;
     int hb = wdog_hb_add("disc", 30000);
-    int fd = -1;
-    bool told = false;
+    int fd = s_fd;
     static char buf[DISC_MAX + 1];  // one more than allowed: a datagram that fills it is too long
     for (;;) {
         wdog_hb_beat(hb);
-        if (fd < 0) {
-            fd = open_socket();
-            if (fd == -2 && !told) {
-                SLOG_E("disc", "cannot bind UDP port %u on Ethernet: SBIOT Finder will not find this gateway", DISC_PORT);
-                told = true;
-            }
-            if (fd < 0) {
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                continue;
-            }
+        if (fd < 0 && (fd = try_open()) < 0) {  // the Ethernet was not up at boot
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
         }
         struct sockaddr_in from;
         socklen_t fl = sizeof from;
         int n = lwip_recvfrom(fd, buf, sizeof buf, 0, (struct sockaddr *)&from, &fl);  // 1 s at most (SO_RCVTIMEO)
+        if (n < 0)
+            continue;  // the timeout
         if (n > 0 && n <= DISC_MAX)
             handle(fd, buf, n, from.sin_port);
+        vTaskDelay(1);  // after every datagram, even an ignored or empty one: a flood cannot starve the tasks below (Codex plan r1)
     }
 }
 
@@ -856,6 +922,7 @@ void disc_start(const cJSON *sys)
     net_status_t st;
     netmgr_status(&st);
     snprintf(s_mac, sizeof s_mac, "%02x:%02x:%02x:%02x:%02x:%02x", st.mac[0], st.mac[1], st.mac[2], st.mac[3], st.mac[4], st.mac[5]);
+    s_fd = try_open();  // here, synchronously: services_start (the bridges) comes after (Codex plan r1)
     xTaskCreateStatic(disc_task, "disc", DISC_STACK_WORDS, NULL, DISC_PRIO, s_stack, &s_tcb);
 }
 ```
@@ -870,7 +937,7 @@ Implementer: match the includes to what the tree uses (`SLOG_W`/`SLOG_E` from `s
 
 `CMakeLists.txt` line 125: add `${SVC}/disc.c` after `${SVC}/disc_core.c`.
 
-- [ ] **Step 3: Build.** Run: `cd stm32/firmware && cmake --build --preset app 2>&1 | tail -5 && python3 tools/check_elf.py build/h750`. Expected: no warnings; `check_elf` passes (layout, RAM and QSPI within their limits).
+- [ ] **Step 3: Build.** Run: `set -o pipefail; cd stm32/firmware && cmake --build --preset app 2>&1 | tail -5 && python3 tools/check_elf.py build/h750`. Expected: no warnings; `check_elf` passes (layout, RAM and QSPI within their limits).
 
 - [ ] **Step 4: The bench peer.** `win_peer.py`: document the mode in the docstring (`disc  iface, port (48600), secs, send (the packet, hex): broadcast from iface, one event per reply`) and add:
 
@@ -966,7 +1033,16 @@ def back(mac, boot, limit=120):
     return None
 
 
+def restart_and_wait(mac, boot):
+    w.req('POST', '/api/restart')
+    return back(mac, boot)
+
+
 def main():
+    _, orig = w.get_json('/api/config/network')
+    if not orig or orig.get('priority') != 0:
+        print('bench: the board must start at network.priority 0 (the SIM is locked); found %s' % (orig or {}).get('priority'))
+        return 1
     f = search()
     me = [x for x in f if x.get('sn') == SN]
     check(len(me) == 1, 'search finds the board (SN %s)' % SN)
@@ -1003,9 +1079,36 @@ def main():
         check(f is not None and f['eth']['ip'] == '192.168.0.7' and f['net'] == home, 'found again at 192.168.0.7, settings as before')
         boot = f['boot'] if f else boot
     _, net = w.get_json('/api/config/network')
-    net = net or {}
-    check(net.get('priority') == 0, 'the LTE fields kept: priority 0 (%s)' % net.get('priority'))
-    check(net.get('apn') not in (None, ''), 'and the APN (%s)' % net.get('apn'))
+    check(net == orig, 'network is exactly as before the bench: LTE fields, priority and the rest kept')
+
+    # A flood of junk on 48600 (20 s, as fast as Windows sends): the board keeps running (no supervisor restart).
+    flood = bc.subprocess.run([bc.WIN_PY, '-c', (
+        'import socket,time\n'
+        's=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\n'
+        's.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1)\n'
+        's.bind(("%s",0))\n'
+        't=time.time();n=0\n'
+        'while time.time()-t<20:\n'
+        '    s.sendto(b"x"*100,("255.255.255.255",48600));n+=1\n'
+        'print(n)\n' % bc.WIN)], cwd='/mnt/c', capture_output=True, text=True)
+    f = search(mac)
+    check(f and f[0]['boot'] == boot, 'after a 20 s flood (%s datagrams) the board answers, not restarted' % flood.stdout.strip())
+
+    # A UART set (around the UI) to bind UDP 48600: disc bound first at boot, so the board is still found.
+    _, p1 = w.get_json('/api/config/port1')
+    try:
+        w.req('POST', '/api/config/port1', body=json.dumps(dict(p1, workMode=2, localPort=48600)).encode())
+        f = restart_and_wait(mac, boot)
+        check(f is not None, 'with UART1 configured as a UDP server on 48600, the board is still found after a restart')
+        boot = f['boot'] if f else boot
+        _, st = w.get_json('/api/status')
+        check('ERROR' in json.dumps(st), "and UART1's bridge reports its bind error (%s)" % json.dumps(st)[:300])
+    finally:
+        w.req('POST', '/api/config/port1', body=json.dumps(p1).encode())
+        f = restart_and_wait(mac, boot)
+        boot = f['boot'] if f else boot
+    _, now1 = w.get_json('/api/config/port1')
+    check(now1 == p1, 'UART1 restored')
 
     a = command('restart', mac)
     check(a is not None and a.get('ok') is True, 'restart: ack ok')
@@ -1019,9 +1122,9 @@ if __name__ == '__main__':
     sys.exit(main())
 ```
 
-(`w.get_json` returns `(status, body)` and signs in as the other bench scripts do; `bc.peer` copies `win_peer.py` to Windows before each run.)
+(`w.get_json` returns `(status, body)` and signs in as the other bench scripts do; `bc.peer` copies `win_peer.py` to Windows before each run; `bc.subprocess` is `bridge_check`'s import. Check where `/api/status` shows a bridge's state and tighten the `ERROR` check to that field. `workMode` 2 is `BR_UDP_SERVER`.)
 
-- [ ] **Step 6: Run on the board.** Flash the new app by **web OTA** (the staging trap: an app flashed over SWD is replaced by the staged image), as the earlier plans did (`ota_check.py`'s helper, or the web page). Then: `python3 stm32/firmware/test/bench/disc_check.py 2>&1 | tee .superpowers/sdd/2026-10-17-12-lan-discovery/disc_check.log | tail -20`. Expected: every line `ok`, `bench: ok`. Also `python3 stm32/firmware/test/bench/supervisor_check.py` is **not** needed; read `/api/status` once: `hbMissing` 0.
+- [ ] **Step 6: Run on the board.** Flash the new app by **web OTA** (the staging trap: an app flashed over SWD is replaced by the staged image), as the earlier plans did (`ota_check.py`'s helper, or the web page). Then: `set -o pipefail; python3 stm32/firmware/test/bench/disc_check.py 2>&1 | tee .superpowers/sdd/2026-10-17-12-lan-discovery/disc_check.log | tail -25`. Expected: every line `ok`, `bench: ok`. Also `python3 stm32/firmware/test/bench/supervisor_check.py` is **not** needed; read `/api/status` once: `hbMissing` 0.
 
 If Windows does not deliver the broadcast replies to a socket bound to `192.168.0.10` (no `reply` events while the board's console shows the request), ledger it and bind the peer to `0.0.0.0` with the broadcast still sent from the LAN adapter (`IP_UNICAST_IF` is not needed for broadcast); apply the same change to the tool in Task 5.
 
@@ -1052,7 +1155,7 @@ test('the local port 48600 is SBIOT Finder\'s', () => {
 });
 ```
 
-- [ ] **Step 2: Run it to see it fail.** Run: `cd stm32/web && npm run test:unit 2>&1 | tail -5`. Expected: tsc error, `has no exported member 'discPortClash'`.
+- [ ] **Step 2: Run it to see it fail.** Run: `set -o pipefail; cd stm32/web && npm run test:unit 2>&1 | tail -5`. Expected: tsc error, `has no exported member 'discPortClash'`.
 
 - [ ] **Step 3: Implement.** `rules.ts`:
 
@@ -1074,7 +1177,7 @@ export function discPortClash(port: Obj): string | null {
 
 and `invalid={!f.valid || !!clash || !!disc || !checked}` on the `SaveBar`.
 
-- [ ] **Step 4: Run it to see it pass.** Run: `cd stm32/web && npm run test:unit 2>&1 | tail -5 && npx tsc --noEmit -p . && npm run build:firmware 2>&1 | tail -3`. Expected: all tests pass; the embed rewrites `www_files.c`.
+- [ ] **Step 4: Run it to see it pass.** Run: `set -o pipefail; cd stm32/web && npm run test:unit 2>&1 | tail -5 && npx tsc --noEmit -p . && npm run build:firmware 2>&1 | tail -3`. Expected: all tests pass; the embed rewrites `www_files.c`.
 
 - [ ] **Step 5: Commit.**
 
@@ -1212,8 +1315,8 @@ public class NetSettingsTests
     [Fact] public void TheBroadcastAddress() => Assert.NotNull(S(ip: "10.10.0.255").Validate());
     [Fact] public void AGatewayOutsideTheSubnet() => Assert.NotNull(S(gw: "10.10.1.1").Validate());
     [Fact] public void TheGatewayIsTheAddress() => Assert.NotNull(S(gw: "10.10.0.7").Validate());
-    [Fact] public void ManualDnsNeedsDns1() => Assert.NotNull(S(d1: "0.0.0.0").Validate());
-    [Fact] public void Dns2MayBeNone() => Assert.Null(S(d2: "0.0.0.0").Validate());
+    [Fact] public void AnIsolatedLanHasNoGateway() => Assert.Null(S(gw: "0.0.0.0").Validate());
+    [Fact] public void NoDnsServerIsAllowed() => Assert.Null(S(d1: "0.0.0.0", d2: "0.0.0.0").Validate());
     [Fact] public void DhcpChecksSyntaxOnly() => Assert.Null(S(ipMode: 0, dnsMode: 0, gw: "10.10.1.1", d1: "0.0.0.0").Validate());
     [Fact] public void DhcpStillNeedsQuads() => Assert.NotNull(S(ipMode: 0, ip: "x").Validate());
 }
@@ -1251,7 +1354,7 @@ public class FoundTableTests
 }
 ```
 
-- [ ] **Step 3: Run them to see them fail.** Run: `cd stm32/tools/finder && dotnet test 2>&1 | tail -5`. Expected: build errors, `The type or namespace name 'Packets' could not be found`.
+- [ ] **Step 3: Run them to see them fail.** Run: `set -o pipefail; cd stm32/tools/finder && dotnet test 2>&1 | tail -5`. Expected: build errors, `The type or namespace name 'Packets' could not be found`.
 
 - [ ] **Step 4: Implement.** `NetSettings.cs`:
 
@@ -1282,10 +1385,11 @@ public sealed record NetSettings(int IpMode, string Ip, string Netmask, string G
             uint inv = ~mask;
             if (mask == 0 || mask == 0xFFFFFFFF || (inv & (inv + 1)) != 0) return "Subnet mask: use a mask such as 255.255.255.0.";
             if ((ip & inv) == 0 || (ip & inv) == inv) return "IP address: this is the network's own or broadcast address.";
-            if ((gw & mask) != (ip & mask) || gw == ip || (gw & inv) == inv) return "Gateway: it must be another address in the same subnet as the IP address.";
+            // 0.0.0.0 is "no gateway" (an isolated LAN); the gateway accepts it.
+            if (gw != 0 && ((gw & mask) != (ip & mask) || gw == ip || (gw & inv) == inv))
+                return "Gateway: it must be another address in the same subnet as the IP address, or 0.0.0.0 for none.";
         }
-        if ((IpMode == 1 || DnsMode == 1) && U(Dns1) == 0) return "DNS 1: enter the DNS server.";
-        return null;
+        return null;  // DNS: syntax only; 0.0.0.0 is "none", as the gateway reads it
     }
 }
 ```
@@ -1515,7 +1619,7 @@ public static class Adapters
 }
 ```
 
-- [ ] **Step 5: Run them to see them pass.** Run: `cd stm32/tools/finder && dotnet test 2>&1 | tail -5`. Expected: `Passed!` with 0 failed.
+- [ ] **Step 5: Run them to see them pass.** Run: `set -o pipefail; cd stm32/tools/finder && dotnet test 2>&1 | tail -5`. Expected: `Passed!` with 0 failed.
 
 - [ ] **Step 6: Commit.**
 
@@ -1547,6 +1651,7 @@ git commit -m "stm32 finder: the protocol library and its tests (Plan 12 task 5)
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>SbiotFinder</AssemblyName>
     <RootNamespace>Sbiot.Finder</RootNamespace>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Sbiot.Finder.Protocol/Sbiot.Finder.Protocol.csproj" />
@@ -1577,6 +1682,7 @@ static class Program
 ```csharp
 using System.Diagnostics;
 using System.Net;
+using System.Net.Sockets;
 using Sbiot.Finder.Protocol;
 
 namespace Sbiot.Finder;
@@ -1640,24 +1746,33 @@ sealed class MainForm : Form
         list.EndUpdate();
     }
 
+    // Every handler catches the network errors itself (an async void handler must not throw, Codex plan r1).
     async Task Search()
     {
-        using var c = Client();
-        if (c is null) return;
         search.Enabled = false;
-        status.Text = "Searching…";
-        table.Clear();
-        list.Items.Clear();
-        var found = await c.SearchAsync(TimeSpan.FromSeconds(2));
-        foreach (var f in found) ShowRow(f);
-        status.Text = $"{found.Count} gateway(s) found.";
-        search.Enabled = true;
+        try
+        {
+            using var c = Client();
+            if (c is null) return;
+            status.Text = "Searching…";
+            table.Clear();
+            list.Items.Clear();
+            var found = await c.SearchAsync(TimeSpan.FromSeconds(2));
+            foreach (var f in found) ShowRow(f);
+            status.Text = $"{found.Count} gateway(s) found.";
+        }
+        catch (Exception e) when (e is SocketException or ObjectDisposedException or InvalidOperationException)
+        {
+            status.Text = $"Search failed on this adapter: {e.Message}. Choose another adapter or try again.";
+        }
+        finally { search.Enabled = true; }
     }
 
     void OpenWeb()
     {
-        if (Selected is { } f)
-            Process.Start(new ProcessStartInfo($"http://{f.EthIp}:{f.Web}/") { UseShellExecute = true });
+        if (Selected is not { } f) return;
+        try { Process.Start(new ProcessStartInfo($"http://{f.EthIp}:{f.Web}/") { UseShellExecute = true }); }
+        catch (System.ComponentModel.Win32Exception e) { status.Text = $"Could not open the browser: {e.Message}"; }
     }
 
     async Task SetNetwork()
@@ -1671,12 +1786,14 @@ sealed class MainForm : Form
     async Task Act(string op, NetSettings? net, string what)
     {
         if (Selected is not { } f) return;
-        using var c = Client();
-        if (c is null) return;
         Enabled = false;
+        bool sent = false;
         try
         {
+            using var c = Client();
+            if (c is null) return;
             status.Text = $"{what}: sending…";
+            sent = true;  // from here a failure may come after the gateway got the command
             var ack = await c.CommandAsync(op, f.Mac, net, TimeSpan.FromSeconds(10));
             if (ack is null) { status.Text = $"{what}: outcome unknown (no reply). Press Search to check the gateway."; return; }
             if (!ack.Ok)
@@ -1689,6 +1806,11 @@ sealed class MainForm : Form
             if (back is null) { status.Text = $"{what}: the gateway has not come back yet. Press Search later."; return; }
             ShowRow(back);
             status.Text = $"{what}: the gateway is back at {back.EthIp}.";
+        }
+        catch (Exception e) when (e is SocketException or ObjectDisposedException or InvalidOperationException)
+        {
+            status.Text = sent ? $"{what}: outcome unknown ({e.Message}). Press Search to check the gateway; nothing was sent again."
+                               : $"{what}: the adapter failed ({e.Message}). Nothing was sent.";
         }
         finally { Enabled = true; }
     }
@@ -1767,17 +1889,20 @@ sealed class NetworkForm : Form
 - [ ] **Step 3: Build and publish.** Run, from `stm32/tools/finder`:
 
 ```bash
+set -o pipefail
+rm -rf out
 dotnet build Sbiot.Finder 2>&1 | tail -3
 dotnet publish Sbiot.Finder -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -o out 2>&1 | tail -3
-ls -la out/SbiotFinder.exe && mkdir -p /mnt/c/Users/Public/sbiot && cp out/SbiotFinder.exe /mnt/c/Users/Public/sbiot/
+ls -la out
+rm -rf /mnt/c/Users/Public/sbiot/finder && mkdir -p /mnt/c/Users/Public/sbiot/finder && cp out/SbiotFinder.exe /mnt/c/Users/Public/sbiot/finder/
 dotnet test 2>&1 | tail -3
 ```
 
-Expected: build and publish succeed with 0 warnings; `SbiotFinder.exe` exists (tens of MB, self-contained); the tests still pass.
+Expected: each command exits 0 with 0 warnings; `out` holds `SbiotFinder.exe` (tens of MB) and no native `.dll` beside it (only a `.pdb` at most); the exe is copied **alone** into a clean folder, which is how the user runs it.
 
 - [ ] **Step 4: README.** `stm32/tools/finder/README.md`: what the tool does; the build and publish commands above; that the PC and the gateways must share a switch (broadcast does not cross routers); no password (the user's decision); the gateway port UDP 48600 must not be blocked by the Windows firewall (Windows asks on the first run: allow on private networks).
 
-- [ ] **Step 5: Try it on Windows.** Ask the user to run `C:\Users\Public\sbiot\SbiotFinder.exe` with the board: pick the LAN adapter, Search, double-click (Web UI opens), Network… to `10.10.0.7/24` gateway `10.10.0.1`, wait for it to come back at 10.10.0.7, then back to `192.168.0.7`, then Restart. Ledger what the user reports. Do not use Factory reset on the bench board.
+- [ ] **Step 5: Try it on Windows.** Ask the user to run `C:\Users\Public\sbiot\finder\SbiotFinder.exe` (alone in its folder) with the board: pick the LAN adapter, Search, double-click (Web UI opens), Network… to `10.10.0.7/24` gateway `10.10.0.1`, wait for it to come back at 10.10.0.7, then back to `192.168.0.7`, then Restart. Ledger what the user reports. Do not use Factory reset on the bench board.
 
 - [ ] **Step 6: Commit.**
 

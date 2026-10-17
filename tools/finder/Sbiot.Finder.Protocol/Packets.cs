@@ -5,7 +5,12 @@ using System.Text.Json;
 namespace Sbiot.Finder.Protocol;
 
 public sealed record Found(string Mac, string Sn, string Model, string Fw, string Hostname, int Web, long Boot,
-                           string EthIp, string EthNetmask, string EthGateway, NetSettings Net);
+                           string EthIp, string EthNetmask, string EthGateway, NetSettings Net)
+{
+    /// <summary>False for a gateway set to DHCP with no server (it answers from 0.0.0.0): no Web UI to open, only
+    /// Network… to give it an address (the user, 2026-10-17).</summary>
+    public bool HasAddress => EthIp != "0.0.0.0";
+}
 
 public sealed record Ack(string Mac, bool Ok, string? Err);
 

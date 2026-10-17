@@ -98,7 +98,10 @@ Mỗi gateway chờ ngẫu nhiên 0–200 ms (`board_rand32`), để các câu t
 - **`components/services/disc.c`**:
   - một task `disc` với socket UDP của lwIP: bind `0.0.0.0:48600`, bật `SO_BROADCAST`, và `SO_BINDTODEVICE` với tên của netif Ethernet. lwIP có sẵn đường này (`udp_bind_netif`): gói nhận chỉ lấy từ Ethernet, và gói gửi đi ra Ethernet trước khi xét route. Vì vậy, khi LTE là route mặc định (`priority` 2), không gói discovery nào đi ra PPP;
   - đọc `system.hostname` và `system.webPort` lúc boot (spec §9.1);
-  - lấy địa chỉ Ethernet đang chạy từ `netmgr`. Chỉ trả lời khi Ethernet có địa chỉ IPv4;
+  - lấy địa chỉ Ethernet đang chạy từ `netmgr`. Khi Ethernet **chưa có địa chỉ** (DHCP mà không có server), task vẫn trả lời (người dùng, 2026-10-17):
+    - `LWIP_IP_ACCEPT_UDP_PORT` trong `lwipopts.h` cho lwIP nhận gói tới cổng 48600 như cổng DHCP;
+    - gói trả lời đi với nguồn `0.0.0.0`;
+    - `found` có `eth.ip` là `0.0.0.0`. FinderTool hiện "no address (DHCP)", không mở Web UI, và **Network…** đặt được IP tĩnh cho gateway;
   - gọi `store_patch`, `sysmgr_restart_later` và `store_factory_reset`;
   - được bộ giám sát theo dõi (Plan 11a): timeout 30 s, chờ socket với timeout 1 s;
   - khởi động trước bridge, nên cổng 48600 thuộc về `disc`.
@@ -169,4 +172,4 @@ Mỗi gateway chờ ngẫu nhiên 0–200 ms (`board_rand32`), để các câu t
 
 - **Không xác thực (người dùng chọn):** mọi máy trong cùng broadcast domain đều có thể đổi IP, restart hay factory reset gateway. Factory reset xóa cả cấu hình MQTT, Edge, chứng chỉ và mật khẩu web. Gói `found` lộ MAC, SN và IP cho mọi máy trong LAN, giống tool của USR. Nếu sau này cần, có thể thêm xác thực ở phiên bản `"v":2`.
 - Gateway chỉ kiểm cú pháp. Một cấu hình đúng cú pháp nhưng sai về mạng (ví dụ gateway ngoài subnet) vẫn được lưu; sửa lại bằng tool hoặc bằng Reload.
-- Gateway để DHCP trong một LAN không có DHCP server thì không có địa chỉ, nên không trả lời tool. Cách sửa: Reload (về cấu hình xuất xưởng, IP tĩnh `192.168.0.7`), hoặc nối vào mạng có DHCP.
+- Gateway để DHCP trong một LAN không có DHCP server thì không có địa chỉ. Tool vẫn tìm thấy nó (trả lời từ `0.0.0.0`, §2.4) và đặt được IP tĩnh; chỉ có Web UI là không mở được cho tới khi gateway có địa chỉ.

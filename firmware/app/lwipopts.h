@@ -64,6 +64,9 @@ void *netmgr_static_thread(void (*fn)(void *), const char *name, unsigned words,
 #define LWIP_ICMP 1
 #define LWIP_RAW 1
 #define LWIP_DHCP 1
+/* FinderTool's port (disc_core.h DISC_PORT) is taken while the Ethernet has no address, as DHCP's own (port in
+ * network order): a gateway set to DHCP with no server answers a search from 0.0.0.0 (the user, 2026-10-17). */
+#define LWIP_IP_ACCEPT_UDP_PORT(port) ((port) == PP_NTOHS(48600))
 #define LWIP_DHCP_DOES_ACD_CHECK 0
 #define LWIP_AUTOIP 0
 #define LWIP_IGMP 1  // the bridge's multicast (spec §7.1)

@@ -82,7 +82,7 @@ sealed class MainForm : Form
         list.BeginUpdate();
         list.Items.Clear();
         foreach (var r in table.Rows)
-            list.Items.Add(new ListViewItem([r.Mac, r.Sn, r.EthIp, r.Hostname, r.Model, r.Fw]) { Tag = r });
+            list.Items.Add(new ListViewItem([r.Mac, r.Sn, r.HasAddress ? r.EthIp : "no address (DHCP)", r.Hostname, r.Model, r.Fw]) { Tag = r });
         list.EndUpdate();
     }
 
@@ -112,6 +112,11 @@ sealed class MainForm : Form
     void OpenWeb()
     {
         if (Selected is not { } f) return;
+        if (!f.HasAddress)
+        {
+            status.Text = "This gateway has no address (DHCP, no server answered): give it one with Network…";
+            return;
+        }
         try { Process.Start(new ProcessStartInfo($"http://{f.EthIp}:{f.Web}/") { UseShellExecute = true }); }
         catch (System.ComponentModel.Win32Exception e) { status.Text = $"Could not open the browser: {e.Message}"; }
     }

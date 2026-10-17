@@ -151,6 +151,14 @@ uint32_t board_rand32(void);
 // --- SNTP (sysmgr, spec §10.4): the server by name, the time handed to sysmgr in the lwIP core ---------
 #define SNTP_SERVER_DNS 1
 #define SNTP_MAX_SERVERS 1
+// A request at once (sysmgr_start, and sysmgr_ntp_kick when a route comes up: the first one used to go before the
+// network and cost 30 s; the user, 2026-10-17). An unanswered one is given up after 3 s; retries stay 15 s apart at
+// least (RFC 4330 §10: no SNTP client polls faster, and servers rate-limit those that do: the pool server dropped
+// requests 2 s apart on the bench), doubling to at most 60 s instead of lwIP's 150 s. Once set, hourly updates.
+#define SNTP_STARTUP_DELAY 0
+#define SNTP_RECV_TIMEOUT 3000
+#define SNTP_RETRY_TIMEOUT 15000
+#define SNTP_RETRY_TIMEOUT_MAX 60000
 void sysmgr_sntp_set(uint32_t sec, uint32_t us);
 #define SNTP_SET_SYSTEM_TIME_US(sec, us) sysmgr_sntp_set((uint32_t)(sec), (uint32_t)(us))
 

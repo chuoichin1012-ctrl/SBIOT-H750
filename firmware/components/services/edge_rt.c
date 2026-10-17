@@ -658,7 +658,8 @@ static edge_kind_t slot_value(void *ctx, void *slot, double *v, const char **out
         *v = p->value;
         return p->valid ? EDGE_NUMBER : EDGE_NO_VALUE;
     }
-    return edge_sys_value((int)(s - s_sys_handle), sysmgr_now_ms(), sysmgr_serial(), s_mac, APP_VERSION, v, out_text, buf);
+    return edge_sys_value((int)(s - s_sys_handle), sysmgr_now_ms(), sysmgr_timezone(), sysmgr_serial(), s_mac, APP_VERSION, v,
+                          out_text, buf);
 }
 
 /** One report of every slot's current value; true once it is handed over (MQTT's outbox or the bridge). */

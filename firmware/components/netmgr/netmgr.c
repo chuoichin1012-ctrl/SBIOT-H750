@@ -19,6 +19,7 @@
 #include "lwip/stats.h"
 #include "lwip/tcpip.h"
 #include "semphr.h"
+#include "sysmgr.h"
 #include "task.h"
 
 #define TCPIP_STACK_WORDS (TCPIP_THREAD_STACKSIZE / sizeof(StackType_t))
@@ -205,6 +206,7 @@ static void route_check(void)
 {
     net_route_t r = netcfg_pick_inet(s_cfg.priority, eth_ok(), s_inet[0].ok, s_cell_up, s_inet[1].ok);
     struct netif *want = r == NET_ROUTE_ETH ? &s_netif : r == NET_ROUTE_CELL ? s_cell : NULL;
+    bool moved = r != s_route && want;
     if (r != s_route) {
         s_route = r;
         blog("net: default route via %s\r\n", r == NET_ROUTE_ETH ? "Ethernet" : r == NET_ROUTE_CELL ? "LTE" : "none");
@@ -214,6 +216,8 @@ static void route_check(void)
         }
     }
     dns_apply();  // after every event, the route unchanged included (Codex plan r1, r2)
+    if (moved)
+        sysmgr_ntp_kick();  // its DNS is set: a clock not set yet asks NTP now
 }
 
 static void eth_changed(struct netif *netif)

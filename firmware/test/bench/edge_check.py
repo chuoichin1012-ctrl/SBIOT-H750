@@ -350,10 +350,10 @@ def case_basic():
     check(r.get('do1') in (0, 1), 'the IO point DO1 in it (%s)' % r.get('do1'))
     check(r.get('k') == 'const' and r.get('sn') == s['system']['sn'] and r.get('mac') == s['system']['mac'],
           'template constants kept, sys_sn and sys_mac filled')
-    # No real time: the device clock (PR #28, spec §10.4): 2020-01-01 00:00 local at power-on plus the uptime, sys_time
-    # as UTC text, sys_unix_time its seconds (before the real clock, so before 2021).
+    # No real time: the device clock (PR #28, spec §10.4): 2020-01-01 00:00 local at power-on plus the uptime; sys_time
+    # and sys_unix_time in the gateway's zone (the user, 2026-10-17), so from 2020-01-01 00:00 on (and before 2021).
     ts, ut = r.get('ts'), r.get('ut')
-    check(isinstance(ts, str) and ts[:4] in ('2019', '2020') and isinstance(ut, (int, float)) and 1577750400 <= ut < 1609459200,
+    check(isinstance(ts, str) and ts[:4] == '2020' and isinstance(ut, (int, float)) and 1577836800 <= ut < 1609459200,
           'no real time: sys_time and sys_unix_time carry the device clock (%r, %r)' % (ts, ut))
     check(full, 'status: every point read (%s)' % status_now)
     fc3 = [(a, n) for _, u, fc, a, n in slave.log if u == 5 and fc == 3]
@@ -414,11 +414,11 @@ def case_schedule():
     slave.close()
     bc.wait_peer(tcp, 1)
     r = got[0] if got else {}
-    utc = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:')
-    check(got and isinstance(r.get('ut'), (int, float)) and r['ts'].startswith(utc[:11]),
-          'clock set: a report at the minute, sys_unix_time a number, sys_time UTC text (%s, first %s)' % (r, first))
+    local = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=tz)).strftime('%Y-%m-%d %H:')
+    check(got and isinstance(r.get('ut'), (int, float)) and r['ts'].startswith(local[:11]),
+          'clock set: a report at the minute, sys_unix_time a number, sys_time local text (%s, first %s)' % (r, first))
     check(got and abs(datetime.datetime.strptime(r['ts'], '%Y-%m-%d %H:%M:%S').replace(tzinfo=datetime.timezone.utc).timestamp() - r['ut']) < 1,
-          'sys_time and sys_unix_time agree')
+          'sys_time and sys_unix_time agree (both local)')
 
 
 def connect(port=23):

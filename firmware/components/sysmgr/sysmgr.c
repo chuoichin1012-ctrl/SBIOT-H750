@@ -20,6 +20,7 @@
 static int64_t s_offset_us;  // UTC in us minus now_us(); 0: not set. In a critical section (64 bits).
 static int s_tz;             // hours, from system.timezone at boot
 static char s_ntp_server[129];  // lwIP keeps the pointer: lives for the whole run
+static bool s_ntp_on;            // set once by sysmgr_start, before the routes change (read in the lwIP core)
 static char s_serial[13];  // SB + 10 digits, from the binding record (Plan 11a)
 
 static int64_t offset(void)
@@ -99,11 +100,20 @@ void sysmgr_start(const cJSON *system)
         sntp_setoperatingmode(SNTP_OPMODE_POLL);
         sntp_setservername(0, s_ntp_server);
         sntp_init();
+        s_ntp_on = true;
         UNLOCK_TCPIP_CORE();
         blog("sys: NTP from %s, UTC%+d\r\n", s_ntp_server, s_tz);
     } else {
         blog("sys: no NTP, UTC%+d; the device clock runs from 2020-01-01 00:00 until POST /api/time\r\n", s_tz);
     }
+}
+
+void sysmgr_ntp_kick(void)
+{
+    if (!s_ntp_on || sysmgr_clock_set())
+        return;  // once the clock is set, SNTP's hourly update goes on as it is
+    sntp_stop();
+    sntp_init();  // SNTP_STARTUP_DELAY 0: the request leaves now
 }
 
 static void restart_task(void *arg)

@@ -961,10 +961,14 @@ Chép từ `src/` ở gốc, rồi sửa trực tiếp:
 ### 10.4 Giờ
 
 - **Một đồng hồ duy nhất** (người dùng, 2026-10-17): `sysmgr_now_ms()` (`clock_device_ms`). Đã có giờ thật (NTP, hoặc `POST /api/time`) thì là giờ thật. Chưa có thì là đồng hồ đọc **2020-01-01 00:00:00 giờ địa phương lúc bật nguồn, cộng uptime**. NTP là tùy chọn; NTP bật mà không lấy được giờ (không có Internet) thì cũng như chưa có giờ.
+- **Lịch hỏi NTP** (người dùng, 2026-10-17):
+  - Hỏi ngay lúc khởi động. Mỗi khi default route chuyển sang một link (DNS đã đặt) mà đồng hồ chưa có giờ thật thì hỏi lại ngay (`sysmgr_ntp_kick`). Trước đây lần hỏi đầu chạy trước khi có mạng và tốn 30 s.
+  - Một request không được trả lời thì bỏ sau 3 s. Hỏi lại cách nhau ít nhất 15 s (RFC 4330 §10; server giới hạn tần suất các client hỏi dày hơn), nhân đôi, tối đa 60 s.
+  - Có giờ rồi thì cập nhật mỗi giờ.
   - Chạy trên đồng hồ này:
     - phần hiển thị (`/api/status` `time`, dòng trạng thái của console), kèm `clockSet: false` khi giờ chưa thật;
     - report theo `schedule`: hourly, 15 phút và mỗi phút tính từ lúc bật nguồn (chạy ngay trong phút đầu tiên); daily hh:mm là hh:mm sau khi bật nguồn;
-    - `sys_time` (chuỗi UTC) và `sys_unix_time`. Ví dụ ở UTC+7, lúc bật nguồn màn hình đọc 2020-01-01 00:00:00, còn `sys_time` là 2019-12-31 17:00:00: hai cách đọc của cùng một đồng hồ;
+    - `sys_time` và `sys_unix_time` **theo múi giờ cài trên gateway** (người dùng, 2026-10-17; máy tham chiếu dùng UTC): `sys_time` là chuỗi giờ địa phương, `sys_unix_time` là số giây Unix cộng độ lệch múi giờ. Ví dụ ở UTC+7, lúc bật nguồn cả màn hình lẫn `sys_time` đều đọc 2020-01-01 00:00:00;
     - 6 timer IO: một timer 08:00 chạy sau 8 giờ kể từ khi bật nguồn.
   - Khi giờ thật tới, đồng hồ nhảy sang giờ thật:
     - timer IO không bắn bù qua cú nhảy (giới hạn `IO_MAX_CATCH_UP_S`);

@@ -337,8 +337,8 @@ int edge_sys_field(const char *name)
     return -1;
 }
 
-edge_kind_t edge_sys_value(int field, int64_t utc_ms, const char *sn, const char *mac, const char *ver, double *num_out,
-                           const char **text_out, char buf[20])
+edge_kind_t edge_sys_value(int field, int64_t utc_ms, int tz_hours, const char *sn, const char *mac, const char *ver,
+                           double *num_out, const char **text_out, char buf[20])
 {
     switch (field) {
     case EDGE_SYS_SN: return *text_out = sn, EDGE_TEXT;
@@ -348,9 +348,9 @@ edge_kind_t edge_sys_value(int field, int64_t utc_ms, const char *sn, const char
     }
     if (utc_ms <= 0)
         return EDGE_NO_VALUE;  // no clock: the failure placeholder, never a made-up time
-    if (field == EDGE_SYS_UNIX_TIME)
-        return *num_out = (double)(utc_ms / 1000), EDGE_NUMBER;
-    clock_format(utc_ms / 1000, 0, buf);  // sys_time is UTC on the reference unit
+    if (field == EDGE_SYS_UNIX_TIME)  // local, as sys_time (the user, 2026-10-17; the reference unit's are UTC)
+        return *num_out = (double)(utc_ms / 1000 + (int64_t)tz_hours * 3600), EDGE_NUMBER;
+    clock_format(utc_ms / 1000, tz_hours, buf);
     return *text_out = buf, EDGE_TEXT;
 }
 

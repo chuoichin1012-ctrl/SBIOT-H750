@@ -8,7 +8,7 @@ import {
 import { modelErrors, nodeDefs, polled, slaveDefs } from '../../lib/edgeModel';
 import type { EdgeNode, EdgeSlave } from '../../lib/types';
 import { confirmAction, toast } from '../../components/feedback';
-import { Button, DataTable, Empty, ItemList, Panel } from '../../components/ui';
+import { Button, DataTable, Empty, Panel } from '../../components/ui';
 import { edgeBodyError } from '../../lib/rules';
 import { EditDialog } from './EditDialog';
 
@@ -111,16 +111,22 @@ export function Acquisition(props: { cfg: EdgeConfig; ioAddr: number; problems: 
                 onClick={() => setEditing({ kind: 'slave', index: null })}>Add device</Button>
             </span>
           }>
-          <ItemList items={cfg.slaves} keyOf={(s) => s.name} empty="Add the first device the gateway should read from."
-            render={(s, i) => ({
-              title: s.name,
-              detail: `${sourceLabel(s)}${polled(s) ? `, address ${s.addr}` : s.source === 'virtual' ? `, slave ID ${s.addr}`
-                : s.source === 'io' ? `, slave ID ${ioAddr}` : ''}${s.mapEn ? ` → ${s.mapAddr}` : ''}, ${s.nodes.length} points`,
-              selected: i === sel,
-              onSelect: () => setSel(i),
-              onEdit: () => setEditing({ kind: 'slave', index: i }),
-              onDelete: () => removeSlave(i),
-            })} />
+          <DataTable rows={cfg.slaves} keyOf={(s) => s.name} empty="Add the first device the gateway should read from."
+            selected={sel} onSelect={setSel}
+            onEdit={(i) => setEditing({ kind: 'slave', index: i })} onDelete={removeSlave}
+            columns={[
+              { head: 'Name', cell: (s) => <span class="font-medium">{s.name}</span> },
+              {
+                head: 'Port',
+                cell: (s) => (
+                  <span title={`${sourceLabel(s)}${polled(s) ? `, address ${s.addr}` : s.source === 'virtual' ? `, slave ID ${s.addr}`
+                    : s.source === 'io' ? `, slave ID ${ioAddr}` : ''}${s.mapEn ? ` → ${s.mapAddr}` : ''}`}>
+                    {s.source === 'uart' ? `UART${s.uart}` : s.source === 'eth' ? 'Ethernet' : s.source === 'io' ? 'IO' : 'Calculated'}
+                  </span>
+                ),
+              },
+              { head: 'Points', cell: (s) => s.nodes.length, align: 'right' },
+            ]} />
         </Panel>
 
         <Panel

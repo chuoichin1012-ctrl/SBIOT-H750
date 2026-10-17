@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { MAX_DEVICES, allNodeNames, blankLinkage, blankNode, blankSlave, fromCsv, normalizeSlaves, toCsv } from '../../src/lib/edge.js';
-import { ioAddressClash, linkageDefs, linkageErrors, modelErrors, slaveDefs } from '../../src/lib/edgeModel.js';
+import { ioAddressClash, linkageCondition, linkageDefs, linkageErrors, linkageOutput, modelErrors, slaveDefs } from '../../src/lib/edgeModel.js';
 import type { DeviceInfo, EdgeSlave, Values } from '../../src/lib/types.js';
 import { formErrors } from '../../src/lib/validate.js';
 
@@ -110,4 +110,19 @@ test('a stored Edge model with missing fields is read as the firmware reads it, 
   assert.equal(n.dtype, 'int16');
   assert.equal(normalizeSlaves([{ name: 'x', nodes: [{ name: 'a' }] }])[0].nodes[0].dtype, 'uint16');  // edge_dtype's default
   assert.equal(normalizeSlaves(null as unknown as []).length, 0);
+});
+
+test('a linkage row shows its condition with the thresholds and its output with the action (the user: a table)', () => {
+  const e = { ...blankLinkage([]), point: 't', output: 'DO2', lower: 50, upper: 60, action: 2 };
+  assert.equal(linkageCondition({ ...e, cond: 2 }), '≥ 50');
+  assert.equal(linkageCondition({ ...e, cond: 3 }), '≤ 60');
+  assert.equal(linkageCondition({ ...e, cond: 4 }), '50 – 60');
+  assert.equal(linkageCondition({ ...e, cond: 5 }), 'outside 50 – 60');
+  assert.equal(linkageCondition({ ...e, cond: 6 }), '> 50');
+  assert.equal(linkageCondition({ ...e, cond: 7 }), '< 60');
+  assert.equal(linkageCondition({ ...e, cond: 0 }), 'follows');
+  assert.equal(linkageCondition({ ...e, cond: 1 }), 'opposite');
+  assert.equal(linkageOutput({ ...e, cond: 2 }), 'DO2 · Close (NC)');
+  assert.equal(linkageOutput({ ...e, cond: 0 }), 'DO2');  // follow/opposite: the output mirrors the point
+  assert.equal(linkageOutput({ ...e, cond: 2, output: '' }), '—');
 });

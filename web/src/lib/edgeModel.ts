@@ -254,3 +254,26 @@ export function ioAddressClash(dev: DeviceInfo, slaves: EdgeSlave[], addr: numbe
   const clash = modelErrors(dev, slaves, addr).find((e) => e.includes(`Slave ID ${addr} `));
   return clash ? `Slave ID ${addr} clashes with the Edge model: ${clash}` : null;
 }
+
+/** The linkage table's Condition cell: the comparison with its thresholds. */
+export function linkageCondition(e: LinkageEvent): string {
+  const lo = String(e.lower), hi = String(e.upper);
+  switch (Number(e.cond)) {
+    case 0: return 'follows';
+    case 1: return 'opposite';
+    case 2: return `≥ ${lo}`;
+    case 3: return `≤ ${hi}`;
+    case 4: return `${lo} – ${hi}`;
+    case 5: return `outside ${lo} – ${hi}`;
+    case 6: return `> ${lo}`;
+    case 7: return `< ${hi}`;
+    default: return '';
+  }
+}
+
+/** The linkage table's Output cell: the output and, for a threshold, what it does to it. */
+export function linkageOutput(e: LinkageEvent): string {
+  if (!e.output) return '—';
+  if (isFollow(Number(e.cond))) return e.output;
+  return `${e.output} · ${ACTIONS.find(([v]) => v === Number(e.action))?.[1] ?? ''}`;
+}

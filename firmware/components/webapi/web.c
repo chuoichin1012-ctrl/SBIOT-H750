@@ -62,7 +62,8 @@ typedef struct {
     uint32_t rec;
     // ST_LOG
     int log_phase;
-    uint32_t log_sent;
+    uint32_t log_sent;  // phase 1: RAM lines sent
+    uint32_t log_next;  // phase 0: the sequence number of the next flash line (a pass goes on from it, not the oldest)
     // ST_UPLOAD
     web_ep_t ep;
     size_t expected, got;
@@ -98,14 +99,12 @@ static void finish_stream(slot_t *s)
 typedef struct {
     struct mg_connection *c;
     slot_t *s;
-    uint32_t index;  // lines seen in this pass
+    uint32_t index;  // flash: lines sent in this pass; RAM: lines seen in this pass
 } log_ctx_t;
 
 static bool log_flash_line(const store_log_meta_t *m, const char *line, size_t len, void *ctx)
 {
     log_ctx_t *x = ctx;
-    if (x->index++ < x->s->log_sent)
-        return true;  // sent by an earlier pass
     if (x->c->send.len >= WEB_SEND_HIGH)
         return false;
     char ts[40];
@@ -119,7 +118,8 @@ static bool log_flash_line(const store_log_meta_t *m, const char *line, size_t l
                  (unsigned long)(sec / 60u % 60u), (unsigned long)(sec % 60u));
     }
     mg_http_printf_chunk(x->c, "%s%.*s\n", ts, (int)len, line);
-    x->s->log_sent++;
+    x->s->log_next = m->seq + 1;
+    x->index++;
     return true;
 }
 
@@ -165,10 +165,10 @@ static void pump(struct mg_connection *c, slot_t *s)
             log_ctx_t x = {.c = c, .s = s};
             uint32_t before = s->log_sent;
             if (s->log_phase == 0)
-                store_log_iter(log_flash_line, &x);
+                store_log_iter(s->log_next, log_flash_line, &x);  // x.index: lines sent in this pass
             else
                 syslog_ram_iter(log_ram_line, &x);
-            if (s->log_sent == before) {  // this phase has nothing more
+            if (s->log_phase == 0 ? x.index == 0 : s->log_sent == before) {  // this phase has nothing more
                 if (s->log_phase == 0) {
                     s->log_phase = 1;
                     s->log_sent = 0;
@@ -528,6 +528,7 @@ static void on_message(struct mg_connection *c, slot_t *s, struct mg_http_messag
         s->st = ST_LOG;
         s->log_phase = 0;
         s->log_sent = 0;
+        s->log_next = 0;
         pump(c, s);
         return;
     }

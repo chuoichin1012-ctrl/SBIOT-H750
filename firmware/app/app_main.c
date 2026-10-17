@@ -372,7 +372,7 @@ static void init_task(void *arg)
             SLOG_W("bench", "a warning to keep, boot %lu", (unsigned long)store_boot_count());
             break;
         case 'l':  // bench: the persistent log, the last lines
-            store_log_iter(print_log_line, NULL);
+            store_log_iter(0, print_log_line, NULL);
             break;
         case 'p': {  // bench: save system.hostname = "bench-<uptime ms>" (applies after a restart)
             char text[64], err[160];

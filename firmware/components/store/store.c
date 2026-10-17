@@ -1111,21 +1111,21 @@ static bool batch_cb(fdb_tsl_t tsl, void *arg)
     log_hdr_t h;
     memcpy(&h, b->rec, sizeof h);
     log_line_t *l = &b->lines[b->n++];
-    l->meta = (store_log_meta_t){.wall_ms = h.wall_ms, .boot = h.boot, .uptime_ms = h.uptime_ms};
+    l->meta = (store_log_meta_t){.wall_ms = h.wall_ms, .boot = h.boot, .uptime_ms = h.uptime_ms, .seq = (uint32_t)tsl->time};
     l->len = (uint16_t)(n - sizeof h);
     memcpy(l->text, b->rec + sizeof h, l->len);
     l->text[l->len] = '\0';
     return b->n == LOG_BATCH;  // FlashDB stops when the callback returns true
 }
 
-void store_log_iter(store_log_fn fn, void *ctx)
+void store_log_iter(uint32_t start, store_log_fn fn, void *ctx)
 {
     if (!s_log_ok)
         return;
     log_batch_t *b = malloc(sizeof *b);
     if (!b)
         return;
-    fdb_time_t from = 0;  // sequence numbers start at 1
+    fdb_time_t from = (fdb_time_t)start;  // sequence numbers start at 1
     for (;;) {
         b->n = 0;
         LOCK();

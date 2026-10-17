@@ -112,12 +112,14 @@ typedef struct {
     int64_t wall_ms;     // Unix time in ms, or 0 when the clock was not set
     uint32_t boot;       // boot counter, from 1
     uint32_t uptime_ms;  // since that boot
+    uint32_t seq;        // the line's sequence number: grows line by line, from 1
 } store_log_meta_t;
 
 void store_log_append(const char *line, size_t len);
-/** Calls fn for each stored line, oldest first; return false to stop. The lock is not held during fn. */
+/** Calls fn for each stored line whose sequence number is `from` or above (0: all), oldest first; return false to
+ *  stop. A reader that stopped goes on from the last meta->seq + 1. The lock is not held during fn. */
 typedef bool (*store_log_fn)(const store_log_meta_t *meta, const char *line, size_t len, void *ctx);
-void store_log_iter(store_log_fn fn, void *ctx);
+void store_log_iter(uint32_t from, store_log_fn fn, void *ctx);
 uint32_t store_boot_count(void);
 unsigned store_log_failures(void);  // appends refused (read-only, or a FlashDB error)
 bool store_log_ok(void);            // the log TSDB is mounted

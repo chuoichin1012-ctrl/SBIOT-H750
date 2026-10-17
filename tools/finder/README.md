@@ -33,3 +33,5 @@ dotnet publish Sbiot.Finder -c Release -r win-x64 --self-contained -p:PublishSin
 ```
 
 `out/SbiotFinder.exe` (about 50 MB, compressed) is all you need to ship.
+
+The icon and the header logo are in `Sbiot.Finder/Resources`: `make_icon.py` builds them from `assets/app-icons/sbiot` and from `docs/SBIOT.ai` (page 2, the full-colour logo). Run it again only when the logo changes.

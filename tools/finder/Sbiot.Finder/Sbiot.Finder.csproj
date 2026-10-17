@@ -10,7 +10,12 @@
     <RootNamespace>Sbiot.Finder</RootNamespace>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <ApplicationIcon>Resources/sbiot.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Resources/sbiot.ico" LogicalName="sbiot.ico" />
+    <EmbeddedResource Include="Resources/sbiot-logo.png" LogicalName="sbiot-logo.png" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Sbiot.Finder.Protocol/Sbiot.Finder.Protocol.csproj" />
   </ItemGroup>

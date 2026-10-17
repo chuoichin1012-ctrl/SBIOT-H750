@@ -14,6 +14,7 @@ sealed class NetworkForm : Form
     public NetworkForm(NetSettings n)
     {
         Text = "Network settings";
+        Icon = Brand.AppIcon();
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = MinimizeBox = false;
         StartPosition = FormStartPosition.CenterParent;

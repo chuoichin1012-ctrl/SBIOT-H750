@@ -21,6 +21,12 @@ sealed class MainForm : Form
     public MainForm()
     {
         Text = "SBIOT Finder";
+        Icon = Brand.AppIcon();
+        BackColor = Color.White;
+        search.BackColor = Brand.Blue;  // the main action, in the brand's blue as the Web UI's buttons
+        search.ForeColor = Color.White;
+        search.FlatStyle = FlatStyle.Flat;
+        search.FlatAppearance.BorderColor = Brand.Blue;
         Width = 900;
         Height = 480;
         foreach (var (h, w) in new[] { ("MAC", 130), ("SN", 110), ("IP", 110), ("Hostname", 130), ("Model", 100), ("Firmware", 80) })
@@ -30,6 +36,7 @@ sealed class MainForm : Form
         Controls.Add(list);
         Controls.Add(bar);
         Controls.Add(status);
+        Controls.Add(Brand.Header());  // added last, so docked first: above the toolbar
         adapters = Adapters.List();
         foreach (var (name, addr) in adapters) adapter.Items.Add($"{name} — {addr}");
         if (adapter.Items.Count > 0) adapter.SelectedIndex = 0;

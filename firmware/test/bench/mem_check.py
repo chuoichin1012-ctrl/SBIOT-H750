@@ -308,12 +308,12 @@ def case_b():
     for scope in ('mqtt', 'port1', 'port2'):
         tc.upload(scope, 'ca', tc.pem('ca.pem'))
     PM, P1, P2 = 9450, 9451, 9452
-    mq = mc.mqtt_cfg(host=WIN, port=PM, tls=2, tlsVerify=1, customMode=1, customModePorts=1, retryInterval=3)
+    mq = mc.mqtt_cfg(host=WIN, port=PM, tls=2, tlsVerify=1, retryInterval=3)
     p1 = bc.base(workMode=1, remoteHost=WIN, remotePort=P1, tls=2, tlsVerify=1, reconnectInterval=2, listenPort=23)
     p2 = bc.base(workMode=4, httpHost=WIN, httpPort=P2, httpMethod=0, httpPath='/q?v=', httpHeaders='', httpStripHeaders=True,
                  httpTimeout=10, tls=2, tlsVerify=1, listenPort=24)
     try:
-        ok = mc.post('mqtt', mq) and mc.post('edge', {'enabled': False})
+        ok = mc.post('mqtt', mq) and mc.post('mqttPublish', [mc.topic('mem/b')]) and mc.post('edge', {'enabled': False})
         for name, extra in (('port1', p1), ('port2', p2)):
             _, cur = w.get_json('/api/config/' + name)
             cur.update(extra)
@@ -321,10 +321,10 @@ def case_b():
         _, sysc = w.get_json('/api/config/system')
         sysc.update({'ntp': 0, 'bufferOffline': 1, 'idleRestart': 0})
         ok = mc.post('system', sysc) and ok
-        check(ok and w.restart(), 'set up B: MQTT TLS (custom, bufferOffline), UART1 TLS, UART2 HTTPS; nobody listens yet')
+        check(ok and w.restart(), 'set up B: MQTT TLS (UART1 published, bufferOffline), UART1 TLS, UART2 HTTPS; nobody listens yet')
         time.sleep(5)
         g0 = bench_env.gates('mem B before')
-        # The outbox filled offline: UART2 streams into UART1, whose data MQTT custom mode publishes.
+        # The outbox filled offline: UART2 streams into UART1, whose frames MQTT publishes on mem/b.
         full = False
         for _ in range(6):
             board.listen(22, sends=[(0.3, 'E2 3 20')])
@@ -333,18 +333,21 @@ def case_b():
                 break
         check(full, 'the outbox is full (its "outbox full" log line)')
         e0 = find_erases()
-        t = bc.peer('tlsset', pm=PM, p1=P1, p2=P2, secs=150, cert=tc.WPKI + 'server.pem', key=tc.WPKI + 'server.key')
-        slow = bc.peer('slowget', host=bench_env.GW, port=80, secs=120)
+        t = bc.peer('tlsset', pm=PM, p1=P1, p2=P2, secs=400, cert=tc.WPKI + 'server.pem', key=tc.WPKI + 'server.key')
+        slow = bc.peer('slowget', host=bench_env.GW, port=80, secs=400)
         time.sleep(1)
         bc.send_serial(b'1', port=1)  # UART1's side of the loop: UART2's HTTPS client dials on a frame (Codex r4)
-        mins = []
-        for i in range(30):  # saves through the window, the memory read as it goes
+        mins, e1 = [status()], e0
+        for i in range(800):  # saves through the window until FlashDB erases a sector (GC), the memory read as it goes
             _, sysc = w.get_json('/api/config/system')
             sysc['hostname'] = 'memb-%d' % i
             w.req('POST', '/api/config/system', body=json.dumps(sysc).encode())
-            if i % 5 == 4:
+            if i % 25 == 24:
                 mins.append(status())
-        e1 = find_erases()
+            if i % 50 == 49:
+                e1 = find_erases()
+                if e0 is not None and e1 is not None and e1 > e0:
+                    break
         ev = kill_events(t)
         kill_events(slow)
         iv = handshakes(ev)
@@ -360,6 +363,7 @@ def case_b():
         check(ok_g, 'gates after scenario B: %s' % why_g)
     finally:
         mc.post('mqtt', mc.mqtt_cfg(enabled=0, host=''))
+        mc.post('mqttPublish', [])
         _, sysc = w.get_json('/api/config/system')
         sysc.update({'bufferOffline': 0, 'hostname': 'saved-name'})
         w.req('POST', '/api/config/system', body=json.dumps(sysc).encode())

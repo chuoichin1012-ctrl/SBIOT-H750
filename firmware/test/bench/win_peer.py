@@ -12,7 +12,7 @@ MODE tcpserver  port, secs, delay_ms (listen only after), send_hex + send_ms (to
      mcast      group, port, iface, send_hex, send_ms
      manyclients host, port, n, secs: n TCP connections held (Plan 11b)
      slowget    host, port, secs: GET / of the UI read at 1 KB/s (Plan 11b)
-     tlsset     pm, p1, p2, secs, cert, key: three TLS listeners in one process, one clock (Plan 11b)
+     tlsset     pm, p1, p2, secs, cert, key[, hold]: three TLS listeners in one process, one clock (Plan 11b)
      disc       iface, port (48600), secs, send (the packet, hex): broadcast from iface, one event per reply (Plan 12)
      stuckpair  host, port, secs: two clients of a TCP server, one never reading, one logging what it got
      tlsserver  port, secs, cert, key (Windows paths), clientca (require a client certificate), send_hex +
@@ -469,12 +469,22 @@ def slowget(args):
 def tlsset(args):
     """pm, p1, p2, secs, cert, key: three TLS listeners in one process, so their times share one clock (Plan 11b,
     scenario B; Codex): pm (MQTT) completes the handshake and never answers (no CONNACK), p1 (UART1's TLS client)
-    holds the session, p2 answers HTTPS "OK". Events accept/hs/hsfail with the port and t."""
+    holds the session, p2 answers HTTPS "OK". Events accept/hs/hsfail with the port and t. The handshakes wait until
+    each port has a connection (at most `hold` s; the gateway's handshake timeout is 10 s), then run at once: so the
+    gateway's three handshakes are in flight together, whatever its retry times."""
     ctx = tls_ctx(args, [])
     secs = float(args.get('secs', 60))
+    hold = float(args.get('hold', 6))
+    seen = set()
+    all_in = threading.Event()
 
     def conn(c, port, kind):
         try:
+            with LOCK:
+                seen.add(port)
+                if len(seen) == 3:
+                    all_in.set()
+            all_in.wait(hold)
             t = ctx.wrap_socket(c, server_side=True)
             out(ev='hs', port=port)
             t.settimeout(1)

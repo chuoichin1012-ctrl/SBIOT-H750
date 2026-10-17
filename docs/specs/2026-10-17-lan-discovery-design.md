@@ -37,9 +37,9 @@ Ngày 2026-10-17. Người dùng yêu cầu chức năng giống *Windows config
     - `mac`: 17 ký tự, dạng `xx:xx:xx:xx:xx:xx`, hex thường;
     - `nonce`: 32 ký tự hex thường;
     - `hmac`: 64 ký tự hex thường;
-    - `user`: 1–16 byte, chỉ gồm ký tự ASCII in được (0x20–0x7E).
+    - `user`: 1–16 byte UTF-8 hợp lệ, không có ký tự điều khiển (dưới 0x20, hay 0x7F). Đây là giới hạn của `system.username`; Web UI cũng nhận tên tiếng Việt như `kỹthuật`.
 
-  Do đó chuỗi đem ký (§2.3) không thể chứa ký tự NUL, dấu `|` lạ hay chuỗi dài quá cỡ. Với các dạng cố định này, dùng dấu phân cách là đủ; không cần chuẩn hóa JSON.
+  Trong chuỗi đem ký (§2.3), `user` được viết bằng hex thường của các byte UTF-8 của nó. Mọi phần còn lại có dạng cố định, không chứa `|`. Vì vậy dùng dấu phân cách là đủ, không cần chuẩn hóa JSON.
 
 ### 2.2 `search` (không xác thực)
 
@@ -75,15 +75,16 @@ Mỗi gateway chờ ngẫu nhiên 0–200 ms, rồi trả lời:
 - `restart` và `factory` có cùng các trường, chỉ không có `net`.
 - `hmac` = HMAC-SHA256 (RFC 2104) với khóa là mật khẩu admin (`system.password`, các byte UTF-8 của nó), viết thành 64 ký tự hex thường. Chuỗi đem ký, giống nhau từng byte ở C và C#:
   ```
-  SBIOT-DISC1|<user>|<nonce>|<id>|<op>|<mac>|<tham số>
+  SBIOT-DISC1|<hex(user)>|<nonce>|<id>|<op>|<mac>|<tham số>
   ```
+  - `hex(user)`: hex thường của các byte UTF-8 của username, ví dụ `admin` thành `61646d696e`;
   - với `set`, `tham số` là `ipMode,ip,netmask,gateway,dnsMode,dns1,dns2` theo đúng thứ tự: số viết thập phân, chuỗi viết nguyên văn;
   - với `restart` và `factory`, `tham số` rỗng; chuỗi vẫn kết thúc bằng dấu `|`.
 - **Gateway xử lý theo thứ tự:**
   1. `mac` không phải của mình: bỏ qua, im lặng.
   2. Đang trong thời gian khóa: bỏ qua, im lặng.
-  3. Chưa có nonce hợp lệ (RNG hỏng): `ack` với `"err":"rng"`.
-  4. **Xác thực.** Lần sai khi `user` khác `system.username`, `nonce` khác nonce hiện hành hoặc nonce đã hết hạn, hay `hmac` sai. So sánh `hmac` trong thời gian hằng.
+  3. Lần tạo nonce gần nhất thất bại (RNG hỏng): `ack` với `"err":"rng"`. Chỉ trường hợp này nhận `rng`.
+  4. **Xác thực.** Lần sai khi `user` khác `system.username`, không có nonce hiện hành (đã hủy hay đã hết hạn), `nonce` khác nonce hiện hành, hay `hmac` sai. So sánh `hmac` trong thời gian hằng.
      - Lần sai: tăng bộ đếm sai; trả `ack` với `"err":"auth"`. Sai 5 lần liền thì khóa 30 s.
      - Lần đúng: xóa bộ đếm sai, rồi **hủy nonce ngay** (§2.4), trước mọi việc phía sau. Kể cả khi bước 5 hay 6 thất bại, nonce đó không dùng lại được.
   5. `set` có `net` thiếu trường, sai kiểu, IPv4 sai cú pháp, hay `ipMode`/`dnsMode` ngoài {0, 1}: `ack` với `"err":"bad"`. Gateway chỉ kiểm cú pháp. Tool kiểm phần còn lại (§3), như quan hệ giữa Web UI và gateway (spec §9.1).
@@ -98,7 +99,7 @@ Mỗi gateway chờ ngẫu nhiên 0–200 ms, rồi trả lời:
   - khi `ok` là false thì có thêm `err`, là một trong `auth`, `bad`, `store`, `rng`;
   - `ack` sau khi xác thực đúng (kết quả ok, `bad` hay `store`) được ký bằng cùng khóa, theo chuỗi:
     ```
-    SBIOT-DISC1-ACK|<user>|<nonce của lệnh>|<id>|<op>|<mac>|<ok|err>
+    SBIOT-DISC1-ACK|<hex(user)>|<nonce của lệnh>|<id>|<op>|<mac>|<ok|err>
     ```
     trong đó phần cuối là `ok` hoặc mã `err`;
   - `ack` của `auth` và `rng` không có `hmac`, vì lúc đó chưa có khóa chung đã kiểm. Tool chỉ coi chúng là gợi ý ("có thể sai mật khẩu");
@@ -111,7 +112,7 @@ Mỗi gateway chờ ngẫu nhiên 0–200 ms, rồi trả lời:
   - lúc task `disc` khởi động;
   - khi một gói `search` tới mà không có nonce hiện hành, hoặc nonce đó đã hết hạn.
 - Hạn dùng của nonce là 60 s, đo bằng tick của FreeRTOS (đơn điệu). Khởi động lại thì nonce mới, nên lệnh ghi lại từ lần boot trước không còn dùng được.
-- Nonce bị hủy khi một lệnh xác thực đúng (bước 4 của §2.3). Hai tool cùng cầm một nonce thì lệnh tới trước thắng; tool kia nhận `auth`, rồi search lại để lấy nonce mới.
+- Nonce bị hủy khi một lệnh xác thực đúng (bước 4 của §2.3). Lệnh mang nonce đã hủy hay đã hết hạn nhận `auth`, không phải `rng`. Hai tool cùng cầm một nonce thì lệnh tới trước thắng; tool kia nhận `auth`, rồi search lại để lấy nonce mới.
 - `board_rng` báo lỗi thì không có nonce hiện hành. Buffer viết dở bị bỏ, không có nonce dự phòng (số 0 hay số đoán được). Mọi lệnh có xác thực nhận `ack` với `err:"rng"`, cho tới lần tạo nonce thành công.
 
 ### 2.5 Trên board
@@ -171,7 +172,7 @@ Mỗi gateway chờ ngẫu nhiên 0–200 ms, rồi trả lời:
 
 ## 4. Kiểm thử
 
-- **Vector dùng chung:** `stm32/firmware/test/host/disc_vectors.json`. File gồm khóa, user, nonce, id, op, MAC, tham số, chuỗi đem ký và HMAC mong đợi, cho cả lệnh lẫn `ack`, cùng vài gói mẫu đúng và sai. Cả `test_disc_core` (C) lẫn `Sbiot.Finder.Tests` (C#) đều đọc file này.
+- **Vector dùng chung:** `stm32/firmware/test/host/disc_vectors.json`. File gồm khóa, user, nonce, id, op, MAC, tham số, chuỗi đem ký và HMAC mong đợi, cho cả lệnh lẫn `ack`, cùng vài gói mẫu đúng và sai. Có ít nhất một username UTF-8 không phải ASCII (`kỹthuật`) và một mật khẩu UTF-8. Cả `test_disc_core` (C) lẫn `Sbiot.Finder.Tests` (C#) đều đọc file này.
 - **Host `test_disc_core`:**
   - kiểm gói: chữ ký, phiên bản, kích thước, kiểu gốc, key trùng, dạng của từng trường;
   - MAC lạ;
@@ -181,7 +182,10 @@ Mỗi gateway chờ ngẫu nhiên 0–200 ms, rồi trả lời:
   - user sai, HMAC sai; khóa sau 5 lần sai; mở lại sau 30 s;
   - lệnh xác thực đúng nhưng `net` sai: nhận `bad`, và nonce đã bị hủy;
   - dựng `found` và `ack`: JSON hợp lệ, có đủ trường, `hmac` của `ack` khớp vector.
-- **Host `test_store`:** `store_patch` giữ các member khác, kể cả key lạ; lỗi parse thì không ghi; một lần `store_set_text` xen giữa không bị mất (test có hook giữa bước đọc và bước ghi).
+- **Host `test_store`:**
+  - `store_patch` giữ các member khác, kể cả key lạ;
+  - lỗi parse thì không ghi gì;
+  - khóa: khóa giả của host ghi lại thứ tự lock, đọc, ghi, unlock. Test kiểm rằng `store_patch` đọc và ghi trong **một** lần giữ khóa, không unlock ở giữa. Đây là điều kiện để một lần lưu từ task Web phải chờ. Test chỉ chạy một luồng, nên không cần thread.
 - **C#:** chuỗi ký và HMAC khớp vector; parse `found` và `ack`; từ chối `ack` có `hmac` sai; kiểm cấu hình mạng phía tool; ghép câu trả lời theo `id`.
 - **Web UI:** `npm run test:unit` có quy tắc chặn cổng 48600.
 - **Bench `disc_check.py`, trên board:**

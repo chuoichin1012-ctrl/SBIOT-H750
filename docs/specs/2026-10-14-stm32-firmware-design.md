@@ -962,7 +962,8 @@ Chép từ `src/` ở gốc, rồi sửa trực tiếp:
 
 - **Một đồng hồ duy nhất** (người dùng, 2026-10-17): `sysmgr_now_ms()` (`clock_device_ms`). Đã có giờ thật (NTP, hoặc `POST /api/time`) thì là giờ thật. Chưa có thì là đồng hồ đọc **2020-01-01 00:00:00 giờ địa phương lúc bật nguồn, cộng uptime**. NTP là tùy chọn; NTP bật mà không lấy được giờ (không có Internet) thì cũng như chưa có giờ.
 - **Lịch hỏi NTP** (người dùng, 2026-10-17):
-  - Hỏi ngay lúc khởi động. Mỗi khi default route chuyển sang một link (DNS đã đặt) mà đồng hồ chưa có giờ thật thì hỏi lại ngay (`sysmgr_ntp_kick`). Trước đây lần hỏi đầu chạy trước khi có mạng và tốn 30 s.
+  - SNTP khởi động **một lần**, lúc route đầu tiên lên (DNS đã đặt, `sysmgr_ntp_kick`), và hỏi ngay. Trước đây SNTP chạy từ lúc boot, lần hỏi đầu đi trước khi có mạng và tốn 30 s.
+  - Không bao giờ khởi động lại: các lần đổi route sau đó theo lịch hỏi lại và lịch cập nhật của chính SNTP.
   - Một request không được trả lời thì bỏ sau 3 s. Hỏi lại cách nhau ít nhất 15 s (RFC 4330 §10; server giới hạn tần suất các client hỏi dày hơn), nhân đôi, tối đa 60 s.
   - Có giờ rồi thì cập nhật mỗi giờ.
   - Chạy trên đồng hồ này:

@@ -50,6 +50,16 @@ def has(lines, prefix):
     return any(line.startswith(prefix) for line in texts(lines))
 
 
+def console_ready(secs=40):
+    """Waits until the app's console answers (it boots for several seconds since Plan 10): an upload sent
+    before that loses its command, and its bytes then run as console commands."""
+    end = time.time() + secs
+    while time.time() < end:
+        if report():
+            return True
+    return False
+
+
 def report():
     """The app's 'o' answer: {'qspi': 'v0.4.1 size N', 'staging': ..., 'factory': ...}."""
     out = {}
@@ -148,6 +158,7 @@ def main():
     # PowerShell needs to open the port. Spaced 1.5-2.7 s (sleep + the CLI's own latency), shorter
     # than the 3.7 s install, so every reset cuts one.
     img = image(build, '0.4.2', 300 * 1024)
+    console_ready()
     lines = board.upload(img, upload_s(img), reset=False)
     check('ota: done 0' in texts(lines), 'upload v0.4.2 (300 KB), not booted: ota: done 0')
     random.seed(4)
@@ -167,6 +178,7 @@ def main():
     check(report().get('qspi', '').startswith('v0.4.2 '), 'and v0.4.2 runs')
 
     # 6a. An upload cut off after two blocks: nothing installed
+    console_ready()
     lines = board.upload(image(build, '0.4.3'), 40, send=8192)  # the app waits 30 s for a block (Plan 11a)
     check('ota: timeout at 8192' in texts(lines), 'upload cut off after 8 KB: the app times out')
     lines = board.listen(4, during=board.hard_reset)
@@ -175,6 +187,7 @@ def main():
 
     # 6b. SPI4 init fails with a new image in staging: SPI4 is not used
     img = image(build, '0.4.4')
+    console_ready()
     lines = board.upload(img, upload_s(img), reset=False)
     r = report()
     check('ota: done 0' in texts(lines) and r.get('staging', '').startswith('v0.4.4 '), 'v0.4.4 staged, not booted')

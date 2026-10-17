@@ -42,6 +42,18 @@ test('empty device and point names are refused', () => {
   assert.ok(modelErrors(dev, [{ ...d, nodes: [{ ...d.nodes[0], name: '' }] }], IO_ADDR).length > 0);
 });
 
+test('an empty or blank device address is refused', () => {
+  assert.ok(modelErrors(dev, [device(1, '')], IO_ADDR).length > 0);
+  assert.ok(modelErrors(dev, [device(1, '  ')], IO_ADDR).length > 0);
+});
+
+test('a point name used twice is refused, in one device and across two', () => {
+  const d1 = device(1, '1'), d2 = device(2, '2');
+  const twin = { ...d1.nodes[0], reg: 5 };
+  assert.ok(modelErrors(dev, [{ ...d1, nodes: [d1.nodes[0], twin] }], IO_ADDR).length > 0);
+  assert.ok(modelErrors(dev, [d1, { ...d2, nodes: [{ ...d2.nodes[0], name: d1.nodes[0].name }] }], IO_ADDR).length > 0);
+});
+
 test(`more than ${MAX_DEVICES} devices are refused at Save and on import`, () => {
   const many = (n: number) => Array.from({ length: n }, (_, i) => device(i + 1, String((i % 200) + 1)));
   assert.equal(modelErrors(dev, many(MAX_DEVICES), IO_ADDR).join(' | '), '');

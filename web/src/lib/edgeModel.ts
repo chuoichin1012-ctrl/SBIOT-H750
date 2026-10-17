@@ -57,7 +57,7 @@ export function slaveDefs(dev: DeviceInfo, s: EdgeSlave, others: EdgeSlave[], io
     },
     { id: 'protocol', label: 'Protocol', kind: 'select', options: [['modbus', 'Modbus'], ['dlt645', 'DL/T 645']], show: () => s.source === 'uart' },
     {
-      id: 'addr', label: s.source === 'virtual' || s.source === 'io' ? 'Modbus slave ID' : 'Device address', kind: 'text',
+      id: 'addr', label: s.source === 'virtual' || s.source === 'io' ? 'Modbus slave ID' : 'Device address', kind: 'text', required: true,
       show: () => p() || s.source === 'virtual' || s.source === 'io',
       // The built-in IO answers on the IO page's address: shown here, set there.
       disabled: () => s.source === 'io',
@@ -187,12 +187,14 @@ export function modelErrors(dev: DeviceInfo, slaves: EdgeSlave[], ioAddr: number
   if (slaves.length > MAX_DEVICES) out.push(`${slaves.length} devices; the limit is ${MAX_DEVICES}.`);
   if (slaves.filter((s) => s.source === 'eth').length > MAX_ETH) out.push(`At most ${MAX_ETH} Modbus TCP devices.`);
   const names = allNodeNames(slaves);
+  let at = 0;  // this point's place in `names`: only it is left out, so a name used twice is caught
   slaves.forEach((s, i) => {
     const sErr = importErrors(slaveDefs(dev, s, slaves.filter((_, k) => k !== i), ioAddr), s as unknown as Values);
     for (const [id, e] of Object.entries(sErr)) out.push(`${s.name}: ${id}: ${e}`);
     s.nodes.forEach((n, j) => {
       const siblings = s.nodes.filter((_, k) => k !== j);
-      const nErr = importErrors(nodeDefs(dev, s, n, names.filter((x) => x !== n.name), siblings), n as unknown as Values);
+      const self = at++;
+      const nErr = importErrors(nodeDefs(dev, s, n, names.filter((_, k) => k !== self), siblings), n as unknown as Values);
       for (const [id, e] of Object.entries(nErr)) out.push(`${s.name}/${n.name}: ${id}: ${e}`);
     });
   });

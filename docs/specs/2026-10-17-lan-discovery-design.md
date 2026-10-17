@@ -33,6 +33,7 @@ Ngày 2026-10-17. Người dùng yêu cầu chức năng giống *Windows config
 - **Gateway kiểm gói trước mọi việc khác.** Gói bị bỏ qua, không trả lời, khi:
   - không phải JSON object, hoặc dài quá 512 byte;
   - thiếu chữ ký, hoặc sai phiên bản;
+  - có key trùng nhau ở tầng gốc hay trong `net` (ví dụ hai `mac` hay hai `ip`), vì khi đó không rõ gateway nào hay giá trị nào được chọn;
   - `op` lạ, hoặc là `found`/`ack` (gói của gateway khác);
   - `id` sai dạng;
   - `mac` có mặt nhưng sai dạng. Dạng đúng gồm 17 ký tự `xx:xx:xx:xx:xx:xx`, hex thường.
@@ -140,7 +141,7 @@ Mỗi gateway chờ ngẫu nhiên 0–200 ms (`board_rand32`), để các câu t
 
 - **Gói mẫu dùng chung:** `stm32/firmware/test/host/disc_vectors.json`, gồm các gói đúng và sai cùng kết quả mong đợi. Cả `test_disc_core` (C) lẫn `Sbiot.Finder.Tests` (C#) đều đọc file này, để hai bên hiểu format giống nhau.
 - **Host `test_disc_core`:**
-  - kiểm gói: chữ ký, phiên bản, kích thước, kiểu gốc, `op` lạ, `id` và `mac` sai dạng;
+  - kiểm gói: chữ ký, phiên bản, kích thước, kiểu gốc, key trùng ở tầng gốc và trong `net`, `op` lạ, `id` và `mac` sai dạng;
   - lệnh thiếu `mac`, hay `mac` lạ: im lặng;
   - `set` với `net` thiếu trường, sai kiểu, IPv4 sai, hay mode ngoài {0, 1}: `bad`;
   - dựng `found` và `ack`: JSON hợp lệ, có đủ trường.

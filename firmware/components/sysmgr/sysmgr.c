@@ -51,21 +51,11 @@ int64_t sysmgr_utc_ms(void)
 
 int sysmgr_timezone(void) { return s_tz; }
 
-void sysmgr_time_str(char out[20])
-{
-    int64_t ms = sysmgr_utc_ms();
-    if (!ms) {
-        out[0] = '\0';
-        return;
-    }
-    clock_format(ms / 1000, s_tz, out);
-}
+int64_t sysmgr_now_ms(void) { return clock_device_ms(sysmgr_utc_ms(), (uint64_t)now_us() / 1000u, s_tz); }
 
 void sysmgr_display_time(char out[20])
 {
-    sysmgr_time_str(out);
-    if (!out[0])
-        clock_boot_format(sysmgr_uptime_s(), out);
+    clock_format(sysmgr_now_ms() / 1000, s_tz, out);
 }
 
 void sysmgr_format_wall(int64_t utc_ms, char out[20])
@@ -93,10 +83,14 @@ void sysmgr_sntp_set(uint32_t sec, uint32_t us)
         SLOG_I("sys", "clock set by NTP");
 }
 
-void sysmgr_start(const cJSON *system)
+void sysmgr_set_zone(const cJSON *system)
 {
     const cJSON *tz = cJSON_GetObjectItemCaseSensitive(system, "timezone");
     s_tz = cJSON_IsNumber(tz) && tz->valueint >= -12 && tz->valueint <= 12 ? tz->valueint : 0;
+}
+
+void sysmgr_start(const cJSON *system)
+{
     const cJSON *ntp = cJSON_GetObjectItemCaseSensitive(system, "ntp");
     const cJSON *srv = cJSON_GetObjectItemCaseSensitive(system, "ntpServer");
     if (cJSON_IsNumber(ntp) && ntp->valueint == 1 && cJSON_IsString(srv) && srv->valuestring[0]) {
@@ -108,7 +102,7 @@ void sysmgr_start(const cJSON *system)
         UNLOCK_TCPIP_CORE();
         blog("sys: NTP from %s, UTC%+d\r\n", s_ntp_server, s_tz);
     } else {
-        blog("sys: no NTP, UTC%+d; the clock waits for POST /api/time\r\n", s_tz);
+        blog("sys: no NTP, UTC%+d; the device clock runs from 2020-01-01 00:00 until POST /api/time\r\n", s_tz);
     }
 }
 

@@ -93,6 +93,13 @@ void clock_format(int64_t utc, int tz_hours, char out[20])
     snprintf(out, 20, "%04d-%02d-%02d %02d:%02d:%02d", c.year, c.mon, c.day, c.hour, c.min, c.sec);
 }
 
+int64_t clock_device_ms(int64_t real_ms, uint64_t uptime_ms, int tz_hours)
+{
+    if (real_ms > 0)
+        return real_ms;
+    return (CLOCK_BOOT_EPOCH - (int64_t)tz_hours * 3600) * 1000 + (int64_t)uptime_ms;
+}
+
 void clock_boot_format(uint32_t uptime_s, char out[20]) { clock_format(CLOCK_BOOT_EPOCH + (int64_t)uptime_s, 0, out); }
 
 bool clock_plausible(int64_t utc)

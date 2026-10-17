@@ -93,8 +93,33 @@ static void test_boot_display(void)
     CHECK(!clock_parse("2020-01-01 00:00:00", &c), "the display time cannot be set back in (CLOCK_MIN_YEAR)");
 }
 
+// The one device clock (the user, 2026-10-17): the real time once set, else 2020-01-01 00:00:00 local plus the
+// uptime, in every zone; sys_time (UTC) and the display (local) are two views of it.
+static void test_device_clock(void)
+{
+    char out[20];
+    for (int tz = -12; tz <= 12; tz += 6) {
+        int64_t ms = clock_device_ms(0, 0, tz);
+        clock_format(ms / 1000, tz, out);
+        CHECK(!strcmp(out, "2020-01-01 00:00:00"), "no real time, UTC%+d: local 2020-01-01 00:00:00 at power-on (%s)", tz, out);
+        ms = clock_device_ms(0, 3725500u, tz);
+        clock_format(ms / 1000, tz, out);
+        CHECK(!strcmp(out, "2020-01-01 01:02:05") && ms % 1000 == 500, "plus the uptime, to the ms (%s)", out);
+    }
+    clock_format(clock_device_ms(0, 0, 7) / 1000, 0, out);
+    CHECK(!strcmp(out, "2019-12-31 17:00:00"), "UTC+7: the same instant in UTC (sys_time) is 2019-12-31 17:00:00 (%s)", out);
+    clock_boot_format(3725, out);
+    char dev[20];
+    clock_format(clock_device_ms(0, 3725000u, 7) / 1000, 7, dev);
+    CHECK(!strcmp(out, dev), "the display and the device clock agree (%s, %s)", out, dev);
+    int64_t real = 1792224005123LL;
+    CHECK(clock_device_ms(real, 3725000u, 7) == real, "a real time passes through");
+    CHECK(clock_device_ms(0, 50ull * 86400 * 1000, 0) == (CLOCK_BOOT_EPOCH + 50ll * 86400) * 1000, "past the 32-bit ms wrap");
+}
+
 int main(void)
 {
+    test_device_clock();
     test_boot_display();
     test_parse();
     test_unix();

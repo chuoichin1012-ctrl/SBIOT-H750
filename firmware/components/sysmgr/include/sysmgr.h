@@ -7,17 +7,20 @@
 #include <stdint.h>
 #include "cJSON.h"
 
-/** Reads ntp, ntpServer and timezone from `system` once (spec §9.1), starts SNTP when ntp is 1. */
+/** Reads system.timezone once (spec §9.1): init calls it before anything reads the clock (IO, Edge; Codex). */
+void sysmgr_set_zone(const cJSON *system);
+/** Reads ntp and ntpServer from `system` once (spec §9.1), starts SNTP when ntp is 1. */
 void sysmgr_start(const cJSON *system);
 bool sysmgr_clock_set(void);
 /** system.timezone in whole hours (-12..12), as read by sysmgr_start. */
 int sysmgr_timezone(void);
-/** Unix time in ms, 0 while the clock is not set. */
+/** THE device clock, in Unix ms (clock_device_ms): the real time once set, else 2020-01-01 00:00:00 local plus
+ *  the uptime. Edge (sys_time, scheduled reports) and the IO timers read it (the user, 2026-10-17: one source). */
+int64_t sysmgr_now_ms(void);
+/** The device clock when it is real, else 0: only for what a 2020 date would break (TLS and certificate dates)
+ *  and for the log's wall time. */
 int64_t sysmgr_utc_ms(void);
-/** Local "YYYY-MM-DD hh:mm:ss", or "" while the clock is not set (out holds 20 bytes). */
-void sysmgr_time_str(char out[20]);
-/** What the UI and the console show: the local time, or 2020-01-01 00:00:00 plus the uptime while the
- * clock is not set (Plan 08b, display only; out holds 20 bytes). */
+/** What the UI and the console show: the device clock as local time (out holds 20 bytes). */
 void sysmgr_display_time(char out[20]);
 /** A Unix time in ms as local "YYYY-MM-DD hh:mm:ss" in the configured zone (out holds 20 bytes). */
 void sysmgr_format_wall(int64_t utc_ms, char out[20]);

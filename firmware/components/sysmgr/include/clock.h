@@ -22,8 +22,14 @@ int64_t clock_local_to_utc(const civil_t *local, int tz_hours);
 /** UTC seconds as local "YYYY-MM-DD hh:mm:ss" in zone tz_hours (out holds 20 bytes). */
 void clock_format(int64_t utc, int tz_hours, char out[20]);
 #define CLOCK_BOOT_EPOCH 1577836800  // 2020-01-01 00:00:00 UTC
-/** The display while the clock is not set (Plan 08b): 2020-01-01 00:00:00 plus the uptime, no zone.
- * Display only: nothing that depends on the clock ever reads it. */
+/** The display while the clock is not set (Plan 08b): 2020-01-01 00:00:00 plus the uptime, no zone. */
 void clock_boot_format(uint32_t uptime_s, char out[20]);
+/**
+ * THE device clock (the user, 2026-10-17: one time source), in Unix ms: the real time once set (real_ms > 0),
+ * else the clock that reads 2020-01-01 00:00:00 local, in zone tz_hours, at power-on plus the uptime: what the
+ * display shows. Edge's sys_time and schedule, and the IO timers, run on it; TLS and certificate dates, and the
+ * log's wall time, take only a real time (sysmgr_utc_ms).
+ */
+int64_t clock_device_ms(int64_t real_ms, uint64_t uptime_ms, int tz_hours);
 /** True for a time inside CLOCK_MIN_YEAR..CLOCK_MAX_YEAR (UTC): what SNTP may set. */
 bool clock_plausible(int64_t utc);

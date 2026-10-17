@@ -197,9 +197,9 @@ $(BUILD)/test_serial_frame: test_serial_frame.c ../../components/serial/serial_f
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -I../../components/serial/include $^ -o $@
 
-$(BUILD)/test_io_core: test_io_core.c ../../components/iomgr/io_core.c $(CJSON)/cJSON.c
+$(BUILD)/test_io_core: test_io_core.c ../../components/iomgr/io_core.c ../../components/sysmgr/clock.c $(CJSON)/cJSON.c
 	mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -I../../components/iomgr/include $^ -o $@
+	$(CC) $(CFLAGS) -I../../components/iomgr/include -I../../components/sysmgr/include $^ -o $@
 
 $(BUILD)/test_adc_core: test_adc_core.c ../../components/iomgr/adc_core.c ../../components/board/crc32.c
 	mkdir -p $(BUILD)

@@ -360,6 +360,43 @@ static void test_schedule(void)
     CHECK(edge_schedule_due(at("2026-10-17 07:30:00", 7), 7, 3, 7, 30, &last), "and again the next day");
 }
 
+// The one device clock (the user, 2026-10-17): edge_rt passes sysmgr_now_ms(), so with no real time (NTP off,
+// or on and never answered) scheduled reports run on 2020-01-01 00:00:00 local plus the uptime, and sys_time
+// carries that clock in UTC (Codex: two views of one clock).
+static void test_device_clock(void)
+{
+    const int tz = 7;
+    int64_t last = -1;
+#define DEV(up_s) (clock_device_ms(0, (uint64_t)(up_s) * 1000, tz) / 1000)
+    CHECK(edge_schedule_due(DEV(10), tz, 0, 0, 0, &last), "hourly: due in the first minute after power-on (00:00 of the device clock)");
+    CHECK(!edge_schedule_due(DEV(50), tz, 0, 0, 0, &last), "and once in that minute");
+    CHECK(edge_schedule_due(DEV(3600), tz, 0, 0, 0, &last), "then an hour of uptime later");
+    last = -1;
+    int n = 0;
+    for (int up = 0; up < 600; up += 20)
+        n += edge_schedule_due(DEV(up), tz, 2, 0, 0, &last);
+    CHECK(n == 10, "every minute: once in each of 10 minutes of uptime (%d)", n);
+    last = -1;
+    CHECK(!edge_schedule_due(DEV(7 * 3600), tz, 3, 8, 0, &last), "daily 08:00: not at 7 h of uptime");
+    CHECK(edge_schedule_due(DEV(8 * 3600 + 30), tz, 3, 8, 0, &last), "but at 8 h");
+    // The real clock arrives in a minute that matches: a report then too (the epoch minutes differ, Codex r1);
+    // repeated checks of that minute stay quiet.
+    last = -1;
+    CHECK(edge_schedule_due(DEV(30), tz, 2, 0, 0, &last), "every minute on the device clock");
+    int64_t real = at("2026-10-16 10:17:20", tz);
+    CHECK(edge_schedule_due(clock_device_ms(real * 1000, 40000, tz) / 1000, tz, 2, 0, 0, &last), "the real clock arrives: due in its matching minute");
+    CHECK(!edge_schedule_due(clock_device_ms((real + 30) * 1000, 70000, tz) / 1000, tz, 2, 0, 0, &last), "and once in that minute");
+#undef DEV
+    double num;
+    const char *text = NULL;
+    char buf[20];
+    int64_t ms = clock_device_ms(0, 0, tz);
+    CHECK(edge_sys_value(EDGE_SYS_TIME, ms, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_TEXT && !strcmp(text, "2019-12-31 17:00:00"),
+          "sys_time at power-on, UTC+7, no real time: 2019-12-31 17:00:00 (UTC), the display's 2020-01-01 00:00:00");
+    CHECK(edge_sys_value(EDGE_SYS_UNIX_TIME, ms, "SN", "MAC", "1.0", &num, &text, buf) == EDGE_NUMBER && num == (double)(ms / 1000),
+          "sys_unix_time: its seconds");
+}
+
 static void test_sys(void)
 {
     double num;
@@ -617,6 +654,7 @@ int main(void)
     test_tcp_take();
     test_link();
     test_schedule();
+    test_device_clock();
     test_sys();
     test_reserve();
     test_plan_batches();

@@ -29,8 +29,13 @@ export function listenClash(n: number, port: Obj, other: Obj | null, system: Obj
 /** SBIOT Finder's UDP port (Plan 12): the gateway's `disc` task holds it, so no UART may bind it locally. */
 export const DISC_PORT = 48600;
 
+/** The port a UART binds locally: localPort, or for a multicast UDP client (workMode 0, socketMode 4) without one, its
+ *  remotePort, as bridge.c's udp() does (Codex code review r1). */
+const localOf = (p: Obj) =>
+  Number(p.workMode) === 0 && Number(p.socketMode) === 4 && !Number(p.localPort) ? Number(p.remotePort) : Number(p.localPort);
+
 export function discPortClash(port: Obj): string | null {
-  return Number(port.localPort) === DISC_PORT ? `UDP port ${DISC_PORT} is reserved for SBIOT Finder: choose another local port.` : null;
+  return localOf(port) === DISC_PORT ? `UDP port ${DISC_PORT} is reserved for SBIOT Finder: choose another local port.` : null;
 }
 
 /** The System page: a UART that listens on the web's or the WebSocket's port, as each field's error. */

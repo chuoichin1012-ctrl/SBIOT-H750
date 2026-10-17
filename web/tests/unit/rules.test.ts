@@ -1,7 +1,7 @@
 // Unit tests for src/lib/rules.ts (Plan 09b T4): npm run test:unit (tsc to CommonJS, then node --test).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { EDGE_BODY_MAX, REPORT_MAX, body, edgeBodyError, listenClash, systemPortClash, templateError26k, templateSize } from '../../src/lib/rules.js';
+import { EDGE_BODY_MAX, REPORT_MAX, body, discPortClash, edgeBodyError, listenClash, systemPortClash, templateError26k, templateSize } from '../../src/lib/rules.js';
 import { reportModeError, templateError } from '../../src/lib/edge.js';
 import { convertData, fieldError } from '../../src/lib/validate.js';
 
@@ -119,4 +119,10 @@ test('reporting only on change is allowed when a point reports on change (Plan 1
   assert.match(reportModeError(v, false) ?? '', /periodic or scheduled/);
   assert.equal(reportModeError(v, true), null);
   assert.equal(reportModeError({ ...v, periodic: true }, false), null);
+});
+
+test('the local port 48600 is SBIOT Finder\'s', () => {
+  assert.equal(discPortClash({ workMode: 1, localPort: 48600 }), 'UDP port 48600 is reserved for SBIOT Finder: choose another local port.');
+  assert.equal(discPortClash({ workMode: 1, localPort: 4000 }), null);
+  assert.equal(discPortClash({ workMode: 3, listenPort: 48600, localPort: 0 }), null);
 });

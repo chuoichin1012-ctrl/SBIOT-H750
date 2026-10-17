@@ -2,7 +2,7 @@ import { useMemo } from 'preact/hooks';
 import * as api from '../lib/api';
 import { useDevice } from '../lib/device';
 import { useAsync, useForm } from '../lib/hooks';
-import { listenClash } from '../lib/rules';
+import { discPortClash, listenClash } from '../lib/rules';
 import { useSaver } from '../lib/save';
 import type { DeviceInfo, Val, Values } from '../lib/types';
 import {
@@ -205,7 +205,8 @@ export function PortPage(props: { path?: string; n?: string; tab?: string }) {
   };
   // The listen port's clash with the other UART or the web, shown on the field as it is edited (Plan 09b).
   const clash = checked ? listenClash(n, f.values, others.data!.other, others.data!.system) : null;
-  const errors = clash ? { ...f.errors, listenPort: clash } : f.errors;
+  const disc = discPortClash(f.values);  // UDP 48600 is SBIOT Finder's (Plan 12)
+  const errors: Record<string, string> = { ...f.errors, ...(clash ? { listenPort: clash } : {}), ...(disc ? { localPort: disc } : {}) };
   const p = { values: f.values, errors, onChange };
   const serialErr = serial.some((x) => errors[x.id]);
   const socketErr = socket.some((x) => errors[x.id]);
@@ -225,7 +226,7 @@ export function PortPage(props: { path?: string; n?: string; tab?: string }) {
       )}
       <SaveBar
         busy={save.busy}
-        invalid={!f.valid || !!clash || !checked}
+        invalid={!f.valid || !!clash || !!disc || !checked}
         note={others.error ? 'The other UART and the system settings could not be read to check the listen port: reload the page.' : undefined}
         tabbed
         onSave={() => save.run(() => api.saveValues(`port${n}`, f.values), { restart: true, after: f.reload })}

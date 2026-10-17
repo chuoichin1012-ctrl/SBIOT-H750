@@ -26,6 +26,13 @@ export function listenClash(n: number, port: Obj, other: Obj | null, system: Obj
   return null;
 }
 
+/** SBIOT Finder's UDP port (Plan 12): the gateway's `disc` task holds it, so no UART may bind it locally. */
+export const DISC_PORT = 48600;
+
+export function discPortClash(port: Obj): string | null {
+  return Number(port.localPort) === DISC_PORT ? `UDP port ${DISC_PORT} is reserved for SBIOT Finder: choose another local port.` : null;
+}
+
 /** The System page: a UART that listens on the web's or the WebSocket's port, as each field's error. */
 export function systemPortClash(system: Obj, port1: Obj | null, port2: Obj | null): Record<string, string> {
   const out: Record<string, string> = {};

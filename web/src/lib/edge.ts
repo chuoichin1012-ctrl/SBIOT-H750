@@ -383,3 +383,32 @@ export function fromCsv(text: string, dev: DeviceInfo): { slaves: EdgeSlave[]; e
   if (slaves.length > MAX_DEVICES) errors.push(`The file has ${slaves.length} devices; the limit is ${MAX_DEVICES}.`);
   return { slaves, errors };
 }
+
+// ---- the stored model, as the firmware reads it ----------------------------------------------------------
+
+const str = (v: unknown) => (typeof v === 'string' ? v : '');
+const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+const bool = (v: unknown) => v === true;
+
+/** edgeDevices as GET returns them, with every field the dialogs read: a missing one takes the value the firmware
+ *  gives it (edge_dev_from_json, edge_pt_from_json: 0, "", false; a bus device; Modbus; uint16). The UI writes
+ *  whole documents, but a stored one may come from elsewhere (the bench, an API client). */
+export function normalizeSlaves(raw: unknown): EdgeSlave[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((d: Record<string, unknown>) => {
+    const source = (['eth', 'io', 'virtual'].includes(str(d.source)) ? d.source : 'uart') as EdgeSlave['source'];
+    const nodes = Array.isArray(d.nodes) ? d.nodes : [];
+    return {
+      name: str(d.name), source, uart: num(d.uart), ip: str(d.ip), ethPort: num(d.ethPort),
+      protocol: d.protocol === 'dlt645' ? 'dlt645' : 'modbus', addr: str(d.addr), poll: num(d.poll),
+      mapEn: bool(d.mapEn), mapAddr: num(d.mapAddr), merge: bool(d.merge),
+      nodes: nodes.map((n: Record<string, unknown>) => ({
+        name: str(n.name), fc: num(n.fc), reg: num(n.reg), di: str(n.di),
+        dtype: (DATA_TYPES.some(([t]) => t === n.dtype) ? n.dtype : 'uint16') as EdgeNode['dtype'],
+        timeout: num(n.timeout), onChange: bool(n.onChange), range: num(n.range), mapEn: bool(n.mapEn),
+        mapAddr: num(n.mapAddr), formula: str(n.formula), ioPoint: str(n.ioPoint), ioReport: num(n.ioReport),
+        upper: num(n.upper), lower: num(n.lower),
+      })),
+    };
+  });
+}

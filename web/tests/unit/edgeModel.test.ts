@@ -1,7 +1,7 @@
 // Unit tests for src/lib/edgeModel.ts: the whole-model checks Save runs (code review P2-2, P2-3, P2-4).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_DEVICES, allNodeNames, blankLinkage, blankNode, blankSlave, fromCsv, toCsv } from '../../src/lib/edge.js';
+import { MAX_DEVICES, allNodeNames, blankLinkage, blankNode, blankSlave, fromCsv, normalizeSlaves, toCsv } from '../../src/lib/edge.js';
 import { ioAddressClash, linkageDefs, linkageErrors, modelErrors, slaveDefs } from '../../src/lib/edgeModel.js';
 import type { DeviceInfo, EdgeSlave, Values } from '../../src/lib/types.js';
 import { formErrors } from '../../src/lib/validate.js';
@@ -94,4 +94,20 @@ test('an active event that names a point no longer in the model blocks Save', ()
   const off = { ...ev, enable: false };
   const dialog = formErrors(linkageDefs(off, allNodeNames(imported), [], ['DO1', 'DO2']), off as unknown as Values);
   assert.equal(Object.keys(dialog).join(','), '', 'unticking Active passes Done');
+});
+
+test('a stored Edge model with missing fields is read as the firmware reads it, so every dialog opens (Edit point crashed on no ioPoint)', () => {
+  const [s] = normalizeSlaves([{ name: 'plc', addr: '5', uart: 1, poll: 1000, nodes: [{ name: 't', reg: 10, dtype: 'int16', onChange: true }] }]);
+  assert.equal(s.source, 'uart');  // edge_dev_from_json: anything but eth/io/virtual is a bus device
+  assert.equal(s.protocol, 'modbus');
+  assert.equal(s.mapEn, false);
+  const [n] = s.nodes;
+  assert.equal(n.ioPoint, '');
+  assert.equal(n.di, '');
+  assert.equal(n.formula, '');
+  assert.equal(n.fc, 0);
+  assert.equal(n.onChange, true);  // what is there is kept
+  assert.equal(n.dtype, 'int16');
+  assert.equal(normalizeSlaves([{ name: 'x', nodes: [{ name: 'a' }] }])[0].nodes[0].dtype, 'uint16');  // edge_dtype's default
+  assert.equal(normalizeSlaves(null as unknown as []).length, 0);
 });

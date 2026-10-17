@@ -102,6 +102,38 @@ def same_boot(before, after):
     return before['boot'] == after['boot']
 
 
+DROPPING_POOLS = ('console_log',)  # built to drop when full, counted (spec §12.3)
+
+
+def judge(before, after):
+    """What a workload broke, from its gate rows (spec §6.1, §11.4, §12.2): a restart under it, a watchdog gap,
+    a missing heartbeat slot, an overrun, a full pool. Empty when it qualifies."""
+    out = []
+    if before.get('boot') != after.get('boot'):
+        out.append('restarted under the load (boot %s -> %s)' % (before.get('boot'), after.get('boot')))
+    if after.get('iwdgMaxGapMs') is None or after['iwdgMaxGapMs'] >= 400:
+        out.append('iwdgMaxGapMs %s >= 400' % after.get('iwdgMaxGapMs'))
+    if after.get('wdiMaxGapMs') is None or after['wdiMaxGapMs'] >= 600:
+        out.append('wdiMaxGapMs %s >= 600' % after.get('wdiMaxGapMs'))
+    if after.get('hbMissing'):
+        out.append('hbMissing %s' % after['hbMissing'])
+    for n, u in enumerate(after.get('uart') or [], 1):
+        if u.get('overrun'):
+            out.append('UART%d overrun %s' % (n, u['overrun']))
+    full = [p for p in after.get('poolsFull', []) if p not in DROPPING_POOLS]
+    if full:
+        out.append('pool full: %s' % ', '.join(full))
+    return out
+
+
+def qualify(label, before, path=None):
+    """After a workload, before any restart: (ok, row, why). Call `gates(label + ' before')` first (Codex)."""
+    after = gates(label, path)
+    problems = judge(before, after)
+    return not problems, after, '; '.join(problems) or 'iwdg %s ms, wdi %s ms, boot %s' % (
+        after['iwdgMaxGapMs'], after['wdiMaxGapMs'], after['boot'])
+
+
 def check_peer():
     """True when the Windows firewall lets the peers in: a rule allowing C:\\Python311\\python.exe inbound whose
     profiles include the board's LAN's (read-only; the agent never changes the firewall). A connection from WSL

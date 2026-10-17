@@ -168,6 +168,7 @@ def main():
 
     # A flood of junk on 48600 for 70 s, longer than syslog's 60 s supervisor deadline (the lowest task, priority 2):
     # if disc starved the tasks below it, the supervisor would restart the board (Codex plan r2).
+    g0 = bench_env.gates('disc flood before')
     flood = bc.subprocess.run([bc.WIN_PY, '-c', (
         'import socket,time\n'
         's=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\n'
@@ -181,6 +182,8 @@ def main():
     check(sent > 50000, 'the flood ran: %d datagrams in 70 s (exit %d)' % (sent, flood.returncode))
     f = search(mac)
     check(f and f[0]['boot'] == boot, 'after it the board answers, not restarted (no task starved past its deadline)')
+    ok_g, _, why_g = bench_env.qualify('disc flood', g0)
+    check(ok_g, 'gates after the discovery flood: %s' % why_g)
 
     # A UART set (around the UI) to bind UDP 48600: disc bound first at boot, so the board is still found.
     _, p1 = w.get_json('/api/config/port1')

@@ -60,7 +60,20 @@ def test_changed_lease():
     assert be.GW == w.HOST == bc.GW == '192.168.1.50'
 
 
+def test_judge():
+    be = load({'SBIOT_GW': '192.168.1.9'})
+    ok = {'boot': 5, 'iwdgMaxGapMs': 50, 'wdiMaxGapMs': 500, 'hbMissing': 0, 'poolsFull': ['console_log'],
+          'uart': [{'overrun': 0}, {'overrun': 0}]}
+    assert be.judge(ok, dict(ok)) == []
+    assert any('restarted' in p for p in be.judge(ok, dict(ok, boot=6)))
+    assert any('iwdg' in p for p in be.judge(ok, dict(ok, iwdgMaxGapMs=400)))
+    assert any('wdi' in p for p in be.judge(ok, dict(ok, wdiMaxGapMs=600)))
+    assert any('hbMissing' in p for p in be.judge(ok, dict(ok, hbMissing=1)))
+    assert any('overrun' in p for p in be.judge(ok, dict(ok, uart=[{'overrun': 0}, {'overrun': 3}])))
+    assert any('tcp_pcb' in p for p in be.judge(ok, dict(ok, poolsFull=['console_log', 'tcp_pcb'])))
+
+
 if __name__ == '__main__':
-    for t in (test_env_wins, test_defaults, test_reply_checked, test_search_failure_is_an_error, test_changed_lease):
+    for t in (test_env_wins, test_defaults, test_reply_checked, test_search_failure_is_an_error, test_changed_lease, test_judge):
         t()
     print('test_bench_env: ok')

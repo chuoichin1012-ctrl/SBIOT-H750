@@ -21,6 +21,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import board  # noqa: E402
+import bench_env  # noqa: E402  (Plan 11b: the gates per workload)
 
 failures = []
 
@@ -61,6 +62,7 @@ def main():
     print('     store mount at boot: %s ms' % (mount.group(1) if mount else '-'))
 
     # 2. 1000 saves with garbage collection: CPU, watchdog, DMA
+    g0 = bench_env.gates('store 1000 saves before')
     lines = board.listen(60, sends=[(0.3, 'G'), (50.0, 'i'), (50.5, 'S')])
     st = find(lines, r'stress 1000 saves, (\d+) failed, slowest (\d+) us, (\d+) ms, idle (\d+) permille')
     gap = find(lines, r'wdog_max_gap_us=(\d+)')
@@ -73,6 +75,8 @@ def main():
         check(idle > 30, 'the CPU still idles while saving (%.1f %%)' % idle)
     check(gap is not None and int(gap.group(1)) <= 260000, 'watchdog task kept its period (max gap %s us)' % (gap.group(1) if gap else '-'))
     check(dma is not None and dma.group(1) == '0', 'no DMA transfer failed')
+    ok_g, _, why_g = bench_env.qualify('store 1000 saves', g0)
+    check(ok_g, 'gates after the 1000 saves (FlashDB GC): %s' % why_g)
     print('     slowest save %s us, lowest free heap %s bytes' % (st.group(2) if st else '-', heap.group(1) if heap else '-'))
 
     # 3. Resets in the middle of the stress

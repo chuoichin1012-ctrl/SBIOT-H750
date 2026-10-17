@@ -1,0 +1,20 @@
+The user (2026-10-17) redefined the DO behaviour after testing on the board, and decided each point:
+- Restart Hold (keepOutputs): on a soft reset the 74HC573 is NOT re-latched, so the outputs the latch holds stay as they were, instead of going off. Independent of the DO action mode.
+- After a power loss (POR/BOR) every DO starts off; the DO state is no longer kept in flash.
+- Timer flip (do<i>Mode 2) runs by itself from boot, no command needed. A command (web, Modbus, MQTT/Edge, timer) sets the output now and the flipping goes on from it (the period restarts).
+- Output hold (mode 1) unchanged: it needs a command.
+
+Hardware (Job2.PDF p.11, read from the rendered image): LE has R108 1 kΩ to GND; OE has C43 100 nF to VCC and R103 1 kΩ to GND, but **R103 is not fitted** on the bench board (the user). During a reset the MCU pins are analog/hi-Z, so LE stays low (latched); OE floats on C43's charge. Today the bootloader's boot_main calls board_latch_zero() (OE high, latch 0, OE low) and both boot and app MX_GPIO_Init set OE high before making it an output.
+
+Design (please approve or correct, read-only; stm32/firmware boot/, app/, components/board, components/iomgr, stm32/web, spec §6.6/§11.2):
+1. A hold record, pure in components/board (dohold.c, test_board): `typedef struct { uint32_t magic /*"DOHD"*/; uint8_t keep, latched, commanded, pad; uint32_t crc; } do_hold_t` in one 32-byte .noinit line in SRAM4 at a fixed address (DO_HOLD_ADDR, right after the supervisor's hb_reason line; check_elf gates the app symbol's address so the bootloader can read it). `do_hold_set(r, keep, latched, commanded)`, `bool do_hold_get(const do_hold_t*, ...)`, and the decision `bool do_hold_keep(bool por, bool bor, const do_hold_t *r)` = !por && !bor && valid && keep.
+2. App: every latch() (and a change of what is commanded) writes the record (latched = the bits on the latch, commanded = io_core_commanded: a pulse's rest state, a flip's current phase, a follow's value; keep = cfg.keep), then SCB_CleanDCache_by_Addr + DSB as hb_reason does.
+3. Bootloader boot_main: first thing, before anything else touches GPIOD, if do_hold_keep(RSR) holds: drive OE and LE low by direct register writes (GPIOD clock on, ODR bits 14/15 low, MODER output) — this shortens R103's missing pull-down window — and skip board_latch_zero; after MX_GPIO_Init (which pulses OE high for a few µs: harmless, a relay needs ms to drop since its coil current decays through the diode) set OE low again. Otherwise board_latch_zero as now. RCC_RSR is not cleared by the bootloader (the app reads it).
+4. App init: same decision; on hold, no board_latch_zero; OE driven low right after MX_GPIO_Init; s_latched = record.latched; io_core restored from record.commanded (follow: the value; flip: its phase, flipping resumes; pulse: its rest, so the first latch() ends a pulse cut by the reset). On POR/BOR or no valid record: latch zero, all off.
+5. io_core: mode 2 blinks from io_core_init (blink on, first toggle after one period); io_core_do_set in mode 2 sets the output and restarts the period, blinking continues. keepOutputs flash persistence removed (io_core_persist_take/done, the reload_task save, store_state "do"); the old "do" key is left in flash, unread.
+6. UI help: "Keep outputs after restart": "Keeps the outputs through a restart or a watchdog reset (not a power loss: then all outputs start off)"; "Timer flip" help: flips by itself every <time> from start-up. Spec §6.6 and §11.2 step 2 updated.
+7. Tests: test_board (record codec, crc, do_hold_keep truth table incl. POR/BOR/no record/keep 0); test_io_core (flip from init, a command in flip mode, restore from commanded for each mode, no persistence API). Board: DO1 on (follow) + keepOutputs, web restart and NRST: GPIOD ODR OE stays 0 and /api/io DO1 still on with no off-phase (relay not released; the user watches the relay); flip auto from boot; a power cycle → all off (the user).
+
+Also please say whether the bootloader should rather leave OE/LE completely untouched on the hold path (no register writes at all) given R103 is not fitted.
+
+Reply APPROVED or CHANGES NEEDED with reasons.

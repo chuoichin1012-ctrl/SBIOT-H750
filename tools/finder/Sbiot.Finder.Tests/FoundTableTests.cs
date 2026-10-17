@@ -24,4 +24,13 @@ public class FoundTableTests
         Assert.Equal("02:00:00:00:00:01", t.Rows[0].Mac);
         Assert.Equal(2, t.Rows[0].Boot);
     }
+
+    // A gateway set to DHCP with no server answers from 0.0.0.0 (the user, 2026-10-17): it has no address to open,
+    // only Network… to give it one.
+    [Fact] public void NoAddressIsShownAsSuch()
+    {
+        var f = F("02:00:00:00:00:01", 1) with { EthIp = "0.0.0.0" };
+        Assert.False(f.HasAddress);
+        Assert.True(F("02:00:00:00:00:02", 1).HasAddress);
+    }
 }

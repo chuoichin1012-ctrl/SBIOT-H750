@@ -19,6 +19,8 @@
 
 #define AXI_BSS __attribute__((section(".axi_bss")))  // DTCM is at its budget (Plan 12 ruling)
 
+_Static_assert(LWIP_IP_ACCEPT_UDP_PORT(PP_HTONS(DISC_PORT)), "lwipopts.h takes DISC_PORT while there is no address");
+
 static StaticTask_t s_tcb;
 static StackType_t s_stack[DISC_STACK_WORDS] AXI_BSS;
 static int s_fd = -1;  // bound in disc_start, by init, before services_start: 48600 is ours before a bridge binds
@@ -82,8 +84,8 @@ static void handle(int fd, const char *buf, int n, uint16_t port)
 {
     net_status_t st;
     netmgr_status(&st);
-    if (!st.bound)
-        return;  // spec §2.4: no address on Ethernet, no reply
+    // No address on Ethernet (DHCP with no server): replies still go, from 0.0.0.0, so FinderTool can set one
+    // (the user, 2026-10-17; lwipopts.h LWIP_IP_ACCEPT_UDP_PORT lets the request in).
     disc_req_t q;
     char err[160];
     switch (disc_parse(buf, (size_t)n, s_mac, &q)) {

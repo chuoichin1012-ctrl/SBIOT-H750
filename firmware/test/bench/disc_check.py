@@ -75,6 +75,46 @@ def restart_and_wait(mac, boot):
     return back(mac, boot)
 
 
+def case_noaddr():
+    """A gateway set to DHCP on a link with no DHCP server has no address (the user, 2026-10-17): FinderTool must
+    still find it (address 0.0.0.0) and set a static address. The bench is cabled to the PC, so a DHCP save
+    leaves the board without one. If the search fails, the console puts the whole saved document back."""
+    _, home = w.get_json('/api/config/network')
+    if not home or home.get('priority') != 0 or home.get('ipMode') != 1:
+        print('bench: noaddr needs the board static at priority 0 on the cabled bench (%s)' % home)
+        return 1
+    f = search()
+    me = [x for x in f if x.get('sn') == SN]
+    if not me:
+        print('bench: the board is not found to begin with')
+        return 1
+    mac, boot = me[0]['mac'], me[0]['boot']
+    st, _, _ = w.req('POST', '/api/config/network', body=json.dumps(dict(home, ipMode=0, dnsMode=0)).encode())
+    check(st == 200, 'saved: DHCP (no server on this link)')
+    a = command('restart', mac)
+    check(a is not None and a.get('ok') is True, 'restart: ack ok')
+    try:
+        f = back(mac, boot, limit=90)
+        check(f is not None and f['eth']['ip'] == '0.0.0.0', 'found with no address (eth %s)' % (f['eth'] if f else '-'))
+        boot = f['boot'] if f else boot
+        a = command('set', mac, dict(home))
+        check(a is not None and a.get('ok') is True, 'set the static address from FinderTool: ack ok')
+        f = back(mac, boot)
+        check(f is not None and f['eth']['ip'] == home['ip'], 'found again at %s' % home['ip'])
+    finally:
+        try:
+            _, now = w.get_json('/api/config/network')
+        except OSError:  # no address: the web cannot be reached
+            now = None
+        if now != home:  # not back by FinderTool: the console puts the whole document back (bench_env, Plan 11b)
+            board.listen(4, sends=[(0.3, 'N'), (0.5, json.dumps(home, separators=(',', ':')) + '\r')])
+            board.listen(14, during=board.hard_reset)
+            _, now = w.get_json('/api/config/network')
+        check(now == home, 'network is exactly as before')
+    print('bench: ' + ('FAILED (%d)' % len(failures) if failures else 'ok'))
+    return 1 if failures else 0
+
+
 def main():
     _, orig = w.get_json('/api/config/network')
     if not orig or orig.get('priority') != 0:
@@ -160,4 +200,4 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(case_noaddr() if sys.argv[1:] == ['noaddr'] else main())

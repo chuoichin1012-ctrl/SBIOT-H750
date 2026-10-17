@@ -9,6 +9,7 @@
 // moves serial frames into the outbox and broker messages to the ports, IO control and Edge (it may wait on the UART
 // or a device, `mqtt` never does). Each hands the other its data through rings in SRAM4; the serial subscribers only
 // queue. The outbox (64 KB, SRAM2+3) keeps messages in place: `mqtt` publishes from their records (mqtt_sess).
+#include "wdog.h"
 #include "mqttgw.h"
 #include <stdarg.h>
 #include <stdio.h>
@@ -347,11 +348,16 @@ static void downlink(const char *topic, size_t tlen, const uint8_t *data, size_t
     }
 }
 
+static int s_hb_mqtt = -1, s_hb_io = -1;  // the supervisor's slots (Plan 11a task 0b)
+
 static void io_task(void *arg)
 {
     (void)arg;
     uint32_t seen_up = 0, seen_down = 0;
+    // 400 s: an Edge write it makes may wait 60 s for the bus and 65.5 s for the reply (Codex code review r2)
+    s_hb_io = wdog_hb_add("mqtt_io", 400000);
     for (unsigned turn = 1;; turn++) {
+        wdog_hb_beat(s_hb_io);
         if (turn % REST_EVERY == 0)
             vTaskDelay(1);  // as `mqtt`: rings that are never empty must not starve lower tasks
         size_t n = xMessageBufferReceive(s_down, s_io_buf, IO_BUF_BYTES, pdMS_TO_TICKS(10));
@@ -484,12 +490,23 @@ static bool dial(void)
 }
 
 /** retryInterval, whatever is queued meanwhile: a notify must not shorten it (each frame queued offline notifies). */
-static void retry_wait(void) { vTaskDelay(pdMS_TO_TICKS((uint32_t)(C.retry_s > 0 ? C.retry_s : 3) * 1000u)); }
+/** In 1 s slices with a heartbeat between them: the wait is work, its length unchanged (Plan 11a task 0b). */
+static void retry_wait(void)
+{
+    for (uint32_t left = (uint32_t)(C.retry_s > 0 ? C.retry_s : 3) * 1000u; left;) {
+        uint32_t slice = left < 1000u ? left : 1000u;
+        vTaskDelay(pdMS_TO_TICKS(slice));
+        left -= slice;
+        wdog_hb_beat(s_hb_mqtt);
+    }
+}
 
 static void mqtt_task(void *arg)
 {
     (void)arg;
+    s_hb_mqtt = wdog_hb_add("mqtt", 120000);  // a dial with its TLS handshake fits well inside
     for (;;) {
+        wdog_hb_beat(s_hb_mqtt);
         if (!netmgr_online() || !dial()) {
             if (strcmp(s_state, "REFUSED") != 0)
                 set_state("CONNECTING");
@@ -497,6 +514,7 @@ static void mqtt_task(void *arg)
             continue;
         }
         for (unsigned turn = 1;; turn++) {
+            wdog_hb_beat(s_hb_mqtt);
             ulTaskNotifyTake(pdTRUE, 0);
             if (turn % REST_EVERY == 0)
                 vTaskDelay(1);  // a broker that never pauses, or an outbox always fed, must not starve lower tasks

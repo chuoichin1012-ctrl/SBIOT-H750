@@ -25,8 +25,10 @@ static int failures;
 
 #define DEV_QSPI 1
 
-// The sample: dev public key | UID A | record of A | UID B | record of A signed with another key.
-static uint8_t PUB[BIND_PUB_LEN], UID_A[BIND_UID_LEN], REC_A[BIND_LEN], UID_B[BIND_UID_LEN], REC_OTHER[BIND_LEN];
+// The sample: dev public key | UID A | record of A | UID B | record of A signed with another key | an old
+// (version 1, 84 bytes then 0xFF) record of A.
+static uint8_t PUB[BIND_PUB_LEN], UID_A[BIND_UID_LEN], REC_A[BIND_LEN], UID_B[BIND_UID_LEN], REC_OTHER[BIND_LEN],
+    REC_V1[BIND_LEN];
 
 static bool load_sample(const char *path)
 {
@@ -35,7 +37,7 @@ static bool load_sample(const char *path)
         return false;
     bool ok = fread(PUB, 1, sizeof PUB, f) == sizeof PUB && fread(UID_A, 1, sizeof UID_A, f) == sizeof UID_A &&
               fread(REC_A, 1, sizeof REC_A, f) == sizeof REC_A && fread(UID_B, 1, sizeof UID_B, f) == sizeof UID_B &&
-              fread(REC_OTHER, 1, sizeof REC_OTHER, f) == sizeof REC_OTHER;
+              fread(REC_OTHER, 1, sizeof REC_OTHER, f) == sizeof REC_OTHER && fread(REC_V1, 1, sizeof REC_V1, f) == sizeof REC_V1;
     fclose(f);
     return ok;
 }
@@ -87,8 +89,8 @@ static int check(bench_t *b, const uint8_t *uid, long *ops)
 // Sets the CRC of a record changed on purpose, the way an attacker would.
 static void fix_crc(uint8_t rec[BIND_LEN])
 {
-    uint32_t c = crc32_update(0, rec, 80);
-    memcpy(rec + 80, &c, 4);
+    uint32_t c = crc32_update(0, rec, 100);
+    memcpy(rec + 100, &c, 4);
 }
 
 static void test_valid(void)
@@ -106,8 +108,24 @@ static void test_valid(void)
     fix_crc(r);
     CHECK(!bind_valid(r, PUB, UID_A), "one signature bit changed");
     memcpy(r, REC_A, BIND_LEN);
-    r[82] ^= 1;
+    r[102] ^= 1;
     CHECK(!bind_valid(r, PUB, UID_A), "a wrong CRC");
+    // Plan 11a: the MAC and the SN are signed; the record's UID must be this chip's.
+    memcpy(r, REC_A, BIND_LEN);
+    r[16 + 5] ^= 1;
+    fix_crc(r);
+    CHECK(!bind_valid(r, PUB, UID_A), "the MAC changed, CRC fixed: the signature fails");
+    memcpy(r, REC_A, BIND_LEN);
+    r[22 + 11] = r[22 + 11] == '9' ? '8' : '9';
+    fix_crc(r);
+    CHECK(!bind_valid(r, PUB, UID_A), "the SN changed, CRC fixed: the signature fails");
+    CHECK(!bind_valid(REC_V1, PUB, UID_A), "an old (version 1) record is not valid");
+    uint8_t mac[6];
+    char sn[13];
+    CHECK(bind_identity(REC_A, mac, sn) && mac[0] == 0x02 && !strcmp(sn, "SB2610000001"), "the identity: MAC 02.., SN %s", sn);
+    memcpy(r, REC_A, BIND_LEN);
+    r[22 + 3] = 'x';
+    CHECK(!bind_identity(r, mac, sn), "an SN that is not SB + 10 digits is refused");
     memset(r, 0xFF, BIND_LEN);
     CHECK(!bind_valid(r, PUB, UID_A), "no record");
 }
@@ -136,6 +154,15 @@ static void test_not_provisioned(void)
     r[2] = 0xFF;  // a magic cut short
     bench_init(&b, 3, r);
     CHECK(check(&b, UID_A, &ops) == BIND_ENONE && ops == 0 && slot_intact(&b), "a broken magic counts as no record");
+    nor_sim_free(&b.q);
+}
+
+static void test_old_record(void)
+{
+    bench_t b;
+    long ops;
+    bench_init(&b, 30, REC_V1);
+    CHECK(check(&b, UID_A, &ops) == BIND_EOLD && ops == 0 && slot_intact(&b), "an old record: halt, nothing erased");
     nor_sim_free(&b.q);
 }
 
@@ -228,6 +255,7 @@ int main(int argc, char **argv)
     test_valid();
     test_genuine();
     test_not_provisioned();
+    test_old_record();
     test_clone();
     test_corrupt_and_errors();
     test_power_cuts();

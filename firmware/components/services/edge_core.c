@@ -29,6 +29,7 @@ static void copy(char *dst, size_t cap, const char *src) { snprintf(dst, cap, "%
 void edge_dev_from_json(const cJSON *d, edge_dev_t *out)
 {
     memset(out, 0, sizeof *out);
+    out->hb = -1;  // no supervisor slot until its poll task sets one (Plan 11a task 0b)
     copy(out->name, sizeof out->name, text(d, "name"));
     const char *src = text(d, "source");
     out->source = !strcmp(src, "eth") ? EDGE_SRC_ETH : !strcmp(src, "io") ? EDGE_SRC_IO : !strcmp(src, "virtual") ? EDGE_SRC_VIRTUAL : EDGE_SRC_UART;

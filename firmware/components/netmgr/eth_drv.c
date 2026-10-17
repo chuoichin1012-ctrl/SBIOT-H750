@@ -1,3 +1,4 @@
+#include "wdog.h"
 #include "eth_drv.h"
 #include <stddef.h>
 #include <string.h>
@@ -240,7 +241,9 @@ static void eth_rx_task(void *arg)
     (void)arg;
     TickType_t last_poll = xTaskGetTickCount();
     link_poll();
+    int hb = wdog_hb_add("eth_rx", 10000);  // Plan 11a task 0b
     for (;;) {
+        wdog_hb_beat(hb);
         xSemaphoreTake(s_rx_sem, pdMS_TO_TICKS(LINK_POLL_MS));
         int req = s_power_req;
         if (req) {

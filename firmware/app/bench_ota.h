@@ -3,8 +3,11 @@
 // POST /api/ota (Plan 06) uses the same ota_stage_* calls.
 #pragma once
 #include <stdbool.h>
+#include <stdint.h>
 
 bool app_bind_ok(void);       // bind_valid() on the record read through XIP at QSPI_BIND
+// The board's MAC and SN from that record (Plan 11a): false when it lacks them (the app then halts).
+bool app_identity(uint8_t mac[6], char sn[13]);
 void bench_ota_init(void);    // SPI4 flash
 void bench_ota_report(void);  // 'o': the images in QSPI, staging and the factory slot
 // 'u': u32 little-endian length, then the image in blocks of up to 4 KB. The app answers

@@ -128,10 +128,3 @@ void netcfg_mac(const uint8_t uid[12], uint8_t mac[6])
     mac[0] = 0x02;
     memcpy(mac + 1, h, 5);
 }
-
-void netcfg_serial(const uint8_t uid[12], char out[NETCFG_SERIAL_LEN + 1])
-{
-    uint8_t mac[6];
-    netcfg_mac(uid, mac);
-    snprintf(out, NETCFG_SERIAL_LEN + 1, "SB%02X%02X%02X%02X%02X", mac[1], mac[2], mac[3], mac[4], mac[5]);
-}

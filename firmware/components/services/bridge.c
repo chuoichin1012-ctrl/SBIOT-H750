@@ -6,6 +6,7 @@
 // Every kept socket is non-blocking: a frame goes to each connection through tx_progress, its own offset
 // kept, so a shortage never closes a socket; only 10 s without a byte taken does (bridge_core.h). A pass
 // does bounded work and, when it did any, sleeps a tick: bridge[n] (prio 8) never starves the tasks below.
+#include "wdog.h"
 #include "bridge.h"
 #include <stdio.h>
 #include <string.h>
@@ -50,6 +51,7 @@ typedef struct {
 
 typedef struct {
     int n;
+    int hb;  // the supervisor slot (Plan 11a task 0b)
     bool on;
     bridge_cfg_t C;
     MessageBufferHandle_t mb;
@@ -572,6 +574,7 @@ static void tcp_server(bridge_t *b)
     net_nonblock(lfd);
     SLOG_I("bridge", "UART%d: listening on port %u (up to %d clients)", b->n, b->C.listen_port, b->C.max_clients);
     for (;;) {
+        wdog_hb_beat(b->hb);
         char st[20];
         snprintf(st, sizeof st, b->ncli ? "CONNECTED(%d)" : "LISTEN", b->ncli);
         set_state(b, st);
@@ -634,6 +637,7 @@ static void tcp_client(bridge_t *b)
     uint32_t last_hb = 0;
     cl->c.fd = -1;
     for (;;) {
+        wdog_hb_beat(b->hb);
         if (b->ncli == 0) {
             b->online = false;
             if (b->C.short_conn && xMessageBufferIsEmpty(b->mb) == pdTRUE && b->rpt_state != RPT_OFFERED) {  // short connection: dial only on data or a report
@@ -752,6 +756,7 @@ static void udp(bridge_t *b)
     uint64_t next_resolve = 0;
     bool joined = false;
     for (;;) {
+        wdog_hb_beat(b->hb);
         bool work = false;
         // The default peer is resolved once the network is up (and again while DNS fails).
         if (!server && !b->peer_ok && wait_over(now_us(), next_resolve) && netmgr_online()) {
@@ -832,8 +837,10 @@ static bool http_request(bridge_t *b)
     set_state(b, "CONNECTING");
     uint32_t timeout_ms = (uint32_t)b->C.http_timeout_s * 1000u;
     conn_t c = {.fd = net_tcp_connect(b->C.http_host, b->C.http_port, b->C.http_local, timeout_ms)};
+    wdog_hb_beat(b->hb);  // each phase waits up to httpTimeout (255 s): a beat between them (Plan 11a task 0b)
     if (c.fd >= 0 && b->C.tls) {  // HTTPS
         c.tls = tls_open(c.fd, SCOPE[b->n - 1], b->C.http_host, b->C.tls_verify, timeout_ms, NULL);
+        wdog_hb_beat(b->hb);
         if (!c.tls)
             conn_close(&c);
     }
@@ -846,9 +853,11 @@ static bool http_request(bridge_t *b)
     size_t hn = http_head(&b->C, b->out_len, head, sizeof head), tn = http_tail(&b->C, tail, sizeof tail);
     bool ok = hn && conn_send_all(&c, head, hn, timeout_ms) && conn_send_all(&c, b->out, b->out_len, timeout_ms) &&
               (!tn || conn_send_all(&c, tail, tn, timeout_ms));
+    wdog_hb_beat(b->hb);
     size_t got = 0;
     uint64_t deadline = now_us() + (uint64_t)timeout_ms * 1000u;
     while (ok && got < sizeof b->buf.http && now_us() < deadline) {  // until the server closes, or the timeout
+        wdog_hb_beat(b->hb);
         int r = conn_recv(&c, rb + got, sizeof b->buf.http - got);
         if (r == NET_AGAIN) {
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -880,6 +889,7 @@ static void http_client(bridge_t *b)
     set_state(b, "WAITING");
     b->online = true;  // requests are made on demand
     for (;;) {
+        wdog_hb_beat(b->hb);
         if (!take_frame(b, false)) {  // a serial frame or a report (Plan 08c)
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
@@ -893,6 +903,8 @@ static void http_client(bridge_t *b)
 static void bridge_task(void *arg)
 {
     bridge_t *b = arg;
+    // 600 s: one HTTP phase (connect, TLS, send) waits up to httpTimeout, 255 s, between beats (Plan 11a ruling)
+    b->hb = wdog_hb_add(pcTaskGetName(NULL), 600000);
     switch (b->C.work) {
     case BR_UDP_CLIENT:
     case BR_UDP_SERVER:
@@ -908,8 +920,10 @@ static void bridge_task(void *arg)
         http_client(b);
         break;
     }
-    for (;;)
-        vTaskDelay(portMAX_DELAY);  // a mode that could not start (state ERROR)
+    for (;;) {  // a mode that could not start (state ERROR): idle, not hung (Codex code review r1)
+        wdog_hb_beat(b->hb);
+        vTaskDelay(pdMS_TO_TICKS(10000));
+    }
 }
 
 int bridge_start(int port, const cJSON *pcfg, const cJSON *sys)
@@ -971,6 +985,7 @@ bool bridge_send(int port, const uint8_t *data, size_t len)
     if (!free_slot)
         return false;
     for (;;) {
+        wdog_hb_beat_self();  // the caller (edge_rpt) waits for a bridge that is supervised itself (Codex r1)
         if (xSemaphoreTake(b->rpt_done, pdMS_TO_TICKS(REPORT_WAIT_MS)) == pdTRUE)
             return b->rpt_ok;
         taskENTER_CRITICAL();

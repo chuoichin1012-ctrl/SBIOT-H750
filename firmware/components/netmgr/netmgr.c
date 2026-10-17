@@ -1,4 +1,5 @@
 #include "netmgr.h"
+#include "wdog.h"
 #include <stdio.h>
 #include <string.h>
 #include "FreeRTOS.h"
@@ -246,8 +247,19 @@ const char *netmgr_route_name(void)
 
 // In the tcpip thread (lwIP's core lock is held). Order (Codex r2): netif_add, the static address and
 // manual DNS, netif_set_up, then dhcp_start.
+// The tcpip thread's heartbeat (Plan 11a task 0b): a timer in that thread, so a stuck lwIP core stops it.
+static int s_hb_tcpip = -1;
+static void tcpip_beat(void *arg)
+{
+    (void)arg;
+    wdog_hb_beat(s_hb_tcpip);
+    sys_timeout(1000, tcpip_beat, NULL);
+}
+
 static void tcpip_ready(void *arg)
 {
+    s_hb_tcpip = wdog_hb_add("tcpip", 10000);
+    sys_timeout(1000, tcpip_beat, NULL);
     (void)arg;
     ip4_addr_t ip, mask, gw;
     ip4_addr_set_u32(&ip, lwip_htonl(s_cfg.ip));

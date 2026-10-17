@@ -1,3 +1,4 @@
+#include "wdog.h"
 #include "serial.h"
 #include <stdio.h>
 #include <string.h>
@@ -131,9 +132,12 @@ static void rx_task(void *arg)
 {
     sport_t *p = arg;
     p->rd = uart_drv_wr(p->n);
+    int hb = wdog_hb_add(pcTaskGetName(NULL), 10000);  // Plan 11a task 0b
     for (;;) {
         uart_ev_t ev;
-        xQueueReceive(p->q, &ev, portMAX_DELAY);
+        wdog_hb_beat(hb);
+        if (xQueueReceive(p->q, &ev, pdMS_TO_TICKS(1000)) != pdTRUE)
+            continue;  // a quiet line is no hang: the wait in 1 s slices
         uint32_t errors, lost;
         uart_drv_counters(p->n, &errors, &lost);
         if (lost != p->lost_seen) {  // events were lost: start over from where the DMA is

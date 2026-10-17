@@ -3,7 +3,10 @@
 //   A <g1> <o1> <g2> <o2>    writes the factory record, both copies (gain, offset in mA, per channel);
 //                            applies after a restart. The production loader is Plan 11.
 //   J                        an ADC fault (the BDMA channel off: the next conversion overruns)
+//   C                        both factory record copies read back from SPI4: parsed or not, and their coefficients
+//                            in millionths (tools/factory_cal.py, Plan 11a task 4)
 #include "bench_io.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "adc_core.h"
@@ -51,6 +54,18 @@ void bench_io_cmd(char cmd, const char *line)
         int ra = write_copy(n, FREC_A, rec), rb = write_copy(n, FREC_B, rec);
         blog("app: A record written: copy A %s, copy B %s (applies after a restart)\r\n", ra ? "FAILED" : "ok",
              rb ? "FAILED" : "ok");
+    } else if (cmd == 'C') {
+        nor_t *n = flash_spi4();
+        const uint32_t at[2] = {FREC_A, FREC_B};
+        char part[2][80];
+        for (int k = 0; k < 2; k++) {
+            uint8_t b[FREC_SIZE];
+            adc_cal_t c = {{0, 0}, {0, 0}};
+            bool ok = n && !n->read(n, at[k], b, sizeof b) && frec_parse(b, sizeof b, &c);
+            snprintf(part[k], sizeof part[k], "%s %ld %ld %ld %ld", ok ? "ok" : "bad", lroundf(c.gain[0] * 1e6f),
+                     lroundf(c.offset_ma[0] * 1e6f), lroundf(c.gain[1] * 1e6f), lroundf(c.offset_ma[1] * 1e6f));
+        }
+        blog("app: C A %s B %s\r\n", part[0], part[1]);
     } else if (cmd == 'D') {
         extern volatile bool g_io_trace;
         g_io_trace = !g_io_trace;

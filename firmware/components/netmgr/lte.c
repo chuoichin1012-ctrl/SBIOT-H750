@@ -3,6 +3,7 @@
 //   In AT mode the bytes go to the AT stream; with CMUX, DLC2 goes there and DLC1 to PPP (Plan 10 T4).
 // - lte: the power sequence (lte_power), AT over the plain UART then over DLC2, the identity, the SIM, the
 //   CMUX opening, and the polling of the signal every 20 s.
+#include "wdog.h"
 #include "lte.h"
 #include <stdio.h>
 #include <string.h>
@@ -77,6 +78,7 @@ static StaticSemaphore_t s_shutdown_mem;
 static at_lines_t s_lines;  // the AT channel's lines (the lte task)
 
 static uint32_t ms(void) { return (uint32_t)(now_us() / 1000u); }
+static int s_hb_lte = -1;  // the supervisor's slot (Plan 11a task 0b)
 
 // ---- cmux_rx ----------------------------------------------------------------------------------------
 
@@ -143,7 +145,9 @@ static void cmux_task(void *arg)
     (void)arg;
     uint32_t rd = lte_uart_wr();
     bool more = false;  // a frame went out: another may wait, and RX comes first (Codex code review)
+    int hb = wdog_hb_add("cmux_rx", 10000);  // Plan 11a task 0b
     for (;;) {
+        wdog_hb_beat(hb);
         ulTaskNotifyTake(pdTRUE, more ? 0 : pdMS_TO_TICKS(10));  // HT, TC, IDLE, a request; and the CMUX timers
         uint32_t now = ms();
         taskENTER_CRITICAL();
@@ -237,6 +241,7 @@ static at_final_t at_cmd(const char *cmd, uint32_t timeout_ms, line_fn fn, void 
     xTaskNotifyGive(s_cmux_task);
     uint32_t t0 = ms();
     for (;;) {
+        wdog_hb_beat(s_hb_lte);  // an AT wait is work (up to 60 s, a third of lte's timeout)
         uint32_t spent = ms() - t0;
         if (spent >= timeout_ms)
             return AT_NONE;
@@ -260,6 +265,7 @@ static bool at_wait(at_final_t want, uint32_t timeout_ms)
 {
     uint32_t t0 = ms();
     for (;;) {
+        wdog_hb_beat(s_hb_lte);
         uint32_t spent = ms() - t0;
         if (spent >= timeout_ms)
             return false;
@@ -443,6 +449,7 @@ static uint32_t wait_events(uint32_t mask, uint32_t wait_ms)
 {
     uint32_t t0 = ms();
     for (;;) {
+        wdog_hb_beat(s_hb_lte);
         check_shutdown();
         taskENTER_CRITICAL();
         uint32_t e = s_events & mask;
@@ -691,6 +698,7 @@ static void recover(void)
 static void lte_task(void *arg)
 {
     (void)arg;
+    s_hb_lte = wdog_hb_add("lte", 180000);  // Plan 11a task 0b: its AT waits run up to 60 s
     if (s_cfg.priority == 0) {  // Ethernet only: a module that answers is powered down; one that does not is left alone
         if (hw_at_ok(NULL, LTE_PROBE_MS)) {
             s_power = LTE_ON;

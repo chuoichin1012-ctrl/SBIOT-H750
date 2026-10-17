@@ -14,6 +14,7 @@
 // of Edge's memory comes from the heap at boot, all or nothing (Plan 08c rulings 2 and 6): any failure
 // leaves Edge off with no task and no hook. Point values live in one cache under s_cache, held only while
 // values are copied, never during I/O; lock order: bus, cache, store (spec §6.4), every wait timed out.
+#include "wdog.h"
 #include "edge_rt.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -316,6 +317,7 @@ static int modbus_read(edge_dev_t *d, int fc, uint16_t start, uint16_t count, in
 {
     uint8_t req[12], resp[MBTCP_MAX];
     int got;
+    wdog_hb_beat(d->hb);  // each read is work: up to its timeout plus the bus (Plan 11a task 0b)
     size_t n = mb_rtu_read(req, d->unit, (uint8_t)fc, start, count);
     if (d->source == EDGE_SRC_UART) {
         got = serial_transact(d->uart, req, n, resp, sizeof resp, d->unit, (uint32_t)timeout_ms);
@@ -386,6 +388,7 @@ static void poll_dlt645(edge_dev_t *d, bool all)
     for (int i = i0; i >= 0 && i < i1; i++) {
         edge_pt_t *p = &d->pts[i];
         uint8_t req[24], resp[128];
+        wdog_hb_beat(d->hb);
         size_t n = dlt645_read_req(d->addr, p->di, req, sizeof req);
         int got = n ? serial_transact(d->uart, req, n, resp, sizeof resp, -1, (uint32_t)p->timeout_ms) : -1;
         double raw;
@@ -452,6 +455,7 @@ static void poll_device(edge_dev_t *d, bool all)
 /** Writes a value to the device behind a point (raw: no inverse formula); a read-back follows. */
 static bool write_point(edge_pt_t *p, double v)
 {
+    wdog_hb_beat_self();  // one write done per point: a long multi-point write is work for its caller (Codex r1)
     edge_dev_t *d = p->dev;
     if (d->source == EDGE_SRC_IO)
         return p->io_kind == EDGE_IO_DO && iomgr_do_set(p->io_index, v != 0) == 0;
@@ -702,7 +706,12 @@ static void report(const char *why)
 static void poll_task(void *arg)
 {
     dev_list_t *l = arg;
+    // 400 s: a point may wait up to 65.5 s, and its bus as long again (Plan 11a task 0b ruling)
+    int hb = wdog_hb_add(pcTaskGetName(NULL), 400000);
+    for (int i = 0; i < l->n; i++)
+        l->devs[i]->hb = hb;
     for (;;) {
+        wdog_hb_beat(hb);
         int64_t now = now_ms(), next = now + 50;  // 50 ms: read-backs after remote writes come promptly
         for (int i = 0; i < l->n; i++) {
             edge_dev_t *d = l->devs[i];
@@ -757,7 +766,11 @@ static void ctl_task(void *arg)
 {
     dev_list_t *l = arg;
     int64_t headroom_at = now_ms() + 30000;
+    int hb = wdog_hb_add("edge_ctl", 120000);  // Plan 11a task 0b
+    for (int i = 0; i < l->n; i++)
+        l->devs[i]->hb = hb;
     for (;;) {
+        wdog_hb_beat(hb);
         if (headroom_at && now_ms() >= headroom_at) {
             headroom_at = 0;
             log_headroom();
@@ -781,10 +794,14 @@ static void rpt_task(void *arg)
 {
     (void)arg;
     int64_t next_periodic = now_ms() + (int64_t)R.interval_s * 1000, last_minute = -1;
+    int hb = wdog_hb_add("edge_rpt", 120000);  // Plan 11a task 0b
     for (;;) {
+        wdog_hb_beat(hb);
         int64_t wait = R.periodic ? next_periodic - now_ms() : 60000;
         if (R.scheduled && wait > 1000)
             wait = 1000;  // the clock is checked every second
+        if (wait > 10000)
+            wait = 10000;  // a long interval in slices: the next report is still due at next_periodic
         if (wait < 1)
             wait = 1;
         if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait)))

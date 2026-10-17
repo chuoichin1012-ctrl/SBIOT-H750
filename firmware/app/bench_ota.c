@@ -1,4 +1,5 @@
 #include "bench_ota.h"
+#include "wdog.h"
 #include <string.h>
 #include "FreeRTOS.h"
 #include "task.h"
@@ -21,6 +22,11 @@ bool app_bind_ok(void)
     uint8_t uid[BIND_UID_LEN];
     memcpy(uid, (const void *)UID_BASE, sizeof uid);
     return bind_valid((const uint8_t *)(QSPI_XIP_BASE + QSPI_BIND), BIND_PUBKEY, uid);
+}
+
+bool app_identity(uint8_t mac[6], char sn[13])
+{
+    return app_bind_ok() && bind_identity((const uint8_t *)(QSPI_XIP_BASE + QSPI_BIND), mac, sn);
 }
 
 void bench_ota_init(void)
@@ -50,9 +56,21 @@ void bench_ota_report(void)
     report_slot("factory", SPI_FACTORY);
 }
 
+/** n bytes (n <= BLOCK) within ms. HAL_UART_Receive polls; in 20 ms turns with a 1 ms yield between them when the
+ * line is quiet, a long wait no longer starves the tasks below init (the supervisor found io silent for 10 s while
+ * a cut-off upload waited, Plan 11a). UART7's 16-byte FIFO holds what comes during the yield. */
 static bool rx(uint8_t *p, uint32_t n, uint32_t ms)
 {
-    return HAL_UART_Receive(&huart7, p, (uint16_t)n, ms) == HAL_OK;  // n <= BLOCK
+    uint32_t t0 = HAL_GetTick(), got = 0;
+    while (got < n) {
+        if (HAL_UART_Receive(&huart7, p + got, (uint16_t)(n - got), 20) == HAL_OK)
+            return true;
+        got = n - huart7.RxXferCount;  // what this turn took before it timed out
+        if (HAL_GetTick() - t0 >= ms)
+            return false;
+        vTaskDelay(1);
+    }
+    return true;
 }
 
 void bench_ota_upload(bool reset)
@@ -71,11 +89,13 @@ void bench_ota_upload(bool reset)
     blog("ota: ready %lu %d\r\n", (unsigned long)total, r);
     if (r)
         return;
+    wdog_set_busy(true);  // LED WORK blinks fast while the image comes (Plan 11a task 0)
     for (uint32_t got = 0; got < total;) {
         uint32_t n = total - got < BLOCK ? total - got : BLOCK;
-        if (!rx(buf, n, 5000)) {
+        if (!rx(buf, n, 30000)) {  // 30 s: a FlashDB write (the first log line after a boot) may hold SPI4 for seconds
             blog("ota: timeout at %lu\r\n", (unsigned long)got);
             ota_stage_release(&st);
+            wdog_set_busy(false);
             return;
         }
         r = ota_stage_write(&st, buf, n);
@@ -83,11 +103,13 @@ void bench_ota_upload(bool reset)
         if (r) {
             blog("ota: done %d\r\n", r);
             ota_stage_release(&st);
+            wdog_set_busy(false);
             return;
         }
         blog("ota: %lu\r\n", (unsigned long)got);
     }
     r = ota_stage_finish(&st);
+    wdog_set_busy(false);
     if (r)
         ota_stage_release(&st);  // a success keeps it: the image waits for the reset
     blog("ota: done %d\r\n", r);

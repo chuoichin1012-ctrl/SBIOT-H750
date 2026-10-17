@@ -9,6 +9,7 @@
 #include "bind.h"
 #include "bind_key.h"
 #include "board.h"
+#include "pace.h"
 #include "flashmap.h"
 #include "gpio.h"
 #include "install.h"
@@ -37,23 +38,32 @@ static void log_line(const char *fmt, ...)
         HAL_UART_Transmit(&huart7, (const uint8_t *)line, (uint16_t)n, 100);
 }
 
+// LED WORK (= WDI) at the rhythm of what the bootloader does (Plan 11a task 0, the user): 0.2 s while it checks,
+// installs or restores, 1 s while it samples Reload, 0.5 s halted. IWDG1 is reloaded at every call.
+static uint32_t s_half = PACE_BUSY_MS, s_paced;
+
+static void boot_kick(void)
+{
+    board_iwdg_reload();
+    if (pace_due(HAL_GetTick(), &s_paced, s_half))
+        board_wdi_toggle();
+}
+
 static bool reload_pressed(void)
 {
     return HAL_GPIO_ReadPin(RELOAD_GPIO_Port, RELOAD_Pin) == GPIO_PIN_RESET;  // active low (R137 pull-up)
 }
 
-// Waits while Reload stays pressed, kicking every `kick_ms` (each kick also toggles LED WORK).
-// True when it stayed pressed for RELOAD_MS; false as soon as it is released.
-static bool reload_held(uint32_t kick_ms)
+// Waits while Reload stays pressed, LED WORK at the running rhythm. True when it stayed pressed for RELOAD_MS;
+// false as soon as it is released.
+static bool reload_held(void)
 {
-    uint32_t t0 = HAL_GetTick(), last = t0;
+    uint32_t t0 = HAL_GetTick();
+    s_half = PACE_RUN_MS;
     while (reload_pressed()) {
         if (HAL_GetTick() - t0 >= RELOAD_MS)
             return true;
-        if (HAL_GetTick() - last >= kick_ms) {
-            board_kick();
-            last = HAL_GetTick();
-        }
+        boot_kick();
         HAL_Delay(10);
     }
     return false;
@@ -61,9 +71,10 @@ static bool reload_held(uint32_t kick_ms)
 
 static void wait_release(void)
 {
+    s_half = PACE_RUN_MS;
     while (reload_pressed()) {
-        board_kick();
-        HAL_Delay(100);
+        boot_kick();
+        HAL_Delay(10);
     }
 }
 
@@ -72,9 +83,10 @@ static void wait_release(void)
 static void __attribute__((noreturn)) halt(const char *why, int code)
 {
     log_line("boot: %s (%d), halted\r\n", why, code);
+    s_half = PACE_HALT_MS;
     for (;;) {
-        board_kick();
-        HAL_Delay(100);
+        boot_kick();
+        HAL_Delay(10);
     }
 }
 
@@ -158,30 +170,32 @@ void boot_main(void)
              (unsigned long)HAL_RCC_GetSysClockFreq());
     if (BIND_DEV_KEY)
         log_line("bind: DEV KEY\r\n");
-    int r = qf_init(&hqspi, board_kick);
+    int r = qf_init(&hqspi, boot_kick);
     log_line("boot: qspi id %06lx\r\n", (unsigned long)qf_read_jedec(&hqspi));
     if (r)
         halt("qspi init failed", r);
     static qf_nor_t q;
     static spi_nor_t s;
-    qf_nor_init(&q, &hqspi, board_kick);
-    r = spi_nor_init(&s, &hspi4, board_kick, NULL);  // polling: single-threaded, deadlines and kicks
+    qf_nor_init(&q, &hqspi, boot_kick);
+    r = spi_nor_init(&s, &hspi4, boot_kick, NULL);  // polling: single-threaded, deadlines and kicks
     log_line("boot: spi4 id %06lx%s\r\n", (unsigned long)spi_nor_jedec(&s), r ? " FAILED" : "");
     // A failed SPI4 is not fatal, and not used: nothing is installed, seeded or restored.
     nor_t *spi = r ? &s_dead_spi : &s.nor;
 
     uint8_t uid[BIND_UID_LEN];
     memcpy(uid, (const void *)UID_BASE, sizeof uid);
-    bind_result_t b = bind_check(&q.nor, BIND_PUBKEY, uid, board_kick);
+    bind_result_t b = bind_check(&q.nor, BIND_PUBKEY, uid, boot_kick);
     static const char *const bind_text[] = {"ok", "record unreadable", "not provisioned", "record corrupt",
-                                            "CLONE: application erased"};
+                                            "CLONE: application erased",
+                                            "an old record without MAC and SN: program it again with flash.sh bind"};
     log_line("bind: %s\r\n", bind_text[b]);
     if (b != BIND_OK)
         halt("anti-clone check failed", b);
 
     // Reload held from power-up: the factory image (spec §11.2 step 1); LED WORK blinks slowly.
-    bool reload = reload_pressed() && reload_held(500);
-    install_t in = {.qspi = &q.nor, .spi = spi, .kick = board_kick};
+    bool reload = reload_pressed() && reload_held();
+    s_half = PACE_BUSY_MS;  // checking, installing, restoring
+    install_t in = {.qspi = &q.nor, .spi = spi, .kick = boot_kick};
     if (run_install(&in, reload) == INSTALL_JUMP) {
         wait_release();
         start_app();
@@ -189,9 +203,10 @@ void boot_main(void)
     // Halt with nothing runnable (spec §11.2): LED WORK blinks fast; Reload held 5 s restores.
     log_line("boot: %s, halted; hold Reload 5 s to restore the factory image\r\n", why_text(in.why));
     for (;;) {
-        board_kick();
-        HAL_Delay(100);
-        if (reload_pressed() && reload_held(100) && run_install(&in, true) == INSTALL_JUMP) {
+        s_half = PACE_HALT_MS;
+        boot_kick();
+        HAL_Delay(10);
+        if (reload_pressed() && reload_held() && (s_half = PACE_BUSY_MS, run_install(&in, true)) == INSTALL_JUMP) {
             wait_release();
             start_app();
         }

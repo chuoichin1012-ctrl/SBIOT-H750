@@ -20,7 +20,7 @@
 static int64_t s_offset_us;  // UTC in us minus now_us(); 0: not set. In a critical section (64 bits).
 static int s_tz;             // hours, from system.timezone at boot
 static char s_ntp_server[129];  // lwIP keeps the pointer: lives for the whole run
-static char s_serial[NETCFG_SERIAL_LEN + 1];
+static char s_serial[13];  // SB + 10 digits, from the binding record (Plan 11a)
 
 static int64_t offset(void)
 {
@@ -167,12 +167,12 @@ uint32_t sysmgr_uptime_s(void)
     return (uint32_t)(now_us() / 1000000u);
 }
 
+void sysmgr_set_serial(const char *sn)
+{
+    snprintf(s_serial, sizeof s_serial, "%s", sn);
+}
+
 const char *sysmgr_serial(void)
 {
-    if (!s_serial[0]) {
-        uint8_t uid[12];  // SB and the MAC's last 5 bytes (the user, 2026-10-17: the 24-digit UID was too long)
-        memcpy(uid, (const void *)UID_BASE, sizeof uid);
-        netcfg_serial(uid, s_serial);
-    }
-    return s_serial;
+    return s_serial;  // from the binding record (Plan 11a), set before any service starts
 }

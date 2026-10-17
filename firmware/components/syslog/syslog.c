@@ -1,3 +1,4 @@
+#include "wdog.h"
 #include "syslog.h"
 #include <stdlib.h>
 #include <string.h>
@@ -94,9 +95,11 @@ static void syslog_task(void *arg)
     line_t line;
     uint64_t window = 0;
     int budget = FLASH_BUDGET_PER_MIN;
+    int hb = wdog_hb_add("syslog", 60000);  // Plan 11a task 0b: a flash write fits well inside
     for (;;) {
-        if (xQueueReceive(s_queue, &line, portMAX_DELAY) != pdTRUE)
-            continue;
+        wdog_hb_beat(hb);
+        if (xQueueReceive(s_queue, &line, pdMS_TO_TICKS(1000)) != pdTRUE)
+            continue;  // nothing to log is no hang: the wait in 1 s slices
         line.text[line.len] = '\n';
         ring_put(line.text, line.len + 1u);
         if (s_tap)

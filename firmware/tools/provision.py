@@ -7,15 +7,19 @@ production PC.
 
     provision.py genkey KEY            new 32-byte Ed25519 private key (refuses to overwrite)
     provision.py pubkey KEY PUB        its 32-byte public key, for -DSBIOT_BIND_PUBKEY_FILE=PUB
-    provision.py record KEY UID OUT    the 84-byte record of a UID given as 24 hex digits
+    provision.py record KEY UID SN OUT the 104-byte record of a UID given as 24 hex digits, with its SN
     provision.py uid CLI_OUTPUT        the UID (hex) in the output of STM32_Programmer_CLI -r32 0x1FF1E800 12
+    provision.py next-sn COUNTER       the next serial number, SB + YYMM + 6 digits; the counter file is written
+                                       (locked, fsynced) before the SN is printed, so an SN is never handed out twice
 
 KEY may be "dev": the development key, derived from a public string. A board bound with it runs
 only firmware built without SBIOT_BIND_PUBKEY_FILE; never ship it.
 
-Record (little endian): 0 magic "SBBD", 4 UID (12 bytes, as read from 0x1FF1E800), 16 Ed25519
-signature (64) over "SBIOT-H750 bind" || UID, 80 CRC-32 of bytes 0..79. tools/flash.sh bind writes
-it at QSPI 0x903F0000.
+Record version 2 (Plan 11a, little endian): 0 magic "SBB2", 4 UID (12 bytes, as read from 0x1FF1E800),
+16 MAC (6: 02 then SHA-256(UID)[0..4], computed here), 22 SN (12 ASCII: SB, YYMM, 6 digits), 34 reserved (2,
+zero), 36 Ed25519 signature (64) over "SBIOT-H750 bind2" || bytes 4..33, 100 CRC-32 of bytes 0..99.
+tools/flash.sh bind writes it at QSPI 0x903F0000. Version 1 ("SBBD", 84 bytes, no MAC or SN) halts the
+firmware of this version (the user, 2026-10-17).
 """
 import hashlib
 import os
@@ -27,8 +31,9 @@ import zlib
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-REC_LEN = 84
-LABEL = b'SBIOT-H750 bind'
+REC_LEN = 104
+LABEL = b'SBIOT-H750 bind2'
+SN_RE = re.compile(r'^SB\d{10}$')
 DEV_PUBLIC_HEX = '2a140afad3c3e566a000ad19a5b526b39375b2ab0381391b8bf329b33a89b3cf'
 
 
@@ -41,12 +46,54 @@ def public_key(seed):
     return pub.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
 
 
-def record(seed, uid):
+def mac_of(uid):
+    """The MAC the record carries: locally administered, 02 then SHA-256(UID)[0..4] (the firmware's netcfg_mac)."""
+    return b'\x02' + hashlib.sha256(uid).digest()[:5]
+
+
+def record(seed, uid, sn):
     if len(uid) != 12:
         raise ValueError('a UID is 12 bytes, got %d' % len(uid))
-    sig = Ed25519PrivateKey.from_private_bytes(seed).sign(LABEL + uid)
+    if not isinstance(sn, str) or not SN_RE.match(sn):
+        raise ValueError('an SN is SB then 10 digits (SB + YYMM + 6), got %r' % (sn,))
+    signed = uid + mac_of(uid) + sn.encode('ascii')
+    sig = Ed25519PrivateKey.from_private_bytes(seed).sign(LABEL + signed)
+    body = b'SBB2' + signed + b'\0\0' + sig
+    return body + struct.pack('<I', zlib.crc32(body))
+
+
+def record_v1(seed, uid):
+    """The record of the firmware before Plan 11a (84 bytes, no MAC or SN): only for the tests."""
+    sig = Ed25519PrivateKey.from_private_bytes(seed).sign(b'SBIOT-H750 bind' + uid)
     body = b'SBBD' + uid + sig
     return body + struct.pack('<I', zlib.crc32(body))
+
+
+def next_sn(counter):
+    """The next SN from the counter file (Plan 11a, Codex plan r1): under an exclusive lock on counter.lock for the
+    whole read-increment-write, the incremented counter is written to a temporary file, fsynced, renamed over the
+    counter and the directory fsynced, all before the SN is returned. Any failure raises: no SN."""
+    import datetime
+    import fcntl
+    d = os.path.dirname(os.path.abspath(counter))
+    os.makedirs(d, exist_ok=True)
+    with open(counter + '.lock', 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        n = int(open(counter).read().strip() or '1') if os.path.exists(counter) else 1
+        if not 1 <= n <= 999999:
+            raise ValueError('the SN counter is at %d: past 999999, or broken' % n)
+        tmp = counter + '.tmp'
+        with open(tmp, 'w') as f:
+            f.write('%d\n' % (n + 1))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, counter)
+        fd = os.open(d, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    return 'SB%s%06d' % (datetime.date.today().strftime('%y%m'), n)
 
 
 def uid_from_cli(text):
@@ -87,8 +134,11 @@ def main(argv):
         return 0
     if len(argv) == 3 and argv[0] == 'pubkey':
         return write_out(argv[2], public_key(load_key(argv[1])), argv[1])
-    if len(argv) == 4 and argv[0] == 'record':
-        return write_out(argv[3], record(load_key(argv[1]), bytes.fromhex(argv[2])), argv[1])
+    if len(argv) == 5 and argv[0] == 'record':
+        return write_out(argv[4], record(load_key(argv[1]), bytes.fromhex(argv[2]), argv[3]), argv[1])
+    if len(argv) == 2 and argv[0] == 'next-sn':
+        print(next_sn(argv[1]))
+        return 0
     if len(argv) == 2 and argv[0] == 'uid':
         print(uid_from_cli(open(argv[1]).read()).hex())
         return 0

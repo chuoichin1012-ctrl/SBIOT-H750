@@ -35,7 +35,7 @@ def heap():
     s = st['system'] if st else {}
     sm = st['mem']['stackMin'] if st else {}
     return {'free': s.get('heapFree', -1), 'min': s.get('heapMin', -1), 'largest': s.get('heapLargest', -1),
-            'wdog_ms': s.get('wdiMaxGapMs', -1), 'stack': '%s %s words' % (sm.get('task'), sm.get('words'))}
+            'wdog_ms': s.get('iwdgMaxGapMs', -1), 'wdi_ms': s.get('wdiMaxGapMs', -1), 'stack': '%s %s words' % (sm.get('task'), sm.get('words'))}
 
 
 def last_connect_ms():

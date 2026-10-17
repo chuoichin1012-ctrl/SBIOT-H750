@@ -39,6 +39,8 @@ typedef struct {
         void *ctx;
     } subs[MAX_SUBSCRIBERS];
     int nsubs;
+    serial_mon_fn mon;  // every frame, both ways (serial_monitor)
+    void *mon_ctx;
     SemaphoreHandle_t bus, txn_lock, txn_done;
     StaticSemaphore_t bus_mem, txn_lock_mem, txn_done_mem;
     volatile bool txn, txn_dropped;
@@ -104,12 +106,24 @@ int serial_subscribe(int port, serial_rx_fn fn, void *ctx)
     return 0;
 }
 
+int serial_monitor(int port, serial_mon_fn fn, void *ctx)
+{
+    sport_t *p = P(port);
+    if (!p || p->mon)
+        return -1;
+    p->mon_ctx = ctx;
+    p->mon = fn;
+    return 0;
+}
+
 // ---- RX: serial_rx[n] -------------------------------------------------------------------------------
 
 // A complete frame, from sf_rx (in serial_rx[n]).
 static void deliver(void *ctx, const uint8_t *data, size_t len)
 {
     sport_t *p = ctx;
+    if (p->mon)
+        p->mon(p->n, false, data, len, p->mon_ctx);  // before the owner takes it: the monitor sees every frame
     xSemaphoreTake(p->txn_lock, portMAX_DELAY);
     // The bus owner gets what arrives while it waits, unless it is plainly another slave's frame
     // (a late answer to a transparent request): that one still belongs to the subscribers.
@@ -230,8 +244,11 @@ static int send_raw(sport_t *p, const uint8_t *data, size_t len, uint32_t timeou
         return -1;
     }
     int r = uart_drv_write(p->n, data, len, timeout_ms);
-    if (r == 0)
+    if (r == 0) {
         p->tx += (uint32_t)len;
+        if (p->mon)
+            p->mon(p->n, true, data, len, p->mon_ctx);
+    }
     uint64_t now = now_us();
     ts_set(&p->last_us, now);
     ts_set(&p->last_tx_us, now);

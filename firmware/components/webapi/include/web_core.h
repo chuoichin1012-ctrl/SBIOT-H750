@@ -42,6 +42,12 @@ typedef struct {
  *  WEB_STALL_MS without a write, a client that stopped reading. The clock starts when the queue fills,
  *  restarts at each write, stops when it is empty. */
 bool web_send_poll(web_send_t *t, size_t queued, bool wrote, uint64_t now_ms);
+
+/** The WebSocket console's UART monitor: one frame as a text line, "TX " or "RX ", its bytes in hex, "\n" (the user,
+ * 2026-10-17). Room for the largest frame (SERIAL_FRAME_MAX, 1460) and the NUL. Cut on a whole byte when `cap` is
+ * smaller; the length, without the NUL. */
+#define WEB_MON_LINE_MAX (3 + 3 * 1460 + 1)
+size_t web_mon_line(char *out, size_t cap, bool tx, const uint8_t *data, size_t len);
 /**
  * Plan 06b's check of an uploaded PEM, until mbedTLS parses it (Plan 08): one BEGIN/END pair of the
  * kind's label (CERTIFICATE for ca and cert; PRIVATE KEY, RSA PRIVATE KEY or EC PRIVATE KEY for key),

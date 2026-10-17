@@ -18,6 +18,7 @@
     "tests/unit/*.ts",
     "src/lib/rules.ts",
     "src/lib/validate.ts",
-    "src/lib/edgeModel.ts"
+    "src/lib/edgeModel.ts",
+    "src/lib/console.ts"
   ]
 }

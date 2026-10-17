@@ -4,8 +4,10 @@
 // LOG mode (websocketTarget 3): the syslog task is the one writer of a MessageBuffer (its tap); this
 // task drains it after each poll into text frames. A client whose send buffer is over WEB_SEND_HIGH
 // gets no frame (dropped and counted), so one that stops reading costs no memory (Codex 06b r1).
-// UART modes (1, 2, Plan 07a): serial_rx[n] is the one writer of the same MessageBuffer, through a
-// subscriber; each UART frame becomes one binary WebSocket message. Messages from a client go to the port.
+// UART modes (1, 2): the port's monitor (serial_monitor) puts every frame into the same MessageBuffer, both ways:
+// sent (from each writer's task) and received (serial_rx[n]), so two tasks write it, under s_mb_lock. Each frame
+// becomes one text message, "TX 01 03 ..." or "RX ..." (the user, 2026-10-17: the whole traffic of the port, also
+// Edge's polls). Messages from a client go to the port, and show as TX.
 #include <stdio.h>
 #include <string.h>
 #include "wdog.h"
@@ -16,6 +18,7 @@
 #include "netmgr.h"
 #include "serial.h"
 #include "now_us.h"
+#include "semphr.h"
 #include "syslog.h"
 #include "sysmgr.h"
 #include "task.h"
@@ -25,7 +28,7 @@
 #define CONSOLE_STACK_WORDS 1024  // 4 KB (spec §6.1)
 #define CONSOLE_PRIO 5
 #define MAX_CLIENTS 4
-#define LOG_BUF 2048
+#define LOG_BUF 4096  // a 1460-byte frame each way, and some
 #define POLL_MS 20  // spec §6.4
 #define MAX_CONNS (MAX_CLIENTS + 1)  // sockets of this listener at once: the clients and one being refused
 #define HANDSHAKE_MS 5000u           // a connection not upgraded by then is closed (Codex 06b review)
@@ -33,8 +36,10 @@
 static StaticTask_t s_tcb;
 static StackType_t s_stack[CONSOLE_STACK_WORDS];
 static StaticMessageBuffer_t s_mb_mem;
-static uint8_t s_mb_store[LOG_BUF];  // 2 KB: one 1460-byte frame and some (each message has a 4-byte length)
+static uint8_t s_mb_store[LOG_BUF] __attribute__((section(".axi_bss")));  // each message has a 4-byte length
 static MessageBufferHandle_t s_mb;
+static StaticSemaphore_t s_mb_lock_mem;
+static SemaphoreHandle_t s_mb_lock;  // UART mode: the monitor's writers (the sender's task and serial_rx[n])
 static struct mg_mgr s_mgr;
 static int s_port, s_target;
 static unsigned s_dropped;  // lines not delivered: the buffer was full, or a client was not reading
@@ -45,13 +50,24 @@ void console_buffer_use(unsigned *used, unsigned *size)
     *used = s_mb ? (unsigned)(LOG_BUF - xMessageBufferSpacesAvailable(s_mb)) : 0;
 }
 
-// serial_rx[n]: the one writer in UART mode (spec §6.4). A frame that does not fit is dropped and counted.
-static void uart_frame(int port, const uint8_t *data, size_t len, void *ctx)
+// The port's monitor: a direction byte and the frame. Never waits long: a frame that does not fit, or that finds the
+// lock taken for 5 ms, is dropped and counted.
+static void uart_frame(int port, bool tx, const uint8_t *data, size_t len, void *ctx)
 {
+    static uint8_t rec[1 + SERIAL_FRAME_MAX] __attribute__((section(".axi_bss")));
     (void)port;
     (void)ctx;
-    if (xMessageBufferSend(s_mb, data, len, 0) != len)
+    if (len > SERIAL_FRAME_MAX)
+        len = SERIAL_FRAME_MAX;
+    if (xSemaphoreTake(s_mb_lock, pdMS_TO_TICKS(5)) != pdTRUE) {
         s_dropped++;
+        return;
+    }
+    rec[0] = tx;
+    memcpy(rec + 1, data, len);
+    if (xMessageBufferSend(s_mb, rec, len + 1, 0) != len + 1)
+        s_dropped++;
+    xSemaphoreGive(s_mb_lock);
 }
 
 // The syslog task: the one writer (spec §6.4).
@@ -178,12 +194,14 @@ static void handler(struct mg_connection *c, int ev, void *ev_data)
     }
 }
 
-// After each poll: the log lines (text) or UART frames (binary) to every client that keeps reading.
+// After each poll: the log lines or the port's frames, as text, to every client that keeps reading.
 static void drain(void)
 {
-    static char line[SERIAL_FRAME_MAX] __attribute__((section(".axi_bss")));
+    static char line[1 + SERIAL_FRAME_MAX] __attribute__((section(".axi_bss")));
+    static char text[WEB_MON_LINE_MAX] __attribute__((section(".axi_bss")));
     size_t n;
     while ((n = xMessageBufferReceive(s_mb, line, sizeof line, 0)) > 0) {
+        size_t tn = s_target == 3 ? 0 : web_mon_line(text, sizeof text, line[0] != 0, (const uint8_t *)line + 1, n - 1);
         for (struct mg_connection *x = s_mgr.conns; x; x = x->next) {
             if (!x->is_websocket)
                 continue;
@@ -194,7 +212,7 @@ static void drain(void)
             if (s_target == 3)
                 mg_ws_printf(x, WEBSOCKET_OP_TEXT, "%.*s\n", (int)n, line);
             else
-                mg_ws_send(x, line, n, WEBSOCKET_OP_BINARY);
+                mg_ws_send(x, text, tn, WEBSOCKET_OP_TEXT);
         }
     }
 }
@@ -222,9 +240,10 @@ int console_start(int port, int target)
     s_port = port;
     s_target = target;
     s_mb = xMessageBufferCreateStatic(sizeof s_mb_store, s_mb_store, &s_mb_mem);
+    s_mb_lock = xSemaphoreCreateMutexStatic(&s_mb_lock_mem);
     if (target == 3)
         syslog_set_tap(tap, NULL);
-    else if (serial_subscribe(target, uart_frame, NULL))
+    else if (serial_monitor(target, uart_frame, NULL))
         SLOG_W("console", "UART%d is not running: the console shows nothing", target);
     xTaskCreateStatic(console_task, "console", CONSOLE_STACK_WORDS, NULL, CONSOLE_PRIO, s_stack, &s_tcb);
     return 0;

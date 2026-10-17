@@ -128,8 +128,28 @@ static void test_send_stall(void)
     CHECK(web_send_poll(&e, 100, false, now + 2 * WEB_STALL_MS + 5000), "and stalled a stall time after it");
 }
 
+// The WebSocket console's UART monitor (the user, 2026-10-17): every frame of the port, both ways, one text line
+// each: "TX " or "RX ", the bytes in hex, a newline.
+static void test_mon_line(void)
+{
+    char out[WEB_MON_LINE_MAX];
+    const uint8_t req[] = {0x04, 0x04, 0x00, 0x00, 0x00, 0x02, 0x70, 0x5E};
+    size_t n = web_mon_line(out, sizeof out, true, req, sizeof req);
+    CHECK(n == strlen("TX 04 04 00 00 00 02 70 5E\n") && !strcmp(out, "TX 04 04 00 00 00 02 70 5E\n"), "a request sent: %s", out);
+    n = web_mon_line(out, sizeof out, false, (const uint8_t *)"\xab", 1);
+    CHECK(!strcmp(out, "RX AB\n") && n == 6, "a byte received: %s", out);
+    uint8_t big[1460];
+    memset(big, 0xFF, sizeof big);
+    n = web_mon_line(out, sizeof out, false, big, sizeof big);
+    CHECK(n == 3 + 3 * 1460 && out[n - 1] == '\n' && out[n] == '\0', "the largest frame fits WEB_MON_LINE_MAX (%u)", (unsigned)n);
+    char small[16];
+    n = web_mon_line(small, sizeof small, true, req, sizeof req);
+    CHECK(n == strlen(small) && n < sizeof small && small[n - 1] == '\n', "a short buffer: cut on a whole byte, still a line (%s)", small);
+}
+
 int main(void)
 {
+    test_mon_line();
     test_send_stall();
     test_token();
     test_decode();

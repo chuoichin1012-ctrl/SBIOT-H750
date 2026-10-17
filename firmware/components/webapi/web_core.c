@@ -209,3 +209,20 @@ bool web_send_poll(web_send_t *t, size_t queued, bool wrote, uint64_t now_ms)
     }
     return now_ms - t->since >= WEB_STALL_MS;
 }
+
+size_t web_mon_line(char *out, size_t cap, bool tx, const uint8_t *data, size_t len)
+{
+    static const char HEX[] = "0123456789ABCDEF";
+    if (cap < 5)
+        return cap ? (out[0] = '\0', 0) : 0;
+    memcpy(out, tx ? "TX" : "RX", 2);
+    size_t n = 2;
+    for (size_t i = 0; i < len && n + 3 + 2 <= cap; i++) {  // " XX", then room for "\n" and the NUL
+        out[n++] = ' ';
+        out[n++] = HEX[data[i] >> 4];
+        out[n++] = HEX[data[i] & 15];
+    }
+    out[n++] = '\n';
+    out[n] = '\0';
+    return n;
+}

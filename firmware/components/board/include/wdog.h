@@ -11,6 +11,9 @@ void wdog_stop(void);
 void wdog_set_busy(bool on);
 // The app halted (the binding record refused): LED WORK blinks at the halt rhythm, still kicking.
 void wdog_set_halt(void);
+// The Reload button's window (the user, 2026-10-17): 0 none; 1 held past 3 s, a release restarts (LED WORK fast,
+// 0.2 s); 2 held past 10 s, a release restores the factory settings (0.5 s). An OTA or a halt shows first.
+void wdog_set_button(int stage);
 // Largest interval between two IWDG1 reloads since boot, in microseconds (iwdgMaxGapMs, §6.1: < 400 ms).
 uint32_t wdog_max_gap_us(void);
 // Largest interval between two WDI toggles since boot, in microseconds (wdiMaxGapMs: < 600 ms, inside the

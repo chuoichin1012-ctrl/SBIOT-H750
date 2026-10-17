@@ -72,6 +72,10 @@ void wdog_set_halt(void)
     s_halt = true;
 }
 
+static volatile int s_button;
+
+void wdog_set_button(int stage) { s_button = stage; }
+
 uint32_t wdog_max_gap_us(void)
 {
     return s_max_gap_us;
@@ -106,7 +110,9 @@ void wdog_task(void *arg)
                     continue;
                 }
             }
-            uint32_t half = s_halt ? PACE_HALT_MS : s_busy > 0 ? PACE_BUSY_MS : PACE_RUN_MS;
+            int b = s_button;
+            uint32_t half = s_halt ? PACE_HALT_MS : s_busy > 0 ? PACE_BUSY_MS
+                          : b == 2 ? PACE_HALT_MS : b == 1 ? PACE_BUSY_MS : PACE_RUN_MS;
             if (pace_due((uint32_t)(t / 1000u), &paced, half)) {
                 board_wdi_toggle();
                 if (t - last_wdi > s_wdi_max_gap_us)

@@ -138,9 +138,19 @@ static void io_task(void *arg)
             SLOG_W("io", "a timer restarts the gateway");
             sysmgr_restart_later(1000);
         }
-        reload_ev_t ev = reload_step(&s_button, HAL_GPIO_ReadPin(RELOAD_GPIO_Port, RELOAD_Pin) == GPIO_PIN_RESET, now);
-        if (ev == RELOAD_HINT) {
-            blog("io: Reload held 3 s: release now to restore the factory settings\r\n");
+        bool pressed = HAL_GPIO_ReadPin(RELOAD_GPIO_Port, RELOAD_Pin) == GPIO_PIN_RESET;
+        reload_ev_t ev = reload_step(&s_button, pressed, now);
+        if (!pressed)
+            wdog_set_button(0);  // LED WORK back to normal once the button is up
+        if (ev == RELOAD_HINT_RESTART) {
+            wdog_set_button(1);
+            blog("io: Reload held 3 s: release now to restart, or hold to 10 s to restore the factory settings\r\n");
+        } else if (ev == RELOAD_HINT_FACTORY) {
+            wdog_set_button(2);
+            blog("io: Reload held 10 s: release now to restore the factory settings (past 15 s: nothing)\r\n");
+        } else if (ev == RELOAD_RESTART) {
+            SLOG_W("io", "Reload button: restarting");
+            sysmgr_restart_later(500);
         } else if (ev == RELOAD_FACTORY) {
             s_factory = true;
             xTaskNotifyGive(s_reload);

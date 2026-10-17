@@ -1037,7 +1037,7 @@ Nguồn không bao giờ bị ghi. Mọi lần chờ flash đều có deadline, 
 
    Mất điện **trước khi** xóa xong sector đầu của staging thì staging có thể còn nguyên. Khi đó, lần boot thường sau đó vẫn cài nó, và người dùng phải giữ Reload lần nữa. Từ lúc xóa xong, image trong staging không bao giờ được cài lại.
 
-   Bước này không xóa cấu hình (`cfg`, `edge`, `cert`). Muốn về cấu hình gốc thì dùng Reload 3–15 s của app (§11.4).
+   Bước này không xóa cấu hình (`cfg`, `edge`, `cert`). Muốn về cấu hình gốc thì dùng Reload 10–15 s của app (§11.4).
 2. **Gieo firmware gốc** (chỉ một lần, ở lần boot đầu tiên sau khi sản xuất). Điều kiện: slot factory **chưa có magic** `SBIO` và `Q` hợp lệ. Khi đó `copy` Q → factory.
    - Thất bại thì chỉ in log rồi đi tiếp.
    - Magic được ghi sau cùng, nên mất điện giữa chừng thì lần boot sau gieo lại từ đầu.
@@ -1108,7 +1108,13 @@ Logic quyết định và chép viết trong `boot/install.c` bằng C thuần, 
   - Ngoài phạm vi này, tiến triển của từng task dịch vụ **không** được giám sát (giữ như ESP32).
   - Phải chốt đúng hậu tố của SGM706 trên BOM, vì mỗi hậu tố có ngưỡng reset khác nhau.
 - **HardFault và vi phạm MPU:** handler ghi PC, LR, CFSR, HFSR, MMFAR/BFAR và tên task vào backup SRAM, rồi reset. Lần boot sau, thông tin này được ghi vào log. Đây là phần thay cho phân vùng coredump của bản ESP32.
-- **Reload:** nhấn 3–15 s **trong lúc app chạy** để khôi phục cấu hình gốc, giữ lại log. Nếu nút đã được giữ từ trước khi app chạy (ví dụ vừa khôi phục firmware gốc ở §11.2), app chỉ tính từ lần nhấn sau khi nhả.
+- **Reload trong lúc app chạy** (người dùng, 2026-10-17). Thời gian tính từ lúc nhấn tới lúc thả:
+  - dưới 3 s: không làm gì;
+  - 3 s tới dưới 10 s: **khởi động lại**;
+  - 10–15 s: **khôi phục cấu hình gốc**, giữ lại log;
+  - quá 15 s: không làm gì.
+
+  LED WORK báo vùng thời gian đang ở: nháy nhanh 0,2 s từ 3 s (thả ra là restart), nháy 0,5 s từ 10 s (thả ra là khôi phục gốc), về nhịp thường khi thả. Console cũng in một dòng ở mỗi mốc. Nếu nút đã được giữ từ trước khi app chạy (ví dụ vừa khôi phục firmware gốc ở §11.2), app chỉ tính từ lần nhấn sau khi nhả.
 - **BOR:** đặt option byte BOR level 2.
 
 ### 11.5 Chống clone

@@ -105,14 +105,20 @@ export function confirmAction(opts: Omit<Ask, 'resolve'>): Promise<boolean> {
   return new Promise((resolve) => asks.set({ ...opts, resolve }));
 }
 
-const restartPrompt = createStore<(() => void) | null>(null);
+interface SavePrompt {
+  /** The POST; true when it went through. */
+  save: () => Promise<boolean>;
+  after: () => void;
+}
+const savePrompt = createStore<SavePrompt | null>(null);
 
 /**
- * Shown after a successful save. "Continue" keeps working and reloads the
- * page data; "Restart now" reboots so the new settings take effect.
+ * Shown when Save is pressed, before anything is sent (the user, 2026-10-17): Cancel sends nothing; "Save and
+ * continue editing" saves and stays (the settings apply at the next restart); "Save and restart" saves, then
+ * restarts so they take effect.
  */
-export function askRestart(onContinue: () => void) {
-  restartPrompt.set(onContinue);
+export function askSave(save: () => Promise<boolean>, after: () => void) {
+  savePrompt.set({ save, after });
 }
 
 export async function restartDevice() {
@@ -122,7 +128,7 @@ export async function restartDevice() {
 
 export function Dialogs() {
   const ask = useStore(asks);
-  const onContinue = useStore(restartPrompt);
+  const prompt = useStore(savePrompt);
   const [busy, setBusy] = useState(false);
 
   const close = (ok: boolean) => {
@@ -146,24 +152,40 @@ export function Dialogs() {
           <p>{ask.body}</p>
         </Modal>
       )}
-      {onContinue && (
+      {prompt && (
         <Modal
-          title="Settings saved"
-          onClose={() => (restartPrompt.set(null), onContinue())}
+          title="Save settings?"
+          onClose={() => !busy && savePrompt.set(null)}
           actions={
             <>
-              <Button onClick={() => (restartPrompt.set(null), onContinue())}>Continue editing</Button>
+              <Button disabled={busy} onClick={() => savePrompt.set(null)}>Cancel</Button>
+              <Button
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  const ok = await prompt.save();
+                  setBusy(false);
+                  savePrompt.set(null);
+                  if (ok) {
+                    toast('Saved. The gateway applies the new settings after a restart.');
+                    prompt.after();
+                  }
+                }}
+              >
+                Save and continue editing
+              </Button>
               <Button
                 variant="primary"
                 disabled={busy}
                 onClick={async () => {
                   setBusy(true);
-                  await restartDevice();
+                  const ok = await prompt.save();
+                  if (ok) await restartDevice();
                   setBusy(false);
-                  restartPrompt.set(null);
+                  savePrompt.set(null);
                 }}
               >
-                Restart now
+                Save and restart
               </Button>
             </>
           }

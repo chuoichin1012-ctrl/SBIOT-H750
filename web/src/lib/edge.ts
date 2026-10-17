@@ -425,6 +425,18 @@ export function normalizeSlaves(raw: unknown): EdgeSlave[] {
   if (!Array.isArray(raw)) return [];
   return raw.map((d) => {
     const nodes = d && typeof d === 'object' && Array.isArray((d as { nodes?: unknown }).nodes) ? (d as { nodes: unknown[] }).nodes : [];
-    return { ...overlay(ITEM_SLAVE, d), nodes: nodes.map((n) => overlay(ITEM_NODE, n)) } as unknown as EdgeSlave;
+    const slave = { ...overlay(ITEM_SLAVE, d), nodes: nodes.map((n) => overlay(ITEM_NODE, n)) } as unknown as EdgeSlave;
+    // The loader's names and registers for the built-in IO and the calculated device (cfgmodel.c, Codex r2).
+    const fixed = fixedName(slave.source);
+    if (fixed) slave.name = fixed;
+    if (slave.source === 'io') {
+      slave.nodes = slave.nodes.map((n) => {
+        const r = ioRegister(n.ioPoint);
+        return r ? { ...n, name: n.ioPoint, fc: r.fc, reg: r.reg, dtype: r.dtype } : n;
+      });
+    } else if (slave.source === 'virtual') {
+      slave.nodes = slave.nodes.map((n) => ({ ...n, fc: VIRTUAL_FC }));
+    }
+    return slave;
   });
 }

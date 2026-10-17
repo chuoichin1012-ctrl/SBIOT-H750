@@ -136,3 +136,20 @@ test('a linkage row shows its condition with the thresholds and its output with 
   assert.equal(linkageOutput({ ...e, cond: 0 }), 'DO2');  // follow/opposite: the output mirrors the point
   assert.equal(linkageOutput({ ...e, cond: 2, output: '' }), '—');
 });
+
+test('the built-in IO and the calculated device are read with the loader names and registers (Codex r2)', () => {
+  const [io, v] = normalizeSlaves([{ source: 'io', nodes: [{ ioPoint: 'DO1' }, { ioPoint: 'AI2' }] },
+    { source: 'virtual', nodes: [{ name: 'avg', fc: 3, dtype: 'float32_abcd', formula: '=%s+1,t' }] }]);
+  assert.equal(io.name, 'SBIOT_IO');
+  assert.equal(io.nodes[0].name, 'DO1');  // an IO point takes its channel's name, register and type
+  assert.equal(io.nodes[0].fc, 1);
+  assert.equal(io.nodes[0].reg, 0);
+  assert.equal(io.nodes[0].dtype, 'bool');
+  assert.equal(io.nodes[1].name, 'AI2');
+  assert.equal(io.nodes[1].fc, 4);
+  assert.equal(io.nodes[1].reg, 2);
+  assert.equal(io.nodes[1].dtype, 'float32_abcd');
+  assert.equal(v.name, 'SBIOT_VIRTUAL');
+  assert.equal(v.nodes[0].fc, 4);  // virtual points are input registers
+  assert.equal(v.nodes[0].name, 'avg');
+});

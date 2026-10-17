@@ -354,7 +354,8 @@ static void io_task(void *arg)
 {
     (void)arg;
     uint32_t seen_up = 0, seen_down = 0;
-    s_hb_io = wdog_hb_add("mqtt_io", 120000);
+    // 400 s: an Edge write it makes may wait 60 s for the bus and 65.5 s for the reply (Codex code review r2)
+    s_hb_io = wdog_hb_add("mqtt_io", 400000);
     for (unsigned turn = 1;; turn++) {
         wdog_hb_beat(s_hb_io);
         if (turn % REST_EVERY == 0)

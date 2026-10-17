@@ -121,9 +121,13 @@ static void test_patch(void)
     CHECK(store_patch("network", arr, err, sizeof err) == STORE_ENOTFOUND, "fields must be an object");
     cJSON_Delete(arr);
     // Out of memory at each allocation in turn: STORE_ENOMEM and nothing written, or a whole save.
+    cJSON *g = cJSON_Parse("{\"ip\":\"10.10.0.9\"}");
+    char *cur = store_get_json("network");  // what a save must give: today's document with only ip changed
+    cJSON *want = cJSON_Parse(cur);
+    cJSON_ReplaceItemInObjectCaseSensitive(want, "ip", cJSON_CreateString("10.10.0.9"));
+    free(cur);
     cJSON_Hooks hooks = {fail_malloc, free};
     cJSON_InitHooks(&hooks);
-    cJSON *g = cJSON_Parse("{\"ip\":\"10.10.0.9\"}");
     for (int n = 0; n < 2000; n++) {
         char *was = store_get_json("network");
         s_alloc_fail_at = n;
@@ -133,9 +137,11 @@ static void test_patch(void)
         char *now = store_get_json("network");
         CHECK(e == STORE_OK || (e == STORE_ENOMEM && now && was && !strcmp(now, was)),
               "allocation %d failed: STORE_ENOMEM with nothing written, or saved (%d)", n, e);
-        if (e == STORE_OK)  // a save is the whole document: the field patched, the others kept
-            CHECK(now && strstr(now, "\"ip\":\"10.10.0.9\"") && strstr(now, "\"apn\":\"m3-world\"") &&
-                      strstr(now, "\"priority\":0") && strstr(now, "\"future\":5"), "allocation %d: saved whole (%s)", n, now);
+        if (e == STORE_OK) {  // a save is the whole document: the field patched, every other member as it was
+            cJSON *d = now ? cJSON_Parse(now) : NULL;  // s_alloc_fail_at is -1 again: no failure here
+            CHECK(d && cJSON_Compare(d, want, true), "allocation %d: saved whole (%s)", n, now);
+            cJSON_Delete(d);
+        }
         free(was);
         free(now);
         BALANCED("store_patch out of memory");
@@ -143,6 +149,7 @@ static void test_patch(void)
             break;
     }
     cJSON_InitHooks(NULL);
+    cJSON_Delete(want);
     cJSON_Delete(g);
     cJSON_Delete(f);
 }
@@ -1081,18 +1088,21 @@ def main():
     _, net = w.get_json('/api/config/network')
     check(net == orig, 'network is exactly as before the bench: LTE fields, priority and the rest kept')
 
-    # A flood of junk on 48600 (20 s, as fast as Windows sends): the board keeps running (no supervisor restart).
+    # A flood of junk on 48600 for 70 s, longer than syslog's 60 s supervisor deadline (the lowest task, priority 2):
+    # if disc starved the tasks below it, the supervisor would restart the board (Codex plan r2).
     flood = bc.subprocess.run([bc.WIN_PY, '-c', (
         'import socket,time\n'
         's=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\n'
         's.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1)\n'
         's.bind(("%s",0))\n'
         't=time.time();n=0\n'
-        'while time.time()-t<20:\n'
+        'while time.time()-t<70:\n'
         '    s.sendto(b"x"*100,("255.255.255.255",48600));n+=1\n'
         'print(n)\n' % bc.WIN)], cwd='/mnt/c', capture_output=True, text=True)
+    sent = int(flood.stdout.strip() or 0) if flood.returncode == 0 else 0
+    check(sent > 50000, 'the flood ran: %d datagrams in 70 s (exit %d)' % (sent, flood.returncode))
     f = search(mac)
-    check(f and f[0]['boot'] == boot, 'after a 20 s flood (%s datagrams) the board answers, not restarted' % flood.stdout.strip())
+    check(f and f[0]['boot'] == boot, 'after it the board answers, not restarted (no task starved past its deadline)')
 
     # A UART set (around the UI) to bind UDP 48600: disc bound first at boot, so the board is still found.
     _, p1 = w.get_json('/api/config/port1')
@@ -1308,6 +1318,7 @@ public class NetSettingsTests
     [Fact] public void AGoodStaticAddress() => Assert.Null(S().Validate());
     [Theory]
     [InlineData("10.10.0.256")] [InlineData("10.10.0.07")] [InlineData("10.10.0")] [InlineData(" 10.10.0.7")] [InlineData("")]
+    [InlineData("10.10.0.\u0667")] [InlineData("10.10.0.7\n")]  // an Arabic-Indic seven; a trailing newline
     public void ABadQuad(string ip) => Assert.NotNull(S(ip: ip).Validate());
     [Theory] [InlineData("255.0.255.0")] [InlineData("0.0.0.0")] [InlineData("255.255.255.255")]
     public void AMaskThatIsNotUsable(string mask) => Assert.NotNull(S(mask: mask).Validate());
@@ -1367,7 +1378,8 @@ namespace Sbiot.Finder.Protocol;
 /// <summary>The seven Ethernet fields of the gateway's `network` config (spec §2.2). The tool checks them; the gateway checks syntax only.</summary>
 public sealed record NetSettings(int IpMode, string Ip, string Netmask, string Gateway, int DnsMode, string Dns1, string Dns2)
 {
-    static readonly Regex Quad = new(@"^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$");
+    // ASCII digits only ([0-9], not \d: .NET's \d takes any Unicode digit, which IPAddress.Parse then rejects; Codex plan r2).
+    static readonly Regex Quad = new(@"\A(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}\z");
 
     /// <summary>A strict dotted quad, as the gateway's netcfg_ip4: no sign, space or leading zero.</summary>
     public static bool IsQuad(string s) => s is not null && Quad.IsMatch(s);
@@ -1889,7 +1901,7 @@ sealed class NetworkForm : Form
 - [ ] **Step 3: Build and publish.** Run, from `stm32/tools/finder`:
 
 ```bash
-set -o pipefail
+set -e -o pipefail  # a failed step stops the block: nothing stale is copied
 rm -rf out
 dotnet build Sbiot.Finder 2>&1 | tail -3
 dotnet publish Sbiot.Finder -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -o out 2>&1 | tail -3

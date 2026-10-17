@@ -10,7 +10,7 @@ extern uint32_t SystemCoreClock;
 #define configUSE_TIME_SLICING 1
 #define configUSE_PORT_OPTIMISED_TASK_SELECTION 1
 #define configMAX_PRIORITIES 32
-#define configMINIMAL_STACK_SIZE 256  // words
+#define configMINIMAL_STACK_SIZE 320  // words: the idle task keeps 1 KB free (spec §12.3, Plan 11b: 256 left 916 B)
 #define configMAX_TASK_NAME_LEN 12
 #define configTICK_TYPE_WIDTH_IN_BITS TICK_TYPE_WIDTH_32_BITS
 #define configIDLE_SHOULD_YIELD 1

@@ -190,7 +190,7 @@ export function templateNames(template: string): string[] {
   }
 }
 
-/** System values a report template may use, as on the reference unit; sys_time and sys_unix_time are in the gateway's time zone. */
+/** System values a report template may use, as on the reference unit; sys_time is the gateway's local time, sys_unix_time Unix seconds (UTC). */
 export const SYSTEM_FIELDS = ['sys_sn', 'sys_mac', 'sys_ver', 'sys_time', 'sys_net_time', 'sys_unix_time'];
 
 /**

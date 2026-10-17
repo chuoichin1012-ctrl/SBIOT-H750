@@ -1,0 +1,52 @@
+{
+  "mac": "02:95:b8:e9:a7:9f",
+  "requests": [
+    {"name": "search", "built": true, "expect": "search", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"search\",\"id\":\"7f3a91c2\"}"},
+    {"name": "search for this MAC", "built": true, "expect": "search", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"search\",\"id\":\"7f3a91c2\",\"mac\":\"02:95:b8:e9:a7:9f\"}"},
+    {"name": "search for another MAC", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"search\",\"id\":\"7f3a91c2\",\"mac\":\"02:00:00:00:00:01\"}"},
+    {"name": "MAC in capitals", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"search\",\"id\":\"7f3a91c2\",\"mac\":\"02:95:B8:E9:A7:9F\"}"},
+    {"name": "set", "built": true, "expect": "set", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"set\",\"id\":\"5b20e7d1\",\"mac\":\"02:95:b8:e9:a7:9f\",\"net\":{\"ipMode\":1,\"ip\":\"10.10.0.7\",\"netmask\":\"255.255.255.0\",\"gateway\":\"10.10.0.1\",\"dnsMode\":1,\"dns1\":\"8.8.8.8\",\"dns2\":\"1.1.1.1\"}}"},
+    {"name": "set without mac", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"set\",\"id\":\"5b20e7d1\",\"net\":{\"ipMode\":1,\"ip\":\"10.10.0.7\",\"netmask\":\"255.255.255.0\",\"gateway\":\"10.10.0.1\",\"dnsMode\":1,\"dns1\":\"8.8.8.8\",\"dns2\":\"1.1.1.1\"}}"},
+    {"name": "set for another MAC", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"set\",\"id\":\"5b20e7d1\",\"mac\":\"02:00:00:00:00:01\",\"net\":{\"ipMode\":1,\"ip\":\"10.10.0.7\",\"netmask\":\"255.255.255.0\",\"gateway\":\"10.10.0.1\",\"dnsMode\":1,\"dns1\":\"8.8.8.8\",\"dns2\":\"1.1.1.1\"}}"},
+    {"name": "set without dns2", "expect": "bad", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"set\",\"id\":\"5b20e7d1\",\"mac\":\"02:95:b8:e9:a7:9f\",\"net\":{\"ipMode\":1,\"ip\":\"10.10.0.7\",\"netmask\":\"255.255.255.0\",\"gateway\":\"10.10.0.1\",\"dnsMode\":1,\"dns1\":\"8.8.8.8\"}}"},
+    {"name": "set with ip 256", "expect": "bad", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"set\",\"id\":\"5b20e7d1\",\"mac\":\"02:95:b8:e9:a7:9f\",\"net\":{\"ipMode\":1,\"ip\":\"10.10.0.256\",\"netmask\":\"255.255.255.0\",\"gateway\":\"10.10.0.1\",\"dnsMode\":1,\"dns1\":\"8.8.8.8\",\"dns2\":\"1.1.1.1\"}}"},
+    {"name": "set with a leading zero", "expect": "bad", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"set\",\"id\":\"5b20e7d1\",\"mac\":\"02:95:b8:e9:a7:9f\",\"net\":{\"ipMode\":1,\"ip\":\"10.10.0.07\",\"netmask\":\"255.255.255.0\",\"gateway\":\"10.10.0.1\",\"dnsMode\":1,\"dns1\":\"8.8.8.8\",\"dns2\":\"1.1.1.1\"}}"},
+    {"name": "set with ipMode 2", "expect": "bad", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"set\",\"id\":\"5b20e7d1\",\"mac\":\"02:95:b8:e9:a7:9f\",\"net\":{\"ipMode\":2,\"ip\":\"10.10.0.7\",\"netmask\":\"255.255.255.0\",\"gateway\":\"10.10.0.1\",\"dnsMode\":1,\"dns1\":\"8.8.8.8\",\"dns2\":\"1.1.1.1\"}}"},
+    {"name": "set with ipMode as text", "expect": "bad", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"set\",\"id\":\"5b20e7d1\",\"mac\":\"02:95:b8:e9:a7:9f\",\"net\":{\"ipMode\":\"1\",\"ip\":\"10.10.0.7\",\"netmask\":\"255.255.255.0\",\"gateway\":\"10.10.0.1\",\"dnsMode\":1,\"dns1\":\"8.8.8.8\",\"dns2\":\"1.1.1.1\"}}"},
+    {"name": "set with dnsMode 0.5", "expect": "bad", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"set\",\"id\":\"5b20e7d1\",\"mac\":\"02:95:b8:e9:a7:9f\",\"net\":{\"ipMode\":1,\"ip\":\"10.10.0.7\",\"netmask\":\"255.255.255.0\",\"gateway\":\"10.10.0.1\",\"dnsMode\":0.5,\"dns1\":\"8.8.8.8\",\"dns2\":\"1.1.1.1\"}}"},
+    {"name": "set with net a list", "expect": "bad", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"set\",\"id\":\"5b20e7d1\",\"mac\":\"02:95:b8:e9:a7:9f\",\"net\":[]}"},
+    {"name": "set with a key twice in net", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"set\",\"id\":\"5b20e7d1\",\"mac\":\"02:95:b8:e9:a7:9f\",\"net\":{\"ipMode\":1,\"ip\":\"10.10.0.7\",\"ip\":\"10.10.0.8\",\"netmask\":\"255.255.255.0\",\"gateway\":\"10.10.0.1\",\"dnsMode\":1,\"dns1\":\"8.8.8.8\",\"dns2\":\"1.1.1.1\"}}"},
+    {"name": "mac twice", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"restart\",\"id\":\"5b20e7d1\",\"mac\":\"02:00:00:00:00:01\",\"mac\":\"02:95:b8:e9:a7:9f\"}"},
+    {"name": "restart", "built": true, "expect": "restart", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"restart\",\"id\":\"0a1b2c3d\",\"mac\":\"02:95:b8:e9:a7:9f\"}"},
+    {"name": "factory", "built": true, "expect": "factory", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"factory\",\"id\":\"0a1b2c3d\",\"mac\":\"02:95:b8:e9:a7:9f\"}"},
+    {"name": "restart without mac", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"restart\",\"id\":\"0a1b2c3d\"}"},
+    {"name": "version 2", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":2,\"op\":\"search\",\"id\":\"7f3a91c2\"}"},
+    {"name": "no signature", "expect": "ignore", "text": "{\"v\":1,\"op\":\"search\",\"id\":\"7f3a91c2\"}"},
+    {"name": "another signature", "expect": "ignore", "text": "{\"sbiot\":\"usr\",\"v\":1,\"op\":\"search\",\"id\":\"7f3a91c2\"}"},
+    {"name": "a found from another gateway", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"found\",\"id\":\"7f3a91c2\",\"mac\":\"02:95:b8:e9:a7:9f\"}"},
+    {"name": "an ack", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"ack\",\"id\":\"7f3a91c2\",\"mac\":\"02:95:b8:e9:a7:9f\",\"ok\":true}"},
+    {"name": "an unknown op", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"reboot\",\"id\":\"7f3a91c2\",\"mac\":\"02:95:b8:e9:a7:9f\"}"},
+    {"name": "id of 7", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"search\",\"id\":\"7f3a91c\"}"},
+    {"name": "id in capitals", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"search\",\"id\":\"7F3A91C2\"}"},
+    {"name": "no id", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"search\"}"},
+    {"name": "a list", "expect": "ignore", "text": "[{\"sbiot\":\"disc\",\"v\":1,\"op\":\"search\",\"id\":\"7f3a91c2\"}]"},
+    {"name": "not JSON", "expect": "ignore", "text": "www.usr.cn"},
+    {"name": "garbage after the object", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"factory\",\"id\":\"0a1b2c3d\",\"mac\":\"02:95:b8:e9:a7:9f\"}x"},
+    {"name": "two objects", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"search\",\"id\":\"7f3a91c2\"}{\"sbiot\":\"disc\",\"v\":1,\"op\":\"factory\",\"id\":\"0a1b2c3d\",\"mac\":\"02:95:b8:e9:a7:9f\"}"},
+    {"name": "a number with a leading zero", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":01,\"op\":\"search\",\"id\":\"7f3a91c2\"}"},
+    {"name": "an escaped NUL in mac", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"restart\",\"id\":\"0a1b2c3d\",\"mac\":\"02:95:b8:e9:a7:9f\\u0000x\"}"},
+    {"name": "an escaped NUL in op", "expect": "ignore", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"restart\\u0000x\",\"id\":\"0a1b2c3d\",\"mac\":\"02:95:b8:e9:a7:9f\"}"}
+  ],
+  "found": {
+    "info": {"mac": "02:95:b8:e9:a7:9f", "sn": "SB2610000001", "model": "SBIOT-H750", "fw": "0.7.0", "hostname": "sbiot-gw", "web": 80, "boot": 197,
+             "eth": {"ip": "192.168.0.7", "netmask": "255.255.255.0", "gateway": "192.168.0.1"},
+             "net": {"ipMode": 1, "ip": "192.168.0.7", "netmask": "255.255.255.0", "gateway": "192.168.0.1", "dnsMode": 1, "dns1": "8.8.8.8", "dns2": "1.1.1.1"}},
+    "id": "7f3a91c2",
+    "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"found\",\"id\":\"7f3a91c2\",\"mac\":\"02:95:b8:e9:a7:9f\",\"sn\":\"SB2610000001\",\"model\":\"SBIOT-H750\",\"fw\":\"0.7.0\",\"hostname\":\"sbiot-gw\",\"web\":80,\"boot\":197,\"eth\":{\"ip\":\"192.168.0.7\",\"netmask\":\"255.255.255.0\",\"gateway\":\"192.168.0.1\"},\"net\":{\"ipMode\":1,\"ip\":\"192.168.0.7\",\"netmask\":\"255.255.255.0\",\"gateway\":\"192.168.0.1\",\"dnsMode\":1,\"dns1\":\"8.8.8.8\",\"dns2\":\"1.1.1.1\"}}"
+  },
+  "acks": [
+    {"id": "5b20e7d1", "mac": "02:95:b8:e9:a7:9f", "err": null, "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"ack\",\"id\":\"5b20e7d1\",\"mac\":\"02:95:b8:e9:a7:9f\",\"ok\":true}"},
+    {"id": "5b20e7d1", "mac": "02:95:b8:e9:a7:9f", "err": "bad", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"ack\",\"id\":\"5b20e7d1\",\"mac\":\"02:95:b8:e9:a7:9f\",\"ok\":false,\"err\":\"bad\"}"},
+    {"id": "5b20e7d1", "mac": "02:95:b8:e9:a7:9f", "err": "store", "text": "{\"sbiot\":\"disc\",\"v\":1,\"op\":\"ack\",\"id\":\"5b20e7d1\",\"mac\":\"02:95:b8:e9:a7:9f\",\"ok\":false,\"err\":\"store\"}"}
+  ]
+}
